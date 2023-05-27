@@ -66,7 +66,9 @@ speech_recognition library, is easy to use, fast and does a great job.
 
 Now we're really getting somewhere.  Let's start building IRIS!
 
-### iris/iris_v1_online_no_sounds.py
+## Online versions
+
+### iris/online/iris_v1_online_no_sounds.py
 
 This version uses google for STT and TTS, and OpenAI for inference, and so it works REALLY well but is not private.
 Note that it's using text-davinci-002 (GPT3) - if you have GPT-4 API access you will need to change the script.  I might do that if/when I eventually get GPT-4 access.
@@ -74,13 +76,13 @@ I found it useful to have a 'push to talk' key so that it didn't pick up backgro
 the user to press the space key before listening for input.  Later we will add an (optional) wake-word feature.
 Put your OpenAI API key in your environment variables as OPEN_AI_API_KEY.
 
-### iris/iris_v2_online_with_sounds.py
+### iris/online/iris_v2_online_with_sounds.py
 
 Same as Iris v1 online, but now there are chirps and bleeps to help you know what's going on if you're not able to see
 the console output.  This becomes really useful later on when we add a 'wake word' and when you walk away from your
 computer to talk where you can't see the screen.  It's a small thing but I think it adds a lot to the usability.
 
-### iris/iris_v3_online_with_voicewake.py (and iris/wakeup/wakelistener.py)
+### iris/online/iris_v3_online_with_voicewake.py (and iris/wakeup/wakelistener.py)
 
 Same as the previous version (still using online services) but with a "hey siri" style wake word feature.
 
@@ -98,11 +100,63 @@ you see a '.', that means it's picked up some audio and you'll have to wait for 
 wakeword.  I tried using audio prompts for this, but it was too annoying.  This is one of the reasons I prefer to use
 a push-to-talk (really a mute mic) button on my bluetooth speaker in later versions of Iris.
 
-### iris/iris_v4_online_no_wait.py
+### iris/online/iris_v4_online_no_wait.py
 
 This version still uses online services, but does not wait at all for you to press space or say a wake word.  That
 means it's best used with a mic that has a mute button, or a push-to-talk feature.  This is the version I prefer to use
 with my teleconferencing puck.
 
 This is the version that I actually use when I want to talk to GPT.  Note that it's using text-davinci-002 (GPT3) - if you have GPT-4 API access you will need to change the script.  I might do that if/when I eventually get GPT-4 access.
+
+## Offline / local versions
+
+Now we get to the part where I've had less success with my own code.  I've tried llamacpp directly but I couldn't get it to stop truncating responses.  I couldn't get gptq-for-llama to work on Windows because it needed dependencies that (it seems) you can't get for Windows, and I couldn't be bothered to install wsl again (yet, I might go down that route later).  Anyway, there are a couple of things that do work well - one is fastai's fastchat API (which I was able to get working with some models but not others, I think only because I wasn't trying hard enough), and Oobabooga, which seems like the path of least resistance!
+
+### iris/offline/iris_v5_offline_fastchat.py
+
+This is a version of IRIS that uses the fastchat API.  I've had it working with StabilityAI/stablelm-tuned-alpha-7b and lmsys/fastchat-t5-3b-v1.0 but I couldn't figure out what flavour of model it likes, and I eventually moved onto the Oobabooga version.  Still, I'll share it in case it's useful!
+
+This version uses fastai's fastchat API to load and interact with models that are compatible with that system.
+
+It handles downloading models for you, but I couldn't get it to work with my GPU so it's quite slow.  I also couldn't
+figure out how to load models that aren't in the fastai examples, but I think both problems were really just down to me
+lacking the motivation to figure it out once I'd found a better solution in Oobabooga.
+
+Down in the main funciton you'll see a couple of lines you can uncomment/comment to switch between the fastai and the
+stability ai models.
+
+It doesn't use push to talk or wake word because I'm happy with my mute button solution - if you want it, you should
+be able to port it from one of the online versions easily enough.
+
+### iris/offline/iris_v6_offline_oobabooga.py
+
+This is the best version, but it's also the biggest hack. This is because when I wrote it, the oobabooga API wasn't
+working, and so I just interfaced directly with the internals of Oobabooga. It's a very messy thing to do, but it works
+really well... I do plan to update it once I get the Oobabooga API working. It might stop working if the Oobabooga
+internals change from how they were when I wrote/hacked together the script!
+
+You'll need to have Oobabooga installed and fully working before you try this.
+
+The advantages of Oobabooga are that it can load GPU and CPU models, on Windows, without installing wsl, and it somehow
+manages to get full answers out of llamacpp models which I couldn't do when I tried to use llamacpp directly. It also
+has the nice built-in chat characters feature, and is all-round awesome. I apologise to the Oobabooga devs for what I
+did you your code here ;) I will swap to the API once I get it working I promise.
+
+To use it:
+First copy start_windows.py (in your oobabooga directory) and name it start_iris.py.  In there change two things
+(that I can remember!):
+
+- Close to the top, change CMD_FLAGS to '--chat --auto-device --chat --model-menu --xformers'
+
+- In the function run_model(), change it to run iris_server.py:
+     run_cmd(f"python iris_server.py {CMD_FLAGS}", environment=True)
+
+Next, copy iris_v6_offline_oobabooga.py into the text-generation-webui directory, naming it iris_server.py
+(I did warn you this was hacky!)
+
+Now when you run 'python start_iris.py', you should not get a gradio webui as you normally would with Oobabooga, you 
+should get our speech interface, but inside it's using all that Oobabooga goodness.
+
+Once again, I reiterate that this would be a lot better if we could just use the Oobabooga API from a script more like
+our previous ones, but at the time of writing the API didn't work.
 
