@@ -22,6 +22,7 @@ def speak(text):
     play(AudioSegment.from_file(mp3_fp, format="mp3"))
 
 
-speak("St Peters")
-speak("101 Peter St.")
-speak("The answer is 1034")
+if __name__ == "__main__":
+    speak("St Peters")
+    speak("101 Peter St.")
+    speak("The answer is 1034")

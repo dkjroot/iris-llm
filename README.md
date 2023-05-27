@@ -14,6 +14,7 @@ Although I've marked the repo as GPL 3.0, and I'm happy for you to do whatever y
 - My PC is already set up with CUDA etc. and I remember it being a bit of a pain.  I'm not going to reinstall everything just so that I can write up instructions - you will have to figure out how to install whatever dependencies these scripts have for yourself.
 - Python isn't my first (second or third) language, so don't be surprised to see bad python here - I don't recommend this repo as a tutorial on how to write good python!
 - My PC is an i5 8600K with 64gb of RAM and an 8gb RTX 2080 Super running Windows 10.  This is the only rig I have tested these scripts on.  I don't think you should need quite that much RAM (unless you want to run a 30b parameter CPU-only model!), but you probably do need 8gb of VRAM unless you want to use CPU-only models which (although more accurate if you get a big one) are too slow to have a flowing conversation with.
+- By the nature of this field, all this work will be out of date about 24 hours after I push it.  I wish you good luck keeping up! :)
 
 
 ## What can it do?
