@@ -128,9 +128,12 @@ stability ai models.
 It doesn't use push to talk or wake word because I'm happy with my mute button solution - if you want it, you should
 be able to port it from one of the online versions easily enough.
 
-### iris/offline/iris_v6_offline_oobabooga.py
+### iris/offline/DEPRECATED_iris_v6_offline_oobabooga.py
 
-This is the best version, but it's also the biggest hack. This is because when I wrote it, the oobabooga API wasn't
+DEPRECATED - this version used Oobabooga internals, and quickly went out of date.  Now that the Oobabooga API works,
+you should use version 7.  Don't even bother trying to run this one - use version 7 which uses the Oobabooga API properly :)
+
+This version was a big nasty hack. This is because when I wrote it, the oobabooga API wasn't
 working, and so I just interfaced directly with the internals of Oobabooga. It's a very messy thing to do, but it works
 really well... I do plan to update it once I get the Oobabooga API working. It might stop working if the Oobabooga
 internals change from how they were when I wrote/hacked together the script!
@@ -160,3 +163,15 @@ should get our speech interface, but inside it's using all that Oobabooga goodne
 Once again, I reiterate that this would be a lot better if we could just use the Oobabooga API from a script more like
 our previous ones, but at the time of writing the API didn't work.
 
+### iris/offline/iris_v7_offline_oobabooga_api.py
+
+This is the best version as of now.
+
+This version uses the Oobabooga API, which is the right way to do it, avoiding all the hacky nonsense that was in the
+old Oobabooga client (v6, which is now completely deprecated by this v7)
+
+It works, but I haven't polished it yet - it will become the basis for the actual Iris script, which I can now start
+working now that I've got this basic thing working!
+
+You need to have Oobabooga completely working (a character named "Iris" set up, model loaded with model parameters saved, 
+and running with --api to start the API listening on port 5000.

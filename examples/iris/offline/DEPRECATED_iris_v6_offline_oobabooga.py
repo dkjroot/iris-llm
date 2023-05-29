@@ -1,6 +1,9 @@
 """IRIS - Intelligent Residential Interface System
 
-This is the best version, but it's also the biggest hack. This is because when I wrote it, the oobabooga API wasn't
+DEPRECATED - this version used Oobabooga internals, and quickly went out of date.  Now that the Oobabooga API works,
+you should use version 7.
+
+This version was a big nasty hack. This is because when I wrote it, the oobabooga API wasn't
 working, and so I just interfaced directly with the internals of Oobabooga. It's a very messy thing to do, but it works
 really well... I do plan to update it once I get the Oobabooga API working. It might stop working if the Oobabooga
 internals change from how they were when I wrote/hacked together the script!
@@ -21,7 +24,7 @@ First copy start_windows.py (in your oobabooga directory) and name it start_iris
 - In the function run_model(), change it to run iris_server.py:
      run_cmd(f"python iris_server.py {CMD_FLAGS}", environment=True)
 
-Next, copy iris_v6_offline_oobabooga.py into the text-generation-webui directory, naming it iris_server.py
+Next, copy DEPRECATED_iris_v6_offline_oobabooga.py into the text-generation-webui directory, naming it iris_server.py
 (I did warn you this was hacky!)
 
 Now when you run 'python start_iris.py', you should not get a gradio webui as you normally would with Oobabooga, you
