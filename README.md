@@ -7,7 +7,7 @@ If you want to understand how the voice-to-voice stuff works in detail, check ou
 
 There are a few options for which chat engine, which text-to-speech model etc. it'll use.  Run 'python configure.py' to configure it.  In default configuration it'll use all offline models.
 
-
+Note: I'm sorry I haven't frozen a fresh venv into a requirements.txt for you yet so you'll have to just work through figuring out which dependencies you need to pip install.  I'll get around to it soon.
 
 ## LLM client ('chat engine') options:
 
