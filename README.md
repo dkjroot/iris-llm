@@ -13,7 +13,7 @@ There are a few options for which chat engine, which text-to-speech model etc. i
 
 Iris can use Oobabooga (https://github.com/oobabooga/text-generation-webui) via its API.  This is a convenient way to access local LLM models because it has a nice interface for setting up your model and your character, has wide compatibility with different model types, and works really well.  
 
-You need to have Oobabooga fully set up and working with a model and a character named "Iris"
+You need to have Oobabooga fully set up and working with your favourite model, plus a character named "Iris" that works in Oobabooga in chat mode.
 
 I set my CMD_FLAGS (in Oobabooga's webui.py) to  '--chat --auto-device --api --chat --xformers --model-menu --model_type gptj'  (for gptq models - I also make sure to save working settings in the Oobabooga web ui for the model before I try to use it via IRIS).  Basically make sure Oobabooga is working with your model, and running with the API listening on port 5000
 
