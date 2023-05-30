@@ -1,0 +1,147 @@
+{
+  "config-items": [
+    {
+      "name": "chat engine",
+      "available": [
+        {
+          "name": "iris_chat_engines.oobabooga_api_offline",
+          "warning": "",
+          "notice": "",
+          "module-specific-config": []
+        },
+        {
+          "name": "iris_chat_engines.openai_gpt_online",
+          "warning": "(Warning: Uses internet service - your chats will not be private)",
+          "notice": "Don't forget to add OPEN_AI_API_KEY to your environment variables.",
+          "module-specific-config": [
+            {
+              "name": "model",
+              "value": "text-davinci-002"
+            },
+            {
+              "name": "temperature",
+              "value": 0.9
+            },
+            {
+              "name": "max_tokens",
+              "value": 512
+            },
+            {
+              "name": "top_p",
+              "value": 1
+            },
+            {
+              "name": "frequency_penalty",
+              "value": 0.0
+            },
+            {
+              "name": "presence_penalty",
+              "value": 0.6
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "text to speech engine",
+      "available": [
+        {
+          "name": "iris_tts_engines.pyttsx3_offline",
+          "warning": "(Warning: built-in config is for Windows, on linux you may have some work to do)",
+          "notice": "",
+          "module-specific-config": [
+            {
+              "name": "voice",
+              "value": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MSTTS_V110_enAU_CatherineM"
+            },
+            {
+              "name": "rate",
+              "value": 200
+            }
+          ]
+        },
+        {
+          "name": "iris_tts_engines.gTTS_online",
+          "warning": "(Warning: Uses internet service - your chats will not be private)",
+          "notice": "",
+          "module-specific-config": [
+            {
+              "name": "lang",
+              "value": "en"
+            },
+            {
+              "name": "tld",
+              "value": "com.au"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "speech to text engine",
+      "available": [
+        {
+          "name": "iris_stt_engines.wav2vec2_offline",
+          "warning": "(a local speech to text model will be used)",
+          "notice": "",
+          "module-specific-config": [
+            {
+              "name": "tokenizer_model",
+              "value": "jonatasgrosman/wav2vec2-large-xlsr-53-english"
+            },
+            {
+              "name": "ctc_model",
+              "value": "jonatasgrosman/wav2vec2-large-xlsr-53-english"
+            }
+          ]
+        },
+        {
+          "name": "iris_stt_engines.google_online",
+          "warning": "(Warning: Uses internet service - your chats will not be private)",
+          "notice": "",
+          "module-specific-config": []
+        }
+      ]
+    },
+    {
+      "name": "feedback sounds",
+      "available": [
+        {
+          "name": "iris_sounds.beeps_and_bleeps",
+          "warning": "(IRIS will give audible feedback which helps when you can't see the screen)",
+          "notice": "",
+          "module-specific-config": []
+        },
+        {
+          "name": "iris_sounds.no_sounds",
+          "warning": "(IRIS will not give audible feedback)",
+          "notice": "",
+          "module-specific-config": []
+        }
+      ]
+    },
+    {
+      "name": "push-to-talk / wake-word",
+      "available": [
+        {
+          "name": "iris_ptt.push_space_to_talk",
+          "warning": "(when you want to talk, you have to press space - uses a Windows-only library)",
+          "notice": "",
+          "module-specific-config": []
+        },
+        {
+          "name": "iris_ptt.wake_word",
+          "warning": "(when you want to talk, you have to say 'hey iris')",
+          "notice": "",
+          "module-specific-config": []
+        },
+        {
+          "name": "iris_ptt.do_not_wait",
+          "warning": "(always listening, no push-to-talk - good if your mic has a mute button)",
+          "notice": "",
+          "module-specific-config": []
+        }
+      ]
+    }
+  ]
+}

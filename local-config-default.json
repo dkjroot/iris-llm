@@ -1,0 +1,11 @@
+{
+    "chat engine": "iris_chat_engines.oobabooga_api_offline",
+    "text to speech engine": "iris_tts_engines.pyttsx3_offline",
+    "voice": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Speech\\Voices\\Tokens\\MSTTS_V110_enAU_CatherineM",
+    "rate": 200,
+    "speech to text engine": "iris_stt_engines.wav2vec2_offline",
+    "tokenizer_model": "jonatasgrosman/wav2vec2-large-xlsr-53-english",
+    "ctc_model": "jonatasgrosman/wav2vec2-large-xlsr-53-english",
+    "feedback sounds": "iris_sounds.beeps_and_bleeps",
+    "push-to-talk / wake-word": "iris_ptt.push_space_to_talk"
+}
