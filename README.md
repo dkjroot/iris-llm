@@ -32,6 +32,7 @@ Put your OpenAI API key in your environment variables as OPEN_AI_API_KEY
 
 By default the GPT mode uses GPT-3 (text-davinci-002)
 
+This probably works with other openai API compatible hosts like koboldcpp and would probably be my go to now.
 
 
 ## TTS (text-to-speech) engine options:
