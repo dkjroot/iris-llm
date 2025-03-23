@@ -1,9 +1,9 @@
 # IMPORTANT NOTE!
 
-This is not fully functional yet, in that it is not capable of anything other than chatting - it can't control your devices.  I haven't worked on it in months and I may never finish it.  It is useful as a tutorial if you're a python coder who wants to learn how to use local language models etc., although as it goes further out of date it becomes less relevant.  Maybe I will return to it one day when I have some time.  If you're here to learn, remember to check out the prototypes brach where the step-by-step stuff is.
+This is not fully functional yet, in that it is not capable of anything other than chatting - it can't control your devices.  I haven't worked on it in months and I may never finish it.  It is useful as a tutorial if you're a python coder who wants to learn how to use local language models etc., although as it goes further out of date it becomes less relevant.  Maybe I will return to it one day when I have some time.  If you're here to learn, remember to check out the prototypes branch where the step-by-step stuff is.
 
 # iris-llm
-IRIS: Intelligent Residential Integration System - a mind for your home!
+The original idea for IRIS was "IRIS: Intelligent Residential Integration System - a mind for your home!".  I still want a Jarvis... but I never made much progress after getting the voice-to-voice LLM chat working.  It's pretty well put together and there's useful info in the prototypes branch.  But no, it's not going to control your home!  Here's the original readme anyway...
 
 This is a personal project, but maybe there'll be something that helps someone.  It's very early in its development at the moment, but if you know a bit about python you should be able to get it running, and it'll present a voice interface to your local language models (or even GPT if you choose that option).  
 
