@@ -1,8 +1,32 @@
+# iris-llm
+
+**[Support my work on Buy Me a Coffee](https://buymeacoffee.com/dkjroot)**
+
+### Free to use. Please help keep it that way.
+
+I develop this project to be freely available to everyone, supported, if at all,
+by voluntary contributions. I do not want other people to profit from my work
+by selling copies, putting it behind a paywall, or building a paid application
+or hosted service around it. I ask you to respect that intention: please keep
+this work freely available, credit its origins, and direct people to
+[my official GitHub repository](https://github.com/dkjroot/iris-llm) for the software.
+
+If you want to help fund my development, please contribute **directly to me**
+through [Buy Me a Coffee](https://buymeacoffee.com/dkjroot). Paying a distributor
+or hosting provider does not fund my work unless I explicitly say otherwise.
+There is no obligation to contribute.
+
+**This is a personal request, not an additional license restriction.** The
+[GNU General Public License v3.0](LICENSE) permits commercial use and
+redistribution, including forks, subject to its terms. Those legal permissions
+remain unchanged by this request. See [licensing details](LICENSING.md) and
+[third-party credits](THIRD_PARTY_NOTICES.md).
+
 # IMPORTANT NOTE!
 
 This is not fully functional yet, in that it is not capable of anything other than chatting - it can't control your devices.  I haven't worked on it in months and I may never finish it.  It is useful as a tutorial if you're a python coder who wants to learn how to use local language models etc., although as it goes further out of date it becomes less relevant.  Maybe I will return to it one day when I have some time.  If you're here to learn, remember to check out the prototypes branch where the step-by-step stuff is.
 
-# iris-llm
+## About IRIS
 The original idea for IRIS was "IRIS: Intelligent Residential Integration System - a mind for your home!".  I still want a Jarvis... but I never made much progress after getting the voice-to-voice LLM chat working.  It's pretty well put together and there's useful info in the prototypes branch.  But no, it's not going to control your home!  Here's the original readme anyway...
 
 This is a personal project, but maybe there'll be something that helps someone.  It's very early in its development at the moment, but if you know a bit about python you should be able to get it running, and it'll present a voice interface to your local language models (or even GPT if you choose that option).  
@@ -32,7 +56,11 @@ Put your OpenAI API key in your environment variables as OPEN_AI_API_KEY
 
 By default the GPT mode uses GPT-3 (text-davinci-002)
 
-This probably works with other openai API compatible hosts like koboldcpp and would probably be my go to now.
+What I'd like this option to become is an "OpenAI-compatible endpoint" option, rather than just a GPT mode. That would let you point it at a local server such as KoboldCPP or llama.cpp, or at a hosted service. "OpenAI-compatible" describes the API it speaks; it doesn't mean your conversation has to go to OpenAI.
+
+KoboldCPP would probably be my go-to these days. I've also had good results with llama.cpp, although I found it harder to set up and to see what was going back and forth. KoboldCPP ran faster in my setup, but I haven't done a like-for-like comparison.
+
+There's a bit of work to do before this is ready, though: the code here still uses the old OpenAI completion API and doesn't let you configure a different server address. So this is the direction I'd take it, rather than something the current version already supports. Both [KoboldCPP](https://github.com/LostRuins/koboldcpp/wiki) and [llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md) document compatible chat APIs; IRIS needs updating to use them.
 
 
 ## TTS (text-to-speech) engine options:
@@ -64,6 +92,12 @@ Google's STT is pretty good, but it's not private.
 ### Beeps and bleeps
 
 IRIS will give you some audio cues so that you know what's going on - especially useful if you're not near your screen.
+
+Original synthesized WAV cues are included, along with a standard-library Python
+generator. No downloaded sound recordings are required. See
+[the sound directory README](iris_sounds/README.md) to hear what each cue means,
+regenerate them, or supply your own properly licensed replacements. The older MP3
+files were removed because their provenance could not be established.
 
 ### No sounds
 

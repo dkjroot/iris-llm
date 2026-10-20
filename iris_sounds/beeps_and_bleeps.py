@@ -1,33 +1,58 @@
-# This version plays beeps and bleeps to give audible feedback to the user
+"""Play the bundled procedural cues, loaded only when this provider is selected."""
+
+from array import array
+from pathlib import Path
+import sys
+import wave
+
 from iris_sounds.ISounds import ISounds
-from pydub import AudioSegment
-from pydub.playback import play
-import numpy as np
 import sounddevice as sd
 
 
+def load_cue(filename: str) -> tuple[array, int]:
+    """Read mono 16-bit PCM from the module directory, independent of cwd."""
+    path = Path(__file__).resolve().parent / filename
+    try:
+        with wave.open(str(path), 'rb') as source:
+            if source.getnchannels() != 1 or source.getsampwidth() != 2:
+                raise ValueError(f'{filename} must be a mono 16-bit PCM WAV file')
+            rate = source.getframerate()
+            samples = array('h', source.readframes(source.getnframes()))
+    except FileNotFoundError as error:
+        raise FileNotFoundError(
+            f'Missing sound {path}. Run iris_sounds/generate_sounds.py or '
+            'select iris_sounds.no_sounds. See iris_sounds/README.md.'
+        ) from error
+    if sys.byteorder != 'little':
+        samples.byteswap()
+    return samples, rate
+
+
 class Sounds(ISounds):
-    working = AudioSegment.from_mp3('iris_sounds/workinglongquiet.mp3')
-    workinga = np.array(working.get_array_of_samples())
-    chirp = AudioSegment.from_mp3('iris_sounds/chirp.mp3')
-    bleep = AudioSegment.from_mp3('iris_sounds/bleep.mp3')
-    longbleep = AudioSegment.from_mp3('iris_sounds/longbleep.mp3')
+    """Use blocking short cues before recording, with background working feedback."""
 
-    def __init__(self, settings):
-        pass
+    def __init__(self, settings: dict[str, object]) -> None:
+        self.working, self.working_rate = load_cue('workinglongquiet.wav')
+        self.chirp, self.chirp_rate = load_cue('chirp.wav')
+        self.bleep, self.bleep_rate = load_cue('bleep.wav')
+        self.longbleep, self.longbleep_rate = load_cue('longbleep.wav')
 
-    def play_working_sound(self):
+    def play_working_sound(self) -> None:
+        """Start quiet feedback without delaying model loading or inference."""
         sd.stop()
-        sd.play(self.workinga, self.working.frame_rate * 2)
+        sd.play(self.working, self.working_rate, blocking=False)
 
-    def play_chirp(self):
+    def play_chirp(self) -> None:
+        """Signal readiness for the activation gesture."""
         sd.stop()
-        play(self.chirp)
+        sd.play(self.chirp, self.chirp_rate, blocking=True)
 
-    def play_bleep(self):
+    def play_bleep(self) -> None:
+        """Finish the listening cue before microphone capture begins."""
         sd.stop()
-        play(self.bleep)
+        sd.play(self.bleep, self.bleep_rate, blocking=True)
 
-    def play_long_bleep(self):
+    def play_long_bleep(self) -> None:
+        """Play a longer, descending feedback cue."""
         sd.stop()
-        play(self.longbleep)
+        sd.play(self.longbleep, self.longbleep_rate, blocking=True)

@@ -1,4 +1,7 @@
 # Byte-compiled / optimized / DLL files
+# Old feedback samples had unresolved provenance; do not reintroduce downloads.
+iris_sounds/*.mp3
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -162,3 +165,7 @@ cython_debug/
 
 # Iris specific:
 local-config.json
+
+# Local working notes
+/AGENTS.md
+/TODO.md
