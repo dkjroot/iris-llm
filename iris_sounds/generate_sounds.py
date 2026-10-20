@@ -5,11 +5,11 @@ files are written beside this script. All sound is synthesized from sine waves.
 SPDX-License-Identifier: GPL-3.0-only
 """
 
-from array import array
 import math
-from pathlib import Path
 import sys
 import wave
+from array import array
+from pathlib import Path
 
 SAMPLE_RATE = 24000
 OUTPUT = Path(__file__).resolve().parent
@@ -42,19 +42,19 @@ def cues() -> dict[str, list[float]]:
     for _ in range(6):
         working += tone(220, 247, 0.16, 0.035) + silence(0.44)
     return {
-        'chirp.wav': tone(520, 880, 0.20, 0.18),
-        'bleep.wav': tone(660, 660, 0.13, 0.18),
-        'longbleep.wav': tone(440, 440, 0.20, 0.16) + silence(0.06) + tone(330, 330, 0.30, 0.16),
-        'workinglongquiet.wav': working,
+        "chirp.wav": tone(520, 880, 0.20, 0.18),
+        "bleep.wav": tone(660, 660, 0.13, 0.18),
+        "longbleep.wav": tone(440, 440, 0.20, 0.16) + silence(0.06) + tone(330, 330, 0.30, 0.16),
+        "workinglongquiet.wav": working,
     }
 
 
 def write_wav(path: Path, samples: list[float]) -> None:
     """Write signed little-endian PCM without normalization or external codecs."""
-    pcm = array('h', (round(max(-1.0, min(1.0, value)) * 32767) for value in samples))
-    if sys.byteorder != 'little':
+    pcm = array("h", (round(max(-1.0, min(1.0, value)) * 32767) for value in samples))
+    if sys.byteorder != "little":
         pcm.byteswap()
-    with wave.open(str(path), 'wb') as output:
+    with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
         output.setframerate(SAMPLE_RATE)
@@ -69,5 +69,5 @@ def main() -> None:
         print(path.name)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

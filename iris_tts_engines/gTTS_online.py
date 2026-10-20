@@ -1,23 +1,32 @@
-from iris_tts_engines.ITTS import ITTS
-from gtts import gTTS
-from pydub import AudioSegment
-from pydub.playback import play
+"""Google synthesis is optional; this MP3 path still needs FFmpeg/ffprobe."""
+
+from __future__ import annotations
+
 from io import BytesIO
+from shutil import which
+
+from iris_settings import Settings
 
 
-class TTS(ITTS):
-    settings = {}
-    lang = 'en'
-    tld = 'com.au'
+class TTS:
+    def __init__(self, settings: Settings) -> None:
+        if not which("ffmpeg") or not which("ffprobe"):
+            raise ValueError(
+                "gTTS playback needs ffmpeg and ffprobe on PATH. "
+                "Use pyttsx3 for local speech without them."
+            )
+        self.lang = settings.lang
+        self.tld = settings.tld
 
-    def __init__(self, settings):
-        self.settings = settings
-        self.lang = settings['lang']
-        self.tld = settings['tld']
+    def speak(self, text: str) -> None:
+        from gtts import gTTS
+        from pydub import AudioSegment
+        from pydub.playback import play
 
-    def speak(self, text):
-        mp3_fp = BytesIO()
-        tts = gTTS(text, lang=self.lang, tld=self.tld)
-        tts.write_to_fp(mp3_fp)
-        mp3_fp.seek(0)
-        play(AudioSegment.from_file(mp3_fp, format="mp3"))
+        with BytesIO() as audio:
+            gTTS(text, lang=self.lang, tld=self.tld).write_to_fp(audio)
+            audio.seek(0)
+            play(AudioSegment.from_file(audio, format="mp3"))
+
+    def close(self) -> None:
+        pass

@@ -1,32 +1,33 @@
-# This version uses google's online speech to text engine
-from iris_stt_engines.ISTT import ISTT
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-from pydub import AudioSegment
-import io
-import torch
+"""The original recogniser, with normalised PCM and no implicit model downloads."""
+
+from __future__ import annotations
+
+from speech_recognition import AudioData
+
+from iris_audio import pcm_samples
+from iris_settings import Settings
 
 
-class STT(ISTT):
-    settings = None
-    w2v2_tokenizer = None
-    w2v2_model = None
+class STT:
+    def __init__(self, settings: Settings) -> None:
+        from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 
-    def __init__(self, settings):
-        self.settings = settings
-        self.w2v2_tokenizer = Wav2Vec2Processor.from_pretrained(settings['tokenizer_model'])
-        self.w2v2_model = Wav2Vec2ForCTC.from_pretrained(settings['ctc_model'])
+        self.processor = Wav2Vec2Processor.from_pretrained(
+            settings.tokenizer_model, local_files_only=True
+        )
+        self.model = Wav2Vec2ForCTC.from_pretrained(settings.ctc_model, local_files_only=True)
+        self.model.eval()
 
-    def recognize(self, audio):
-        # parse and tokenize audio
-        # Using w2v2 for stt
-        data = io.BytesIO(audio.get_wav_data())
-        clip = AudioSegment.from_file(data)
-        x = torch.FloatTensor(clip.get_array_of_samples())
+    def recognize(self, audio: AudioData) -> str:
+        import torch
 
-        inputs = self.w2v2_tokenizer(x, sampling_rate=16000, return_tensors='pt', padding='longest').input_values
-        logits = self.w2v2_model(inputs).logits
-        tokens = torch.argmax(logits, axis=-1)
-        return str(self.w2v2_tokenizer.batch_decode(tokens)[0]).lower()
+        samples = pcm_samples(audio)
+        if not samples.size:
+            return ""
+        inputs = self.processor(samples, sampling_rate=16000, return_tensors="pt")
+        with torch.inference_mode():
+            tokens = self.model(inputs.input_values).logits.argmax(dim=-1)
+        return str(self.processor.batch_decode(tokens)[0]).lower()
 
-    def is_offline(self):
+    def is_offline(self) -> bool:
         return True

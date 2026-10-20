@@ -1,17 +1,7 @@
-# Interface that all chat engines must implement
-from abc import ABC, abstractmethod
+"""A chat engine takes text; microphone capture belongs to the conversation loop."""
+
+from typing import Protocol
 
 
-class IChatEngine(ABC):
-
-    @abstractmethod
-    def __init__(self, settings, stt_inst, sounds_inst):
-        pass
-
-    @abstractmethod
-    def listen_for_user_input(self):
-        pass
-
-    @abstractmethod
-    def get_response(self, user_text):
-        pass
+class IChatEngine(Protocol):
+    def get_response(self, user_text: str) -> str: ...

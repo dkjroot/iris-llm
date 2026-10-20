@@ -22,6 +22,11 @@ but no FFmpeg or MP3 decoder for these cues. Choose `iris_sounds.no_sounds` in
 
 Run from the repository directory with Python 3.10 or newer:
 
+In an activated IRIS environment, the following command works in both Windows
+PowerShell and Linux Bash. Without activation, use
+`.\.venv\Scripts\python.exe iris_sounds/generate_sounds.py` on Windows or
+`./.venv/bin/python iris_sounds/generate_sounds.py` on Linux.
+
 ```sh
 python iris_sounds/generate_sounds.py
 ```

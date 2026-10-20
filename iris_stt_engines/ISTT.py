@@ -1,18 +1,10 @@
-# Interface that all STT modules must implement
-from abc import ABC, abstractmethod
+"""The bits of a recogniser the conversation loop needs."""
+
+from typing import Protocol
+
+from speech_recognition import AudioData
 
 
-class ISTT(ABC):
-
-    @abstractmethod
-    def __init__(self, settings):
-        pass
-
-    @abstractmethod
-    def recognize(self, audio):
-        pass
-
-    @abstractmethod
-    def is_offline(self):
-        pass
-        
+class ISTT(Protocol):
+    def recognize(self, audio: AudioData) -> str: ...
+    def is_offline(self) -> bool: ...

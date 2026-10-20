@@ -35,8 +35,8 @@ Optional external services may charge users independently of this free software.
 
 ## Dependencies, models, and sounds
 
-The current application has no pinned dependency manifest. The source-import
-inventory and upstream license references are in
+The current application's dependencies are declared in `pyproject.toml` and
+resolved in `uv.lock`. The source-import inventory and upstream license references are in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The identified library licenses
 permit use with GPLv3, subject to their own notice and redistribution obligations.
 This is a source review, not approval of an arbitrary future environment or binary

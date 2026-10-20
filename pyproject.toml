@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iris-llm"
+version = "0.2.0"
+description = "A small, local-first voice conversation example"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = "GPL-3.0-only"
+license-files = ["LICENSE", "LICENSING.md", "THIRD_PARTY_NOTICES.md"]
+dependencies = [
+    "httpx>=0.28,<0.29",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.8,<3",
+    "SpeechRecognition>=3.14,<4",
+    "numpy>=1.26,<3",
+    "sounddevice>=0.5,<0.6",
+    # 2.99 can silently skip speech after the first utterance on Windows (upstream #419).
+    "pyttsx3==2.98; sys_platform == 'win32'",
+    "pyttsx3>=2.98,<3; sys_platform != 'win32'",
+]
+
+[project.optional-dependencies]
+microphone = ["PyAudio>=0.2.14,<0.3"]
+whisper = ["faster-whisper>=1.1,<2"]
+kokoro = ["kokoro-onnx>=0.4.9,<0.5", "onnxruntime>=1.20,<2"]
+wav2vec2 = ["transformers>=4.48,<5", "torch>=2.6,<3"]
+online = ["gTTS>=2.5,<3", "pydub>=0.25,<0.26"]
+dev = ["pytest>=8.3,<10", "mypy>=1.15,<2", "ruff>=0.11,<1"]
+
+[project.scripts]
+iris-chat = "iris:main"
+iris-configure = "configure:main"
+
+[tool.setuptools]
+py-modules = ["iris", "configure", "iris_settings", "iris_audio"]
+
+[tool.setuptools.packages.find]
+include = ["iris_chat_engines*", "iris_stt_engines*", "iris_tts_engines*", "iris_ptt*", "iris_sounds*"]
+
+[tool.setuptools.package-data]
+iris_sounds = ["*.wav", "README.md"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["iris.py", "configure.py", "iris_settings.py", "iris_audio.py", "iris_chat_engines", "iris_stt_engines", "iris_tts_engines", "iris_ptt", "iris_sounds"]
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = ["speech_recognition", "sounddevice", "pyttsx3", "gtts", "pydub", "pydub.*", "faster_whisper", "faster_whisper.*", "transformers", "transformers.*", "torch", "kokoro_onnx", "onnxruntime"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
