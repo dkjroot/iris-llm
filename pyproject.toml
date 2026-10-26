@@ -33,12 +33,14 @@ dev = ["pytest>=8.3,<10", "mypy>=1.15,<2", "ruff>=0.11,<1"]
 [project.scripts]
 iris-chat = "iris:main"
 iris-configure = "configure:main"
+iris-droid-server = "iris_droid.server:main"
+iris-droid = "iris_droid.client:main"
 
 [tool.setuptools]
 py-modules = ["iris", "configure", "iris_settings", "iris_audio"]
 
 [tool.setuptools.packages.find]
-include = ["iris_chat_engines*", "iris_stt_engines*", "iris_tts_engines*", "iris_ptt*", "iris_sounds*"]
+include = ["iris_chat_engines*", "iris_stt_engines*", "iris_tts_engines*", "iris_ptt*", "iris_sounds*", "iris_droid*"]
 
 [tool.setuptools.package-data]
 iris_sounds = ["*.wav", "README.md"]
@@ -53,11 +55,11 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["iris.py", "configure.py", "iris_settings.py", "iris_audio.py", "iris_chat_engines", "iris_stt_engines", "iris_tts_engines", "iris_ptt", "iris_sounds"]
+files = ["iris.py", "configure.py", "iris_settings.py", "iris_audio.py", "iris_chat_engines", "iris_stt_engines", "iris_tts_engines", "iris_ptt", "iris_sounds", "iris_droid"]
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["speech_recognition", "sounddevice", "pyttsx3", "gtts", "pydub", "pydub.*", "faster_whisper", "faster_whisper.*", "transformers", "transformers.*", "torch", "kokoro_onnx", "onnxruntime"]
+module = ["speech_recognition", "sounddevice", "pyttsx3", "gtts", "pydub", "pydub.*", "faster_whisper", "faster_whisper.*", "transformers", "transformers.*", "torch", "kokoro_onnx", "onnxruntime", "vosk"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

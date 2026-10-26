@@ -185,11 +185,15 @@ class TTS:
             return
         import sounddevice as sd
 
+        audio, rate = self.synthesize(text)
+        sd.play(audio, rate, blocking=True)
+
+    def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:
+        """Generate samples without opening a speaker (also used by the droid server)."""
         samples, rate = self.backend.create(
             text, voice=self.voice, speed=self.speed, lang=self.language, trim=False
         )
-        audio = prepare_audio(samples, rate)
-        sd.play(audio, rate, blocking=True)
+        return prepare_audio(samples, rate), rate
 
     def close(self) -> None:
         import sounddevice as sd

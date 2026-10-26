@@ -1,5 +1,7 @@
 # iris-llm
 
+Iris is evolving! I started out wanting a Jarvis, with chat based home automation as my goal. For a while, Iris stood as a handy example of how to do voice-to-voice communication with an LLM all in python using local models, back when that was something that no one had really got working yet. There's still some useful code in here, and especially in the prototypes branch that I'll leave up. You could check the history too, but there are plenty of products now that support voice interaction with an LLM. So I'm going back to my original idea, but I don't just want a voice assistant that can turn my lights on and off, I want a droid! I've waited long enough, and if no one wants to fulfill my star wars kid fantasies without invading my privacy, well I'll just have to build one myself! So that's what Iris is now evolving into, the brain for a droid that I still need to build (and that will be able to turn my lights on and off, and hold a friendly conversation) 
+
 **[Support my work on Buy Me a Coffee](https://buymeacoffee.com/dkjroot)**
 
 ### Free to use. Please help keep it that way.
@@ -41,6 +43,13 @@ microphone -> speech recognition -> text -> local LLM -> text -> speech -> speak
 If you're here to learn, the [prototypes branch](https://github.com/dkjroot/iris-llm/tree/prototypes/examples) has the step-by-step experiments. They build up from individual speech tests to a complete conversation. I've left those historical examples alone in this refresh; their old API calls and dependencies haven't all been updated. Start here for the maintained application, and use the experiments to follow how it grew.
 
 ## Getting it running
+
+Want Iris to speak through a droid? The new [droid voice setup](docs/droid.md)
+splits microphone/speaker capture onto a laptop or Raspberry Pi and keeps speech
+recognition, the chat model connection and Kokoro synthesis on your PC. Start
+with laptop-to-PC testing, then move the same client to a Pi. Optional Vosk wake
+detection runs locally on the client. This first version supports turn-based
+voice and text; camera input and body control are future work.
 
 I'd start with Python 3.12 and a terminal in this repository. The package currently targets Python 3.11-3.13. Don't pick Python 3.14 just because it's the newest one; some of the audio/model dependencies may not be ready for it. A supported version in the manifest isn't a promise that every microphone, GPU and optional library has been tested on it.
 
