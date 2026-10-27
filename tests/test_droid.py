@@ -15,7 +15,7 @@ import pytest
 import speech_recognition as sr
 
 import iris
-from iris_droid.client import DroidClient
+from iris_droid.client import DroidClient, record_turn
 from iris_droid.protocol import MAX_BODY, read_wav, validate_token, write_wav
 from iris_droid.server import Brain, handler_for
 from iris_droid.wake import WakeDetector
@@ -23,6 +23,29 @@ from iris_settings import Settings
 
 TOKEN = "test"
 RECORDING = write_wav(b"\x01\x00" * 1600, 16000)
+
+
+def test_recording_loads_the_real_packaged_cue_before_reopening_microphone() -> None:
+    events = []
+    microphone = Mock()
+    microphone.__enter__ = Mock(side_effect=lambda: events.append("opened") or Mock())
+    microphone.__exit__ = Mock(side_effect=lambda *args: events.append("closed"))
+    recognizer = Mock()
+    recognizer.listen.return_value = sr.AudioData(b"\x01\x00" * 1600, 16000, 2)
+
+    def play(samples, rate, *, device, blocking):
+        assert rate == 24000 and len(samples) > 0
+        assert device == 7 and blocking is True
+        events.append("cue")
+
+    with (
+        patch("speech_recognition.Microphone", return_value=microphone),
+        patch("speech_recognition.Recognizer", return_value=recognizer),
+        patch("sounddevice.play", side_effect=play),
+    ):
+        recording = record_turn(None, 30, 10, None, speaker=7)
+    assert events == ["opened", "closed", "cue", "opened", "closed"]
+    assert read_wav(recording, input_audio=True) == (b"\x01\x00" * 1600, 16000)
 
 
 def make_brain() -> tuple[Brain, httpx.Client]:

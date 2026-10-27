@@ -397,7 +397,7 @@ client; don't exceed the server's `phrase_time_limit` setting. The client
 For hands-free use, install the optional Vosk library on the client:
 
 ```sh
-python -m pip install "vosk>=0.3.45,<0.4"
+python -m pip install "vosk>=0.3.44,<0.4"
 ```
 
 Download and unpack a small English model from the official
