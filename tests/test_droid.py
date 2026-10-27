@@ -14,13 +14,14 @@ import numpy as np
 import pytest
 import speech_recognition as sr
 
+import iris
 from iris_droid.client import DroidClient
-from iris_droid.protocol import MAX_BODY, read_wav, write_wav
+from iris_droid.protocol import MAX_BODY, read_wav, validate_token, write_wav
 from iris_droid.server import Brain, handler_for
 from iris_droid.wake import WakeDetector
 from iris_settings import Settings
 
-TOKEN = "a-test-secret-with-at-least-24-characters"
+TOKEN = "test"
 RECORDING = write_wav(b"\x01\x00" * 1600, 16000)
 
 
@@ -133,6 +134,15 @@ def test_real_http_transport_auth_validation_and_voice_turn() -> None:
                 result = droid.turn(RECORDING)
                 assert result.audio and result.text == "Hello, Luke"
                 assert droid.turn(b"exit", text_only=True).finished
+                with (
+                    patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+                    patch("builtins.input", side_effect=["hello", "exit"]),
+                    patch("iris_droid.client.record_turn") as record,
+                    patch("iris_droid.client.play_wav") as play,
+                ):
+                    assert iris.main(["client", "--server", url, "--text"]) == 0
+                record.assert_not_called()
+                play.assert_not_called()
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -170,3 +180,14 @@ def test_wake_uses_local_path_and_only_accepts_complete_phrase(tmp_path) -> None
     vosk.Model.assert_called_once_with(str(tmp_path))
     assert source.stream.read.call_count == 3
     assert json.loads(vosk.KaldiRecognizer.call_args.args[2]) == ["hey iris", "[unk]"]
+
+
+def test_short_droid_key_warns_but_is_accepted() -> None:
+    with pytest.warns(UserWarning, match="Your chosen key will still work"):
+        validate_token("x")
+
+
+@pytest.mark.parametrize("token", ["", "   ", "key\r\nheader", "key\x00", "non-ascii-£"])
+def test_empty_or_invalid_header_keys_are_rejected(token: str) -> None:
+    with pytest.raises(ValueError, match="non-empty ASCII"):
+        validate_token(token)

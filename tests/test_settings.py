@@ -13,7 +13,6 @@ from iris_settings import Settings, load_settings, migrate_config
         {"max_tokens": 0},
         {"temperature": -1},
         {"history_turns": -1},
-        {"listen_timeout": 0},
         {"model": " "},
         {"stt_engine": "invented"},
         {"unknown": 1},
@@ -73,8 +72,8 @@ def test_legacy_configuration_has_a_known_migration() -> None:
     settings = Settings.model_validate(data)
     assert settings.base_url == "http://127.0.0.1:5000/v1"
     assert settings.stt_engine == "wav2vec2"
-    assert settings.activation == "continuous"
-    assert not settings.sounds
+    assert "activation" not in settings.model_dump()
+    assert "sounds" not in settings.model_dump()
 
 
 def test_unknown_modules_and_old_implicit_hosted_endpoint_are_rejected() -> None:
@@ -86,5 +85,4 @@ def test_unknown_modules_and_old_implicit_hosted_endpoint_are_rejected() -> None
 
 def test_distributed_default_and_template_match_model_defaults() -> None:
     root = Path(__file__).resolve().parents[1]
-    for name in ("local-config-default.json", "config_template.json"):
-        assert load_settings(root / name) == Settings()
+    assert load_settings(root / "config_template.json") == Settings()

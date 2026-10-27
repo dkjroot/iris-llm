@@ -16,17 +16,9 @@
     "language": "en",
     "tokenizer_model": "jonatasgrosman/wav2vec2-large-xlsr-53-english",
     "ctc_model": "jonatasgrosman/wav2vec2-large-xlsr-53-english",
-    "tts_engine": "pyttsx3",
-    "voice": null,
-    "rate": 200,
-    "lang": "en",
-    "tld": "com.au",
-    "sounds": true,
-    "activation": "enter",
-    "microphone_index": null,
-    "listen_timeout": 10.0,
-    "phrase_time_limit": 30.0,
+    "tts_engine": "kokoro",
     "kokoro_voice": "af_heart",
     "kokoro_speed": 1.0,
-    "kokoro_model_dir": null
+    "kokoro_model_dir": null,
+    "phrase_time_limit": 30.0
 }

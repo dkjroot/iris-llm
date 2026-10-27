@@ -43,25 +43,3 @@ def test_missing_whisper_model_has_setup_instruction() -> None:
     with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=constructor)}):
         with pytest.raises(ValueError, match="--download-models"):
             STT(Settings())
-
-
-def test_system_voice_falls_back_and_speaks_plain_text() -> None:
-    from iris_tts_engines.pyttsx3_offline import TTS
-
-    backend = Mock()
-    backend.getProperty.return_value = [SimpleNamespace(id="installed")]
-    with patch.dict(sys.modules, {"pyttsx3": SimpleNamespace(init=lambda: backend)}):
-        tts = TTS(Settings(voice="not-installed"))
-        tts.speak("I'm <fine>")
-        backend.say.assert_called_once_with("I'm <fine>")
-        assert all(call.args[0] != "voice" for call in backend.setProperty.call_args_list)
-        tts.close()
-        backend.stop.assert_called_once()
-
-
-def test_online_tts_explains_missing_executables_without_importing_pydub() -> None:
-    from iris_tts_engines.gTTS_online import TTS
-
-    with patch("iris_tts_engines.gTTS_online.which", return_value=None):
-        with pytest.raises(ValueError, match="ffmpeg and ffprobe"):
-            TTS(Settings(tts_engine="gtts", allow_remote=True))

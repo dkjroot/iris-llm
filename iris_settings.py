@@ -45,18 +45,10 @@ class Settings(BaseSettings):
     language: str | None = "en"
     tokenizer_model: str = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
     ctc_model: str = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
-    tts_engine: Literal["pyttsx3", "kokoro", "gtts"] = "pyttsx3"
+    tts_engine: Literal["kokoro"] = "kokoro"
     kokoro_voice: str = Field(default="af_heart", pattern=r"^[ab][fm]_[a-z]+$")
     kokoro_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     kokoro_model_dir: Path | None = None
-    voice: str | None = None
-    rate: int = Field(default=200, ge=50, le=500)
-    lang: str = "en"
-    tld: str = "com.au"
-    sounds: bool = True
-    activation: Literal["enter", "space", "wake", "continuous"] = "enter"
-    microphone_index: int | None = Field(default=None, ge=0)
-    listen_timeout: float = Field(default=10, gt=0, le=300)
     phrase_time_limit: float = Field(default=30, gt=0, le=300)
 
     @field_validator("base_url")
@@ -87,9 +79,7 @@ class Settings(BaseSettings):
     def check_privacy(self) -> Settings:
         host = urlsplit(self.base_url).hostname
         if not self.allow_remote and (
-            host not in {"localhost", "127.0.0.1", "::1"}
-            or self.stt_engine == "google"
-            or self.tts_engine == "gtts"
+            host not in {"localhost", "127.0.0.1", "::1"} or self.stt_engine == "google"
         ):
             raise ValueError("Remote endpoints or Google speech need allow_remote=true")
         return self
@@ -156,6 +146,24 @@ def migrate_config(data: dict[str, object]) -> dict[str, object]:
         if key in result:
             result.pop(key)
             warnings.warn(f"Ignoring legacy generation setting {key!r}.", stacklevel=2)
+    for key in (
+        "activation",
+        "sounds",
+        "microphone_index",
+        "listen_timeout",
+        "voice",
+        "rate",
+        "lang",
+        "tld",
+    ):
+        if key in result:
+            result.pop(key)
+    if result.get("tts_engine") in ("pyttsx3", "gtts"):
+        result["tts_engine"] = "kokoro"
+        warnings.warn(
+            "Iris now uses Kokoro for droid speech. Run configure.py to choose a voice.",
+            stacklevel=2,
+        )
     return result
 
 

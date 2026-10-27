@@ -77,28 +77,24 @@ def test_missing_files_fail_before_constructing_backend(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("voice,language", [("af_heart", "en-us"), ("bf_emma", "en-gb")])
-def test_local_speech_uses_voice_accent_keeps_onset_and_waits_for_playback(
-    assets: tuple,
-    voice: str,
-    language: str,
+def test_synthesis_keeps_onset_and_never_opens_a_speaker(
+    assets: tuple, voice: str, language: str
 ) -> None:
     settings, data = assets
     for name, body in data.items():
         (settings.kokoro_model_dir / name).write_bytes(body)
     settings.kokoro_voice = voice
-    backend = Mock()
-    backend.get_voices.return_value = [voice]
+    backend = Mock(get_voices=Mock(return_value=[voice]))
     audio = np.concatenate([np.zeros(1000), np.full(100, 0.1), np.zeros(1000)]).astype(np.float32)
     backend.create.return_value = (audio, 1000)
     with (
         patch.object(kokoro, "load_backend", return_value=backend),
         patch("sounddevice.play") as play,
-        patch("sounddevice.stop") as stop,
     ):
         tts = kokoro.TTS(settings)
-        tts.speak("Hello, I'm Iris.")
-        tts.speak("A second reply.")
-        tts.speak(" ")
+        for text in ["Hello, I'm Iris.", "Another reply."]:
+            samples, rate = tts.synthesize(text)
+            assert rate == 1000 and len(samples) == 430
         assert backend.create.call_count == 2
         assert backend.create.call_args.kwargs == {
             "voice": voice,
@@ -106,11 +102,7 @@ def test_local_speech_uses_voice_accent_keeps_onset_and_waits_for_playback(
             "lang": language,
             "trim": False,
         }
-        assert play.call_count == 2
-        assert play.call_args.kwargs == {"blocking": True}
-        assert len(play.call_args.args[0]) == 250 + 100 + 80
-        tts.close()
-        stop.assert_called_once()
+        play.assert_not_called()
 
 
 def test_unsupported_pack_voice_is_actionable(assets: tuple) -> None:
@@ -145,10 +137,9 @@ def test_invalid_audio_is_not_sent_to_speakers(samples: np.ndarray, rate: int) -
 
 
 def test_list_voices_does_not_load_models_or_audio(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch.object(kokoro, "load_backend") as backend, patch("iris.make_tts") as tts:
+    with patch.object(kokoro, "load_backend") as backend:
         assert iris.main(["--list-voices"]) == 0
         backend.assert_not_called()
-        tts.assert_not_called()
     output = capsys.readouterr().out
     assert "af_heart" in output and "bf_emma" in output and "bm_george" in output
 
@@ -183,27 +174,11 @@ def test_backend_forces_cpu_without_mutating_process_environment(
     ]
 
 
-def test_voice_download_command_dispatches_without_speech_or_chat() -> None:
+def test_voice_download_command_dispatches_without_loading_backend() -> None:
     with (
         patch.object(kokoro, "download_voices") as download,
-        patch("iris.make_tts") as tts,
-        patch("iris.ChatEngine") as chat,
+        patch.object(kokoro, "load_backend") as backend,
     ):
         assert iris.main(["--download-voices"]) == 0
     download.assert_called_once()
-    tts.assert_not_called()
-    chat.assert_not_called()
-
-
-def test_voice_sample_skips_microphone_and_chat_and_closes_tts() -> None:
-    voice = Mock()
-    with (
-        patch("iris.make_tts", return_value=voice),
-        patch("iris.make_stt") as stt,
-        patch("iris.ChatEngine") as chat,
-    ):
-        assert iris.main(["--test-voice"]) == 0
-    voice.speak.assert_called_once()
-    voice.close.assert_called_once()
-    stt.assert_not_called()
-    chat.assert_not_called()
+    backend.assert_not_called()

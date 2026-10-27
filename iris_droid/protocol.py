@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import io
+import warnings
 import wave
 
 from pydantic import BaseModel, ConfigDict
 
 MAX_BODY = 10_000_000
+
+
+def validate_token(token: str) -> None:
+    if (
+        not token.strip()
+        or not token.isascii()
+        or any(ord(char) < 32 or ord(char) == 127 for char in token)
+    ):
+        raise ValueError(
+            "Set IRIS_DROID_TOKEN to a non-empty ASCII key, the same on server and client"
+        )
+    if len(token) < 24:
+        warnings.warn(
+            "Your droid connection key is short. We recommend a longer random key; "
+            "see README.md for how to generate one. Your chosen key will still work.",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 class TurnReply(BaseModel):

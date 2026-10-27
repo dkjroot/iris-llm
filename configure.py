@@ -1,4 +1,4 @@
-"""Choose the main pieces, without needing to edit Python source."""
+"""Configure the PC side of Iris Droid without editing Python source."""
 
 from __future__ import annotations
 
@@ -38,6 +38,15 @@ def choose_kokoro_speed(default: float) -> float:
 def main() -> int:
     path = ROOT / "local-config.json"
     try:
+        print("Let's set up the PC server for Iris Droid.")
+        print(
+            "The laptop or Pi looks after the microphone, listening mode and speaker. "
+            "You choose its listening mode when you launch the client, not here."
+        )
+        print(
+            "Whisper recognises your speech on the PC; "
+            "Kokoro makes the voice sent back to the client."
+        )
         previous = load_settings(path if path.exists() else None)
         data = previous.model_dump(mode="json")
         data["base_url"] = (
@@ -45,30 +54,34 @@ def main() -> int:
         )
         data["model"] = input(f"Model name [{previous.model}]: ").strip() or previous.model
         data["stt_engine"] = choose(
-            "Speech recognition", ["whisper", "wav2vec2", "google"], previous.stt_engine
+            "Speech recognition on the PC (whisper is the usual local choice)",
+            ["whisper", "wav2vec2", "google"],
+            previous.stt_engine,
         )
-        data["tts_engine"] = choose(
-            "Speech output", ["pyttsx3", "kokoro", "gtts"], previous.tts_engine
-        )
-        if data["tts_engine"] == "kokoro":
-            from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
+        # The other TTS adapters play on the PC; they cannot return droid audio.
+        data["tts_engine"] = "kokoro"
+        from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
 
-            for name, description in RECOMMENDED_VOICES.items():
-                print(f"  {name}: {description}")
-            choices = list(dict.fromkeys([*RECOMMENDED_VOICES, previous.kokoro_voice]))
-            data["kokoro_voice"] = choose("Kokoro voice", choices, previous.kokoro_voice)
-            data["kokoro_speed"] = choose_kokoro_speed(previous.kokoro_speed)
-        data["activation"] = choose(
-            "Start listening (space = hold-to-talk on Windows)",
-            ["enter", "space", "wake", "continuous"],
-            previous.activation,
+        print("Droid speech output uses Kokoro. Let's choose her voice.")
+        for name, description in RECOMMENDED_VOICES.items():
+            print(f"  {name}: {description}")
+        choices = list(dict.fromkeys([*RECOMMENDED_VOICES, previous.kokoro_voice]))
+        data["kokoro_voice"] = choose("Kokoro voice", choices, previous.kokoro_voice)
+        data["kokoro_speed"] = choose_kokoro_speed(previous.kokoro_speed)
+        print(
+            "Remote services means sending chat to another machine or a hosted provider, "
+            "or using Google speech recognition."
         )
-        data["sounds"] = (
-            choose("Feedback sounds", ["yes", "no"], "yes" if previous.sounds else "no") == "yes"
+        print(
+            "Leave this off when the model runs on this PC and speech uses Whisper/Kokoro. "
+            "Your laptop or Pi can still connect to Iris with it off."
         )
-        print("Remote mode allows non-loopback chat endpoints and Google speech services.")
         data["allow_remote"] = (
-            choose("Allow remote services", ["yes", "no"], "yes" if previous.allow_remote else "no")
+            choose(
+                "Allow outbound remote model/speech services",
+                ["yes", "no"],
+                "yes" if previous.allow_remote else "no",
+            )
             == "yes"
         )
         settings = Settings.model_validate(data)
@@ -78,10 +91,15 @@ def main() -> int:
             newline="\n",
         )
         print("Saved", path)
-        if settings.tts_engine == "kokoro":
-            print("Next: python iris.py --download-voices, then python iris.py --test-voice")
+        print("Next: python iris.py --download-models, then python iris.py --check")
         print(
-            "Keys belong in IRIS_API_KEY, not this file. More options are in config_template.json."
+            "Set IRIS_DROID_TOKEN in both terminals, then start the PC service with "
+            "python iris.py server"
+        )
+        print("For a client on another machine, add --host 0.0.0.0 to the server command.")
+        print(
+            "That listens on all IPv4 interfaces, including your LAN. "
+            "The README explains network access and how to connect the client."
         )
         return 0
     except (KeyboardInterrupt, EOFError):

@@ -18,12 +18,8 @@ Each library's authors retain their copyright and license.
 | PyAudio, when used for microphones | [Hubert Pham and contributors](https://people.csail.mit.edu/hubert/pyaudio/) | MIT; PortAudio retains its own MIT-style notice |
 | Transformers | [Hugging Face and contributors](https://github.com/huggingface/transformers) | Apache-2.0; model weights are separate |
 | PyTorch | [PyTorch contributors](https://github.com/pytorch/pytorch/blob/main/LICENSE) | BSD-3-Clause, plus bundled third-party notices |
-| pydub | [James Robert and contributors](https://pypi.org/project/pydub/) | MIT |
 | NumPy | [NumPy developers](https://github.com/numpy/numpy) | BSD-3-Clause, plus bundled component licenses |
 | python-sounddevice | [Matthias Geier and contributors](https://python-sounddevice.readthedocs.io/) | MIT; native PortAudio retains its own notice |
-| pyttsx3 | [Natesh M Bhat and contributors](https://pypi.org/project/pyttsx3/) | MPL-2.0; installed system voices/engines retain separate terms |
-| gTTS | [Pierre Nicolas Durette and contributors](https://pypi.org/project/gTTS/) | MIT for client code; the online service's terms are separate |
-| FFmpeg/ffprobe used by audio adapters | [FFmpeg authors](https://ffmpeg.org/legal.html) | LGPL-2.1-or-later or GPL depending on build; inspect any distributed binary |
 
 The original optional speech model is
 [Jonatas Grosman's Wav2Vec2 large XLSR-53 English](https://huggingface.co/jonatasgrosman/wav2vec2-large-xlsr-53-english),

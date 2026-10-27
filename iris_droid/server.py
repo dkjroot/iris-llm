@@ -18,10 +18,10 @@ import numpy as np
 import numpy.typing as npt
 import speech_recognition as sr
 
-from iris import make_stt
 from iris_chat_engines.compatible import ChatEngine, ChatError
-from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, write_wav
+from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
 from iris_settings import Settings, load_settings
+from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
 
 LOGGER = logging.getLogger(__name__)
@@ -148,13 +148,10 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     try:
         token = os.environ.get("IRIS_DROID_TOKEN", "")
-        if len(token.strip()) < 24 or not token.isascii():
-            raise ValueError("Set IRIS_DROID_TOKEN to an ASCII secret of at least 24 characters")
+        validate_token(token)
         settings = load_settings(args.config if args.config.exists() else None)
         if not args.config.exists() and args.config != Path("local-config.json"):
             raise ValueError("The requested configuration file does not exist")
-        if settings.tts_engine != "kokoro":
-            raise ValueError("Droid mode needs tts_engine=kokoro to synthesize on the PC")
         from iris_tts_engines.kokoro_offline import TTS
 
         with httpx.Client(trust_env=False, follow_redirects=False) as client:

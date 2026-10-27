@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import httpx
 
-from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, write_wav
+from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
 from iris_droid.wake import WakeDetector
 
 
@@ -32,8 +32,7 @@ class DroidClient:
             raise ValueError(
                 "Use the Iris droid server's http(s) origin, e.g. http://192.168.1.10:8765"
             )
-        if len(token.strip()) < 24 or not token.isascii():
-            raise ValueError("Set IRIS_DROID_TOKEN to the same secret as the PC server")
+        validate_token(token)
         self.url = url.rstrip("/")
         self.client = client
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
@@ -93,7 +92,10 @@ def record_turn(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--server", required=True, help="Iris droid server URL, not the LLM URL")
+    parser.add_argument(
+        "--server", default="http://127.0.0.1:8765", help="Iris server URL (default: this machine)"
+    )
+    parser.add_argument("--list-microphones", action="store_true", help="List microphone indices")
     parser.add_argument("--text", action="store_true", help="Test transport without any audio")
     parser.add_argument("--activation", choices=["enter", "continuous", "wake"], default="enter")
     parser.add_argument("--wake-model", type=Path)
@@ -104,6 +106,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--listen-timeout", type=float, default=10)
     args = parser.parse_args(argv)
     try:
+        if args.list_microphones:
+            import speech_recognition as sr
+
+            for index, name in enumerate(sr.Microphone.list_microphone_names()):
+                print(f"{index}: {name}")
+            return 0
         if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
         with httpx.Client(

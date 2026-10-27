@@ -24,303 +24,450 @@ redistribution, including forks, subject to its terms. Those legal permissions
 remain unchanged by this request. See [licensing details](LICENSING.md) and
 [third-party credits](THIRD_PARTY_NOTICES.md).
 
-## What's changed?
+## What Iris does now
 
-I've given IRIS a bit of a tidy-up for late 2026. The old GPT completion calls and Oobabooga-specific chat API have been replaced with an OpenAI-compatible chat endpoint, so you can point it at KoboldCPP, llama.cpp, or another server that speaks the same API. There's a Whisper speech recogniser now, proper installation instructions, checked configuration, and some tests around the things that have caught people out. The beeps use local WAV files, so you don't need FFmpeg just to get past startup, and there's a compatibility option for those replies with funny escaped apostrophes. It's still a discussion bot, though. It won't turn your lights on!
+I've always wanted a droid, just like Luke. We're starting with the talking part:
+Iris listens, asks the language model for a reply, and answers in a proper voice.
+The wheels, camera and lights will have to wait until I've built something to
+put them in. She can't control the house or drive around yet.
 
-## About IRIS
-
-Thanks to the folks who reported the apostrophe and setup problems, by the way. Those were useful pointers to where this needed some attention.
-
-The original idea was "IRIS: Intelligent Residential Integration System - a mind for your home!" I still want a Jarvis... but I never got into the home automation side of things. What I did get working was a voice conversation with a local model, and that turned out to be quite a useful little project on its own.
-
-This is a personal project, but maybe there's something here that'll help you. The idea is that you can understand each piece, swap it for something you prefer, and see how it all fits together:
+There is one way to run Iris now, with a server and a client. The server runs on
+the PC that has the model horsepower, and the client looks after the microphone
+and speaker. That client can be a laptop while you're trying it out, then a
+Raspberry Pi when you're ready to build the droid. You can also run both on the
+same computer; it's exactly the same setup, using a local connection.
 
 ```text
-microphone -> speech recognition -> text -> local LLM -> text -> speech -> speaker
+Laptop or Pi                          PC
+microphone -> recorded speech ------> Whisper -> chat model -> Kokoro
+speaker + printed reply       <------ spoken reply + transcript + reply text
 ```
 
-If you're here to learn, the [prototypes branch](https://github.com/dkjroot/iris-llm/tree/prototypes/examples) has the step-by-step experiments. They build up from individual speech tests to a complete conversation. I've left those historical examples alone in this refresh; their old API calls and dependencies haven't all been updated. Start here for the maintained application, and use the experiments to follow how it grew.
+The client can wait for Enter, listen whenever it's your turn, or use a small
+local recogniser to listen for “hey iris”. For now, she finishes speaking before
+listening again. Wake detection currently needs the phrase before each turn;
+a conversation window is something I'd like to work on once the basic setup is
+getting regular use.
 
-## Getting it running
+## 1. Install the bits each machine needs
 
-Want Iris to speak through a droid? The new [droid voice setup](docs/droid.md)
-splits microphone/speaker capture onto a laptop or Raspberry Pi and keeps speech
-recognition, the chat model connection and Kokoro synthesis on your PC. Start
-with laptop-to-PC testing, then move the same client to a Pi. Optional Vosk wake
-detection runs locally on the client. This first version supports turn-based
-voice and text; camera input and body control are future work.
+Use Python 3.11–3.13. I'd start with 3.12; using the newest Python isn't always
+the easiest route when audio and model libraries are involved. You'll also need
+Git, a working microphone and speaker on the client, and a chat model running on
+the PC. The PC doesn't need a microphone or speaker of its own.
 
-I'd start with Python 3.12 and a terminal in this repository. The package currently targets Python 3.11-3.13. Don't pick Python 3.14 just because it's the newest one; some of the audio/model dependencies may not be ready for it. A supported version in the manifest isn't a promise that every microphone, GPU and optional library has been tested on it.
-
-You'll need [Git](https://git-scm.com/downloads) and Python, or uv's managed Python option below. If you haven't already got the repository, these commands work in both PowerShell and a Linux terminal:
+Get the repository on each machine you'll be using:
 
 ```sh
 git clone https://github.com/dkjroot/iris-llm.git
 cd iris-llm
 ```
 
-If you're already here, don't clone another copy. Start with the environment setup. If Linux doesn't have Git yet, run the distribution prerequisite commands below before cloning.
+If you've already got it, use that checkout. There's no need to clone another copy.
 
-**Windows (PowerShell, with Python 3.12 installed):** check `py -3.12 --version` first. Python's [Windows downloads/install manager](https://www.python.org/downloads/windows/) or the uv route below can supply Python if you need it.
+### Windows
+
+With Python 3.12 installed, open PowerShell in the repository:
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m ensurepip --upgrade
 python -m pip install --upgrade pip
-python -m pip install -e ".[microphone,whisper]"
 ```
 
-If PowerShell blocks the activation script, you can skip activation entirely: use `.\.venv\Scripts\python.exe` wherever the instructions say `python`, including the two pip commands. There's no need to change your machine's execution policy. Windows uses its installed speech voices; no separate TTS model download is needed for the default voice.
+If PowerShell won't activate the environment, use
+`.\.venv\Scripts\python.exe` in place of `python` below. You don't need to change
+your execution policy just to run Iris. In Command Prompt, you can activate it
+with `.venv\Scripts\activate.bat` instead.
 
-**Linux (Bash):** the commands below use Ubuntu 24.04's Python 3.12 packages. Other distributions need their equivalents for Python/venv/development headers, a C compiler, PortAudio and eSpeak. On a distribution with a different default Python, check its version or use uv to supply 3.12.
+### macOS
 
-```bash
-sudo apt update
-sudo apt install git python3.12 python3.12-venv python3.12-dev build-essential portaudio19-dev libportaudio2 espeak-ng libespeak1
+Use an installed Python 3.12. The client also needs PortAudio before pip can
+build its PyAudio microphone adapter. With Homebrew, install it in Terminal:
+
+```sh
+brew install portaudio
+```
+
+Then create your Python environment:
+
+```sh
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m ensurepip --upgrade
 python -m pip install --upgrade pip
-python -m pip install -e ".[microphone,whisper]"
 ```
 
-Run IRIS from a desktop session with a working microphone and speaker. A headless Linux server or WSL session needs its own audio setup; use text mode first in that case. On macOS, use an installed supported Python, `python3.12 -m venv .venv`, then the same activation/pip commands; system speech and microphone permissions still need checking.
+Allow microphone access for the terminal or application you're using to launch
+the client when macOS asks for it.
 
-The `ensurepip` step puts pip into the selected Python environment if it isn't there already. That can happen when reusing a `.venv` created by uv. If `python -m pip` says "No module named pip" but bare `pip` works, don't assume they're the same installation: `pip` may be coming from elsewhere on PATH. Use `python -m pip --version` to check that its path is inside this repository's `.venv`. On Linux, if `ensurepip` itself is missing, install the matching Python venv package from the prerequisite step before trying again.
+If pip stops with `fatal error: 'portaudio.h' file not found`, PortAudio is the
+missing piece. Run the Homebrew command above, then retry
+`python -m pip install -e ".[microphone]"` in your activated environment. You
+don't need to recreate the environment or install the full Xcode application
+for that error; the compiler has already got far enough to look for the header.
 
-Those extras install PyAudio for the microphone and faster-whisper for recognition, alongside IRIS's base dependencies (including pyttsx3 and sounddevice). You don't need to hunt down each Python module yourself. This default setup doesn't need a system FFmpeg installation or CUDA for speech recognition.
+### Linux and Raspberry Pi OS
 
-**Alternatively, use uv for a locked installation.** Pick this route or the pip route above; you don't need both. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) first:
-
-Windows (PowerShell):
-
-```powershell
-winget install --id astral-sh.uv --exact
-```
-
-Linux (Bash, using uv's official installer):
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-Open a new terminal afterwards so `uv` is on PATH, and return to the repository. On **either system**:
+Install the Python venv/development packages, a compiler and PortAudio. On a
+Debian-based system whose `python3` is a supported version:
 
 ```sh
-uv sync --locked --python 3.12 --extra microphone --extra whisper
-uv run --no-sync python iris.py --help
+sudo apt update
+sudo apt install git python3-venv python3-dev build-essential portaudio19-dev libportaudio2
+python3 -m venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip
 ```
 
-uv can download Python 3.12 if it isn't installed. It creates `.venv` and installs the versions in `uv.lock`; no activation is needed. For the rest of this guide, replace `python` with `uv run --no-sync python` if you chose this route. The pip instructions use the dependency ranges in `pyproject.toml`; the lockfile is the reproducible route.
+Check `python3 --version` first. If your distribution ships a Python outside
+3.11–3.13, install a supported interpreter and use its matching venv/development
+packages. Other distributions need their equivalents of the packages above.
+For a Pi, use a 64-bit OS. A Pi 4 with 8 GB should have plenty of room for the
+client's part; it isn't being asked to load the PC's models.
 
-uv manages packages without needing pip inside `.venv`. If you stay on this route, use `uv sync` with the appropriate extras rather than the pip commands above. If you switch to the pip route later, run the `ensurepip` step first.
+### Install the server or client packages
 
-If you used pip, reactivate the environment when you open another terminal: `.\.venv\Scripts\Activate.ps1` on Windows, `source .venv/bin/activate` on Linux. Or keep using the explicit environment Python path.
-
-### 1. Get your model server working first
-
-[KoboldCPP](https://github.com/LostRuins/koboldcpp/wiki) would be my go-to these days. Load a GGUF chat/instruct model in its launcher and check you can chat with it in its own interface. IRIS doesn't load the chat model itself. The usual KoboldCPP base URL is `http://127.0.0.1:5001/v1`.
-
-Get the executable from the [official KoboldCPP releases](https://github.com/LostRuins/koboldcpp/releases/latest): `koboldcpp.exe` for Windows or `koboldcpp-linux-x64` for Linux with NVIDIA/CUDA support. There are smaller `nocuda` builds for CPU/Vulkan use; pick the build for your machine. These are standalone downloads, not Python packages to install into IRIS's environment.
-
-Windows (PowerShell, in the directory where you saved it):
-
-```powershell
-.\koboldcpp.exe
-```
-
-Linux (Bash, in the download directory):
-
-```bash
-chmod +x koboldcpp-linux-x64
-./koboldcpp-linux-x64
-```
-
-In the launcher, select your GGUF, choose the acceleration backend/GPU layers appropriate to your machine, and load it. Leave this process running in its own terminal while IRIS runs in another. Open `http://127.0.0.1:5001` and make sure the model answers there first. Keep it local; you don't need a tunnel or public server for this.
-
-For Gemma 4 26B MoE, one download source is [ggml-org's Gemma 4 26B A4B instruct GGUF repository](https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/tree/main). Use its **Files and versions** tab and choose a quantisation that fits your machine, including room for context. A split GGUF needs all its parts in the same directory. IRIS only sends text, so it doesn't need an image/audio projector. Use a current KoboldCPP release and the model's matching chat template/Jinja support for the chat-completions API; don't carry over the old Vicuna template from these early experiments. Check KoboldCPP's console if replies look oddly formatted. The correct settings depend on the model file; this isn't a claim that every Gemma quant has been tested here.
-
-I've also had good results with [llama.cpp](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md), although I found it harder to set up and to see what was going back and forth. A server launch looks like this; replace the model path with your own:
+Once your environment is active, these commands are the same on all platforms.
+On the **PC server**:
 
 ```sh
-llama-server --model path/to/model.gguf --alias local-model --host 127.0.0.1 --port 8080
+python -m pip install -e ".[whisper,kokoro]"
 ```
 
-That's the Linux form. With a Windows binary in your current directory, use `.\llama-server.exe --model "C:\Models\model.gguf" --alias local-model --host 127.0.0.1 --port 8080` in PowerShell.
-
-For that, set IRIS's base URL to `http://127.0.0.1:8080/v1`. Add the acceleration settings appropriate to your hardware; the command above isn't a GPU tuning recipe. KoboldCPP ran faster in my setup, but I haven't done a like-for-like comparison.
-
-[Ollama](https://docs.ollama.com/api/openai-compatibility) uses `http://127.0.0.1:11434/v1`; set `model` to the name of a model you've pulled locally. Current text-generation-webui can also provide a compatible API. These servers share the chat endpoint, but their model names, chat templates, supported parameters and defaults can differ.
-
-Run `python iris.py --check` to see the model IDs advertised by the server, then `python configure.py` to choose the address, model name, recogniser, voice engine, activation and sounds. If your server uses another address/port, configure that first and rerun the check. The script writes `local-config.json`, which stays out of Git. The default model name is `local-model`; use the ID your server advertises when it requires a particular name. You don't need to create an Oobabooga character called Iris any more; `system_prompt` supplies her instructions.
-
-For a first KoboldCPP + faster-whisper run, these are the choices I'd make:
-
-| Question | Answer |
-| --- | --- |
-| Chat base URL | `http://127.0.0.1:5001/v1` (unless you changed its port) |
-| Model name | Copy the model ID from `--check` |
-| Speech recognition | `whisper` |
-| Speech output | `pyttsx3` |
-| Start listening | `enter` |
-| Feedback sounds | `yes`, or `no` if you prefer |
-| Allow remote services | `no` when both programs run on this machine |
-
-The same answers apply on Windows and Linux. Leave Whisper at CPU/int8 for the first try, especially if your LLM is already using the GPU. Its default `base.en` is an English recognition model; it's separate from the Gemma model you've loaded into KoboldCPP.
-
-### 2. Try a text conversation
+On the **laptop or Pi client**:
 
 ```sh
-python iris.py --check
-python iris.py --text
+python -m pip install -e ".[microphone]"
 ```
 
-These commands work on both systems after environment setup. The check asks the server for its model list. Some compatible servers don't implement that route; if it fails, check the server console and try text mode. Text mode doesn't load a speech model, initialise a voice, or open an audio device. Type `exit` to finish.
-
-To see what IRIS is sending and receiving, add `--trace`. It prints the conversation and request parameters to the terminal, not a log file. API keys aren't included. Leave it off when you don't want conversation text in diagnostic output. This shows IRIS's messages, not the final prompt your server builds with its chat template; use the server's diagnostics for that.
-
-### 3. Set up speech, then talk
-
-```sh
-python iris.py --download-models
-python iris.py --list-microphones
-python iris.py
-```
-
-These commands are also shared by Windows and Linux. The download command is the explicit online setup step for the selected recogniser. For the default `base.en`, faster-whisper fetches the converted model from Hugging Face into the usual model cache; no manual speech-model download is needed. Leave the internet available until this command finishes. Ordinary startup only loads local/cached speech model files. You can choose a different model or a local model directory in the config. This isn't a claim that one model will be best on every machine.
-
-The microphone list shows indices as well as names. If the default is wrong, edit `local-config.json` and set `"microphone_index": 3` (substitute your device's index). You don't need another Python package for that step.
-
-Hugging Face may print a couple of warnings during that first download. If the progress reaches 100% and IRIS says "Done", neither of these means the model failed to download:
-
-- **Xet isn't installed:** the downloader uses ordinary HTTP instead. That's fine; Xet is an optional transfer helper, not part of recognising your speech. If downloads are slow and you'd like to try it, `python -m pip install hf_xet` in the activated IRIS environment works on supported Windows/Linux platforms. It's unnecessary to repeat a successful model download just for this.
-- **Windows can't create cache symlinks:** the cache still works, but may use more disk space because it can't share duplicate files as efficiently. IRIS doesn't require administrator rights or Developer Mode. See [Hugging Face's cache explanation](https://huggingface.co/docs/huggingface_hub/guides/manage-cache) if you want to change how that works. Linux usually supports symlinks already, though the filesystem can matter there too.
-
-If you understand that cache tradeoff and just want to hide the symlink warning, set `$env:HF_HUB_DISABLE_SYMLINKS_WARNING = '1'` in Windows PowerShell, or `export HF_HUB_DISABLE_SYMLINKS_WARNING=1` in Linux Bash, before starting IRIS. That hides the warning; it doesn't change how caching works. There's no need to do this for normal use.
-
-With Enter activation, press Enter, wait for the listening cue, and speak. With Space activation on Windows, wait for the "ready: hold Space" message, keep the IRIS terminal focused, hold Space while speaking, and release it to send the turn. Say `exit` to finish, or use Ctrl-C. Automatic modes wait up to ten seconds for speech to begin and finish a turn on a pause; Space mode uses key release instead. The thirty-second recording cap still applies to both, and you can adjust it with `phrase_time_limit`. This is a turn-by-turn conversation: she finishes speaking before listening again.
-
-If you don't want to install the speech dependencies yet, install just `python -m pip install -e .` and use text mode first.
-
-## Configuration and privacy
-
-The complete set of defaults is in `config_template.json`; copy settings you want to change into `local-config.json`, or use the configuration script. Unknown fields and invalid choices produce an error before the microphone opens. Environment variables named `IRIS_<SETTING>` override the file, which overrides the built-in defaults. For example, `IRIS_MODEL`, `IRIS_BASE_URL` and `IRIS_MAX_TOKENS`. Use `--config path/to/config.json` to choose another file.
-
-By default, chat is restricted to a loopback address and speech uses local engines. A local address can't tell us whether your server is forwarding to a cloud model, so check its settings too. There is no automatic switch to a hosted service if something fails, and IRIS doesn't save recordings or conversation history to disk.
-
-"OpenAI-compatible" is the API format, not a requirement to use OpenAI or ChatGPT. To use a hosted endpoint, or another machine on your LAN, set its exact `base_url` and `model`, and explicitly set `allow_remote` to `true`. That setting also permits the Google speech options. Audio goes to Google with online recognition; reply text goes to Google with gTTS; conversation messages go to whichever chat endpoint you've configured. Choosing a remote endpoint doesn't make the local speech engines remote.
-
-Put credentials in `IRIS_API_KEY`, not your JSON file. The old documentation's `OPEN_AI_API_KEY` spelling was wrong; this refresh consistently uses `IRIS_API_KEY`. A hosted provider may have requirements beyond the small chat-completions subset used here.
-
-For example, to override the model just for this terminal, use `$env:IRIS_MODEL = 'your-model-id'` in Windows PowerShell or `export IRIS_MODEL='your-model-id'` in Linux Bash. Set `IRIS_API_KEY` the same way if your server requires it. These terminal settings take priority over the config file; open a fresh terminal or clear them when you want the file's value again.
-
-Old module-name configuration fields are recognised for the existing speech, activation and sound choices. An old Oobabooga config points to its current `/v1` API on port 5000 and prints a migration notice; your server needs that API enabled. An old GPT config requires an explicit endpoint and a current model name. Back up that file and run the configuration script afresh if you'd rather start clean.
-
-## Speech choices
-
-### Speech-to-text: Whisper, wav2vec2, or Google
-
-Whisper is the new default, through [faster-whisper](https://github.com/SYSTRAN/faster-whisper). It includes voice activity filtering so we can skip non-speech regions when transcribing. We still record the turn before transcription; this isn't live partial transcription as you speak. CPU int8 is the simple starting point. GPU inference needs the CUDA/cuDNN setup required by the installed CTranslate2 version; see the upstream instructions before switching `device` and `compute_type`.
-
-The original wav2vec2 option is still there: run `python -m pip install -e ".[wav2vec2]"` in the activated environment on either platform, choose `wav2vec2`, and run the model download step. With uv, use `uv sync --locked --python 3.12 --extra microphone --extra wav2vec2` instead. Its audio conversion now explicitly resamples to 16 kHz and normalises PCM values, with inference mode enabled.
-
-Google recognition uses SpeechRecognition's online adapter. Choose `google` and enable remote access if that's what you want. It isn't part of the private setup.
-
-### Text-to-speech: Kokoro, system voices, or Google
-
-#### Kokoro: a local neural voice
-
-If you'd like something a bit less like the computer's built-in voice, try Kokoro. IRIS uses the ONNX version on CPU, so it doesn't need a second GPU setup alongside your LLM. The model stays loaded between replies. There is no hosted speech service involved.
-
-In your activated IRIS environment, install the extra on **Windows or Linux**:
+If you're running both on one machine, install both sets together:
 
 ```sh
 python -m pip install -e ".[microphone,whisper,kokoro]"
 ```
 
-If you've opened a new terminal, activate it first with `.\.venv\Scripts\Activate.ps1` on Windows or `source .venv/bin/activate` on Linux. You can also use `.\.venv\Scripts\python.exe` or `./.venv/bin/python` directly. With uv, use this on either system instead of pip:
+The server uses Whisper for recognition and Kokoro for its voice. The client
+doesn't need either model. Neither ordinary startup nor an import downloads
+model files. The first download is a separate setup step below.
+
+If you prefer uv, the checked-in lockfile provides the reproducible route:
+`uv sync --locked --extra whisper --extra kokoro` on the server, or
+`uv sync --locked --extra microphone` on the client. Include all three extras
+for one machine, and run subsequent commands with `uv run --no-sync python`
+instead of `python`. Use a supported interpreter, for example with `--python 3.12`.
+You can pick pip or uv; you don't need to use both.
+
+## 2. Configure the PC server
+
+Get your chat model working first. Iris doesn't load the chat model itself; it
+uses an OpenAI-compatible chat endpoint. That describes the API format, rather
+than requiring an OpenAI account or a cloud model.
+
+Common local addresses are:
+
+| Model server | Base URL |
+| --- | --- |
+| KoboldCPP | `http://127.0.0.1:5001/v1` |
+| llama.cpp server | `http://127.0.0.1:8080/v1` |
+| Ollama | `http://127.0.0.1:11434/v1` |
+
+Use the address your model server actually reports, and check that it answers in
+its own interface first. Keep it running in its own process while Iris runs.
+The model endpoint can stay on localhost: the laptop or Pi connects to Iris,
+which talks to the model on its behalf.
+
+On the PC, run:
 
 ```sh
-uv sync --locked --python 3.12 --extra microphone --extra whisper --extra kokoro
+python iris.py configure
+python iris.py --check
 ```
 
-Then, on either system (use `uv run --no-sync python` instead of `python` if you chose uv):
+The configuration script asks for the model address and name, the recogniser,
+and the voice and speaking speed. If you don't know the model name yet, the
+check command lists the IDs advertised by servers that support `/v1/models`.
+Use the appropriate ID and rerun configuration if necessary. A server without
+that listing route can still work; try the client text test below.
+
+These are the normal choices for a local setup:
+
+| Question | What I'd start with |
+| --- | --- |
+| Chat base URL | The address from your model server, including `/v1`. |
+| Model name | Its advertised model ID, or the model you've pulled in Ollama. |
+| Speech recognition | `whisper` is the local default. |
+| Voice | Press Enter for Heart (`af_heart`), or try Emma (`bf_emma`) for British English. |
+| Talking speed | Start with `1.0`, then change it once you've heard her. |
+| Outbound remote services | Leave this off when the model runs on this PC and speech stays local. |
+
+Kokoro is selected automatically because it produces the audio that goes back
+to the client. There is no server “start listening” setting: the client owns the
+microphone and you choose how it listens when you launch it.
+
+“Outbound remote services” controls whether the PC can send conversation or
+speech to another machine or an online service. It doesn't need to be enabled
+for a laptop or Pi to connect to Iris. With a local model, Whisper and Kokoro,
+leave it off.
+
+Configuration goes into `local-config.json`, which stays out of Git. The full
+server defaults are in `config_template.json`; environment values named
+`IRIS_<SETTING>` override the file. Unknown settings are rejected. Earlier
+configuration files have their desktop-only fields removed when loaded, and
+old system/Google voice choices are switched to Kokoro. Run configuration again
+to save the cleaned-up file.
+
+Now download the server's speech models:
 
 ```sh
-python configure.py
-python iris.py --download-voices
-python iris.py --test-voice
-python iris.py
+python iris.py --download-models
 ```
 
-Choose `kokoro` for speech output. The configuration script prints a few voice suggestions and lets you choose one there and then. I'd try Heart first, or Emma if you want British English:
+Whisper defaults to `base.en` on CPU with int8 computation. Kokoro uses its CPU
+ONNX model and voice pack. Keep the internet available until setup finishes;
+afterwards normal startup uses the cached files. Kokoro's fixed files are checked
+for size and SHA-256 hash. Use `--download-voices` to prepare just Kokoro, or
+`--list-voices` to see the voice suggestions without loading a model.
 
-| Voice ID | Voice | Suggested use |
-| --- | --- | --- |
-| `af_heart` | Heart, American female | Default starting point; the upstream voice guide rates it highly. |
-| `bf_emma` | Emma, British female | A good starting point if you'd prefer a British voice. |
-| `bm_george` | George, British male | One to try for the original Jarvis-ish idea. |
-| `bm_fable` | Fable, British male | Another British male option to compare with George. |
-| `af_bella` | Bella, American female | An alternative to Heart. |
-| `am_michael` | Michael, American male | An American male option. |
+## 3. Set the droid connection key
 
-Those are suggestions, not a promise that everyone will prefer the same voice. The labels and voice IDs come from the [Kokoro voice guide](https://huggingface.co/hexgrad/Kokoro-82M/blob/main/VOICES.md). `python iris.py --list-voices` shows the suggestions without loading a model. You can change `kokoro_voice` in `local-config.json` and rerun `--test-voice` without involving the microphone or LLM. The voice's accent chooses British/American pronunciation automatically. `kokoro_speed` defaults to `1.0`; values below that slow it down, and values above it speed it up (supported range `0.5` to `2.0`). Try `"kokoro_speed": 1.3` if the normal pace feels a bit leisurely. The configure script asks for this too; restart IRIS after changing it, or use `python iris.py --test-voice` to hear a sample. The system-voice `rate` setting isn't used by Kokoro.
+Iris needs a shared key so the client can connect to the server. Choose one and
+set **the same value in both terminals**, whether those terminals are on one
+computer or two. The variable is called `IRIS_DROID_TOKEN`.
 
-`--download-voices` downloads the fixed [Kokoro ONNX v1.0 model and voice pack](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0), about **354 MB** in total. That includes the voices above, rather than a separate model download for each one. It checks file sizes and SHA-256 hashes, reuses verified downloads, and doesn't replace an existing file with a partial download. `--download-models` also includes Kokoro when it's your selected TTS engine, so it can prepare both recognition and synthesis together.
-
-By default these files live in `C:\Users\<you>\.cache\iris\kokoro` on Windows or `~/.cache/iris/kokoro` on Linux. Set `kokoro_model_dir` to another directory if you prefer. Ordinary startup and synthesis only read those local files; missing files produce a setup instruction instead of an automatic download. The extra includes its eSpeak NG phonemizer dependency; this ONNX path doesn't need PyTorch or a separate Kokoro server. Linux still needs the normal PortAudio/device setup described above. The system voice remains selectable as `pyttsx3` if you want to switch back.
-
-#### System voices and Google
-
-pyttsx3 uses your installed system voices. It starts with the system default now, rather than assuming you've got my particular Australian Windows voice. Set `voice` to an installed voice ID if you have a preference. I found this a useful, quick option for numbers and things like "St Peters" versus "Peter St." Voice quality and pronunciation depend on the installed engine, of course.
-
-On Windows, IRIS pins pyttsx3 to 2.98. Version 2.99 has a [reported SAPI regression](https://github.com/nateshmbhat/pyttsx3/issues/419) where the greeting speaks but later replies are silently skipped. If you installed an earlier revision of IRIS and hit that, stop IRIS, run `python -m pip install -e ".[microphone,whisper]"` in its activated environment, and start it again. On the uv route, rerun your locked sync command instead. Linux keeps its separate pyttsx3 version range; this pin addresses the Windows driver issue.
-
-gTTS is still available if you don't mind sending reply text online: run `python -m pip install -e ".[online]"` in the activated environment on either platform, choose `gtts`, and enable remote access. With uv, add `--extra online` to your sync command, retaining the microphone/recogniser extras you're using. Its MP3 playback needs **both ffmpeg and ffprobe executables on PATH**. Check `ffmpeg -version` and `ffprobe -version` in a new terminal after installation. This is separate from the feedback sounds, which no longer need them.
-
-For that optional FFmpeg setup, Windows users can follow the Windows builds linked from [FFmpeg's download page](https://ffmpeg.org/download.html), extract the tools, and add the directory containing `ffmpeg.exe` and `ffprobe.exe` to their user PATH. On Ubuntu/Debian Linux, `sudo apt install ffmpeg` supplies the tools; use your distribution's equivalent elsewhere. Skip this entirely for the default local speech setup.
-
-### What about newer speech models?
-
-There are more interesting choices now than when I started this. Kokoro is integrated above; [Piper](https://github.com/OHF-Voice/piper1-gpl) would be another local option to compare. [Qwen3-ASR](https://huggingface.co/Qwen/Qwen3-ASR-1.7B) and [Qwen3-TTS](https://arxiv.org/abs/2601.15621) also give us examples of streaming recognition and controllable, streaming synthesis. Piper and those Qwen models aren't integrated here. Bark was suggested in an issue too; I haven't made it a dependency or tested it here.
-
-The useful comparison is how well a voice handles ordinary replies, how long it takes to start speaking, and what hardware it needs. Starting speech sentence by sentence, recognising the end of a turn, and allowing interruptions would make good follow-up lessons. For now, I've kept the basic pipeline visible rather than hiding it inside an all-in-one voice service.
-
-## Activation and feedback
-
-- **Enter:** the portable terminal option. Press once to start a turn.
-- **Space:** hold-to-talk on Windows. Wait for the ready message, hold Space while speaking, then release it. Pauses don't end the recording while you're holding it. The microphone is already open before readiness is announced, with a tiny local lead-in buffer (about 0.2 seconds) to protect opening syllables; older waiting audio is discarded. It doesn't calibrate or play a listening beep after your keypress. If you reach the recording time limit, release Space before starting another turn. Linux users should choose Enter or Continuous; the Space key-state adapter is Windows-specific and needs the terminal focused to start a turn.
-- **Continuous:** listen whenever it's your turn, finishing on a pause. This is still available if you prefer using a physical microphone mute button; it hasn't been replaced by the Space option.
-- **Wake:** the original "Iris, pay attention" / "Hey Iris" idea, using the selected local recogniser. Say "stop paying attention" to return to idle. This still transcribes short recordings to find the phrase; it isn't a dedicated wake-word model. It requires local recognition, and can miss phrases or take a while in a noisy room.
-
-The beeps and bleeps help when you're away from the screen. They're original procedural WAV cues; see [the sound README](iris_sounds/README.md) to regenerate or replace them. Missing or unplayable feedback falls back to silence. Set `sounds` to `false` if you prefer a quiet life.
-
-## If it gets stuck
-
-- **Microphone problems:** check OS microphone permissions, use `--list-microphones`, and set `microphone_index` if the default is wrong. Bluetooth devices sometimes connect as speakers without enabling the microphone; I used to have to reconnect my teleconferencing puck.
-- **Only the greeting is spoken on Windows:** check `python -m pip show pyttsx3`. If it says 2.99, reinstall the project dependencies as described in the system-voices section, then restart IRIS. No extra voice setting is needed for the default system voice.
-- **Missing model:** run `--download-models` during setup. Offline startup deliberately won't fetch missing files. Check the selected recogniser's optional dependencies too.
-- **Connection, model or HTTP errors:** get a text conversation working first and check the server's own console. Context limits and prompt templates are the server's business; increasing IRIS's timeout won't make an overloaded model faster.
-- **Funny apostrophes:** the old Oobabooga display history could contain HTML-escaped text. The new chat route uses plain replies. If your particular server still escapes them, set `reply_encoding` to `html`, or `double-html` for double-escaped replies. Leave it at `text` otherwise, so a discussion of literal HTML entities isn't rewritten.
-- **FFmpeg warnings:** these should no longer come from bundled feedback. Check whether you've selected gTTS, which still decodes MP3.
-- **A missing optional package:** install the matching extra in the same environment where you run IRIS. Installing Whisper doesn't install the old wav2vec2 stack, or vice versa.
-
-## Reading and checking the code
-
-`iris.py` puts the pieces together and owns the microphone. `iris_chat_engines/compatible.py` sends text messages and owns the conversation history. Speech, activation and feedback adapters live in their existing directories. `iris_settings.py` checks configuration with Pydantic; `iris_audio.py` is the small PCM conversion step.
-
-Type hints help catch mistakes while writing Python. Pydantic checks the configuration and server data when the program actually runs. They're doing different jobs. Optional model libraries are imported only when their adapter is selected; importing IRIS doesn't start listening or download a model.
-
-For development:
+You can use a short key if you want to. Iris will recommend a longer one but
+will still start. To generate a random one, run this once and copy the result:
 
 ```sh
-python -m pip install -e ".[dev]"
+python -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+**Windows PowerShell:**
+
+```powershell
+$env:IRIS_DROID_TOKEN = 'paste-your-chosen-key-here'
+```
+
+**Windows Command Prompt:**
+
+```bat
+set "IRIS_DROID_TOKEN=paste-your-chosen-key-here"
+```
+
+**macOS zsh, Linux Bash, and Raspberry Pi OS:**
+
+```sh
+export IRIS_DROID_TOKEN='paste-your-chosen-key-here'
+```
+
+Start the server or client from the terminal where you set the variable. These
+commands apply to that terminal session and the programs launched from it;
+they don't update an already-running program or carry over into a new terminal.
+If you're using an IDE or a service, put the value in its launch environment.
+Keep the key out of committed configuration files.
+
+### Does my LLM need a key as well?
+
+There are two connections here: **client → Iris server → model server**.
+`IRIS_DROID_TOKEN` belongs to the first connection. Most local model servers
+work without a key on the second, in which case there's nothing else to set.
+
+If your model endpoint requires authentication, its key belongs in
+`IRIS_API_KEY` on the **PC server only**. That value is sent to the model endpoint;
+it isn't the key that lets the laptop or Pi connect to Iris. Use the key your
+model endpoint expects. Iris doesn't impose a minimum length on it either.
+
+```powershell
+# Windows PowerShell, on the PC server only, if the model requires a key.
+$env:IRIS_API_KEY = 'your-model-endpoint-key'
+```
+
+```bat
+REM Windows Command Prompt, on the PC server only, if the model requires a key.
+set "IRIS_API_KEY=your-model-endpoint-key"
+```
+
+```sh
+# macOS, Linux or Raspberry Pi OS, on the server only, if the model requires a key.
+export IRIS_API_KEY='your-model-endpoint-key'
+```
+
+This is an optional credential for your chosen model endpoint, rather than a
+second key everybody needs to invent for Iris. If the endpoint is outside the
+PC, you'll also need to enable outbound remote services in configuration.
+
+## 4. Start Iris and try a conversation
+
+### Both halves on one computer
+
+In the first terminal, with your environment active and the droid key set:
+
+```sh
+python iris.py server
+```
+
+In a second terminal in the same repository, activate the environment, set the
+same key, and try a text turn:
+
+```sh
+python iris.py client --text
+```
+
+This goes through the same Iris server as voice does; it just skips microphone
+capture, transcription and synthesis for the turn. Type `exit` to finish.
+Then run the voice client:
+
+```sh
+python iris.py client
+```
+
+Press Enter, wait for the short listening cue, then speak. The terminal shows
+what Iris heard and her reply, and the client plays her voice. Say `exit` or
+press Ctrl-C to stop the client. The server stays running until you stop it.
+
+### A laptop or Pi talking to the PC
+
+On the PC, allow Iris to listen for connections from another machine:
+
+```sh
+python iris.py server --host 0.0.0.0
+```
+
+On the laptop or Pi, use the PC's actual LAN address:
+
+```sh
+python iris.py client --server http://192.168.1.10:8765 --text
+```
+
+Replace `192.168.1.10` with your PC's address. Once the text test works, leave off
+`--text` to use the microphone and speaker. The address is Iris's port `8765`,
+not the model server's address or port. `0.0.0.0` is a listening address, not an
+address to give the client; `127.0.0.1` always means the machine you're on.
+
+Allow inbound TCP port 8765 in the PC firewall for your private LAN, ideally
+restricted to the client. The client doesn't need an incoming firewall rule.
+Both machines need to be able to reach each other; guest Wi-Fi sometimes keeps
+devices apart even when they're connected to the same router.
+
+### What opening the LAN listener means
+
+By default Iris listens on `127.0.0.1`, so only this computer can connect.
+`--host 0.0.0.0` listens on all of its IPv4 interfaces, including the LAN, subject
+to the computer's firewall rules. That lets the laptop or Pi connect.
+
+For a typical home network behind an IPv4 NAT router, this **doesn't by itself
+make Iris accessible from the internet**. Incoming internet traffic would normally
+need a port-forwarding rule, or another existing route into your network, to
+reach it. You don't need to change the router for the PC and droid to talk on
+the same LAN. [TP-Link's port-forwarding explanation](https://www.tp-link.com/us/support/faq/1379/)
+shows how router forwarding makes a service inside the home reachable from outside.
+
+I'm using this as a home-LAN setup, and I'm not making a claim about the safety
+of everybody else's network. Your routing and firewall configuration may differ.
+In particular, a public address, an existing port-forward/DMZ rule, a tunnel or
+VPN can change who can reach the PC. Iris doesn't create router mappings or
+public tunnels. Keep it on your trusted network and don't forward this port to
+the internet. This small HTTP service doesn't encrypt the key or conversation;
+if you need to cross an untrusted network, use an encrypted VPN or HTTPS proxy.
+
+## Listening and audio devices
+
+The client defaults to Enter-to-talk. Use `--activation continuous` to listen
+whenever it's your turn. These are client choices; changing the server config
+doesn't change when the microphone opens.
+
+To list microphone indices on the client:
+
+```sh
+python iris.py client --list-microphones
+```
+
+Pass your chosen index with `--microphone N`. For output devices, run
+`python -m sounddevice` and use `--speaker N`. The microphone and speaker lists
+come from different audio APIs, so their indices don't necessarily match.
+
+The normal turn limit is 30 seconds. `--phrase-time-limit` changes it on the
+client; don't exceed the server's `phrase_time_limit` setting. The client
+`--listen-timeout` controls how long it waits for speech to start.
+
+### Local wake detection
+
+For hands-free use, install the optional Vosk library on the client:
+
+```sh
+python -m pip install "vosk>=0.3.45,<0.4"
+```
+
+Download and unpack a small English model from the official
+[Vosk model list](https://alphacephei.com/vosk/models), such as
+`vosk-model-small-en-us-0.15`. Point Iris at the unpacked folder, not the ZIP or
+its parent directory:
+
+```sh
+python iris.py client --server http://192.168.1.10:8765 --activation wake --wake-model ./vosk-model-small-en-us-0.15
+```
+
+Say “hey iris”, wait for the listening cue, then give your message. You can
+change the phrase with `--wake-phrase`, using words the model knows. Background
+audio stays on the client; it isn't sent to the PC while Iris waits for her name.
+This uses constrained local speech recognition, so expect to try it with your
+own accent, microphone, distance and room noise. It isn't a promise that every
+room will give perfect wake detection.
+
+## If something doesn't work
+
+- If the connection fails, check the PC's address, the server's listening address,
+  the private-network firewall rule and whether the model and Iris processes are
+  both still running.
+- An HTTP `401` means the client and Iris server have different droid keys.
+- An HTTP `422` means the server didn't recognise speech. Try again after the cue.
+- An HTTP `502` means Iris couldn't get a model reply. Check its address, model
+  name and authentication, then try `python iris.py --check` on the PC.
+- An HTTP `503` means the server's speech service failed. Check its console,
+  installed extras and cached model files.
+- If the microphone doesn't work, check permissions and the selected device.
+  A Bluetooth speaker doesn't necessarily provide a working microphone too.
+- If a model is missing, run `python iris.py --download-models` on the PC while
+  online. Startup deliberately doesn't download missing files for you.
+
+Iris doesn't automatically resend a failed network turn. The PC might have
+finished it before the connection dropped, so resending could repeat a reply.
+Restart the client for a fresh conversation if things seem out of step.
+
+## Configuration, privacy and the code
+
+Conversation history stays in the PC's memory, with the configured number of
+turns and up to 16 recent client sessions. A fresh client run starts a fresh
+session; saying `exit` clears that session. Restarting the server clears them
+all. This code doesn't save recordings or chat history to disk. The server's
+`trace` setting can print conversation text to its terminal if you enable it.
+
+The local setup keeps model traffic on the PC and sends recordings and replies
+between the client and PC. There is no automatic fallback to a hosted service.
+A local model address can't tell us whether that model server itself forwards
+data elsewhere, so check its configuration too. Optional `wav2vec2` recognition
+needs its matching extra, while Google recognition requires outbound remote
+services and sends audio online. Neither is needed for the normal Whisper setup.
+
+`iris.py` provides the commands. `iris_droid/server.py` owns the speech models,
+model connection and client sessions, while `iris_droid/client.py` owns recording
+and playback. The recognition adapters live in `iris_stt_engines`, Kokoro in
+`iris_tts_engines`, and chat requests in `iris_chat_engines/compatible.py`.
+`iris_settings.py` checks server configuration before models are loaded.
+
+For development, install `python -m pip install -e ".[dev]"`, then run:
+
+```sh
 ruff check .
 ruff format --check .
 mypy
 pytest
 ```
 
-Or use `uv sync --locked --extra dev` and run those commands through `uv run --no-sync`. Tests use fake devices/models and a mock HTTP transport, so they don't need a microphone, GPU, API key or downloads. CI runs the deterministic checks on Windows and Linux. Automated checks aren't a listening test: real voice quality, offline inference and server-specific model behaviour still need checking on your setup.
+The tests use fake devices and models, plus local HTTP tests. They don't need a
+microphone, GPU, downloaded weights or a working model server. Actual listening
+quality and wake accuracy still need a conversation on the hardware you'll use.
+The [prototypes branch](https://github.com/dkjroot/iris-llm/tree/prototypes/examples)
+keeps the earlier experiments if you're interested in how this started.

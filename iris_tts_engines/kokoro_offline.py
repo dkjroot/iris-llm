@@ -180,22 +180,9 @@ class TTS:
         self.speed = settings.kokoro_speed
         self.language = "en-gb" if self.voice.startswith("b") else "en-us"
 
-    def speak(self, text: str) -> None:
-        if not text.strip():
-            return
-        import sounddevice as sd
-
-        audio, rate = self.synthesize(text)
-        sd.play(audio, rate, blocking=True)
-
     def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:
         """Generate samples without opening a speaker (also used by the droid server)."""
         samples, rate = self.backend.create(
             text, voice=self.voice, speed=self.speed, lang=self.language, trim=False
         )
         return prepare_audio(samples, rate), rate
-
-    def close(self) -> None:
-        import sounddevice as sd
-
-        sd.stop()

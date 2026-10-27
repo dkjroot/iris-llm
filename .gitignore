@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 # Old feedback samples had unresolved provenance; do not reintroduce downloads.
+.env
 *~
 iris_sounds/*.mp3
 
@@ -168,6 +169,8 @@ cython_debug/
 local-config.json
 
 # Local working notes
-/AGENTS.md
+AGENTS.md
+DEVELOPMENT.md
+agent_docs/
 /TODO.md
 /.cache/
