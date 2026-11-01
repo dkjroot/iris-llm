@@ -123,12 +123,19 @@ def record_turn(
     wake: WakeDetector | None,
     speaker: int | None = None,
     buffer_frames: int = DEFAULT_MICROPHONE_BUFFER,
+    pause_threshold: float = 1.2,
 ) -> bytes:
     import speech_recognition as sr
 
+    if not 0.5 <= pause_threshold <= 10:
+        raise ValueError("Pause threshold must be between 0.5 and 10 seconds")
     recognizer = sr.Recognizer()
+    recognizer.pause_threshold = pause_threshold
     with open_microphone(microphone, buffer_frames) as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.3)
+        recognizer.adjust_for_ambient_noise(source, duration=0.6)
+        # Some SpeechRecognition versions also adapt during the phrase. Steady
+        # speech then raises the threshold above the voice and ends capture early.
+        recognizer.dynamic_energy_threshold = False
         if wake is not None:
             wake.wait(source)
         # A short acknowledgement lets a headless droid tell us when to speak.
@@ -167,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--phrase-time-limit", type=float, default=30)
     parser.add_argument("--listen-timeout", type=float, default=10)
+    parser.add_argument(
+        "--pause-threshold",
+        type=float,
+        default=1.2,
+        help="Seconds of quiet that end a recording (0.5–10; default: 1.2)",
+    )
     args = parser.parse_args(argv)
     try:
         if args.list_microphones:
@@ -177,6 +190,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
+        if not 0.5 <= args.pause_threshold <= 10:
+            raise ValueError("Pause threshold must be between 0.5 and 10 seconds")
         if not 256 <= args.microphone_buffer <= 65536:
             raise ValueError("Microphone buffer must be between 256 and 65536 frames")
         with httpx.Client(
@@ -209,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
                             wake,
                             args.speaker,
                             args.microphone_buffer,
+                            args.pause_threshold,
                         )
                     except sr.WaitTimeoutError:
                         print("Didn't hear speech. Try again.")

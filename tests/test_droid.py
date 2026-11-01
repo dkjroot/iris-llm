@@ -380,7 +380,7 @@ def test_client_passes_requested_buffer_to_recording():
         assert (
             iris.main(["client", "--activation", "continuous", "--microphone-buffer", "16384"]) == 0
         )
-    assert record.call_args.args[-1] == 16384
+    assert record.call_args.args[5] == 16384
 
 
 @pytest.mark.parametrize("frames", [0, 255, 65537])
@@ -478,3 +478,93 @@ def test_silence_does_not_echo_or_send():
         assert iris.main(["client", "--activation", "continuous", "--echo-recording"]) == 0
     play.assert_not_called()
     turn.assert_not_called()
+
+
+class SyntheticMicrophone(sr.AudioSource):
+    """Feed native-rate PCM through the real recognizer without audio hardware."""
+
+    def __init__(self, pcm, rate=44100, chunk=8192):
+        self.SAMPLE_RATE = rate
+        self.SAMPLE_WIDTH = 2
+        self.CHUNK = chunk
+        self._data = io.BytesIO(pcm)
+        self.stream = self
+
+    def read(self, frames):
+        return self._data.read(frames * 2)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self._data.close()
+
+
+def synthetic_audio(sections):
+    return b"".join(
+        np.full(round(seconds * 44100), amplitude, dtype="<i2").tobytes()
+        for seconds, amplitude in sections
+    )
+
+
+@pytest.mark.parametrize("chunk", [8192, 16384])
+def test_sustained_speech_does_not_raise_its_own_silence_threshold(chunk):
+    ambient = SyntheticMicrophone(synthetic_audio([(1, 0)]), chunk=chunk)
+    speech = SyntheticMicrophone(synthetic_audio([(8, 4000), (3, 0)]), chunk=chunk)
+    with (
+        patch("iris_droid.client.open_microphone", side_effect=[ambient, speech]),
+        patch("iris_droid.client.play_wav"),
+    ):
+        pcm, rate = read_wav(record_turn(1, 30, 10, None, buffer_frames=chunk))
+    # Default dynamic adaptation cuts this steady signal off after about 2 s.
+    samples = np.frombuffer(pcm, dtype="<i2")
+    assert rate == 16000
+    assert 7.9 <= np.count_nonzero(samples) / rate <= 8.1
+    assert len(samples) / rate < 10  # Ends on silence, not the phrase cap or EOF.
+
+
+def test_sentence_survives_short_pause_and_softer_ending():
+    ambient = SyntheticMicrophone(synthetic_audio([(1, 0)]))
+    speech = SyntheticMicrophone(synthetic_audio([(1, 4000), (0.9, 0), (2, 1000), (3, 0)]))
+    with (
+        patch("iris_droid.client.open_microphone", side_effect=[ambient, speech]),
+        patch("iris_droid.client.play_wav"),
+    ):
+        pcm, rate = read_wav(record_turn(1, 30, 10, None))
+    samples = np.frombuffer(pcm, dtype="<i2")
+    assert np.count_nonzero(samples == 1000) / rate > 1.9
+    assert len(samples) / rate >= 3.9
+
+
+@pytest.mark.parametrize("pause, expected_second_phrase", [(1.2, False), (2.5, True)])
+def test_configured_pause_controls_real_phrase_endpoint(pause, expected_second_phrase):
+    ambient = SyntheticMicrophone(synthetic_audio([(1, 0)]))
+    speech = SyntheticMicrophone(synthetic_audio([(1, 4000), (2, 0), (1, 1000), (4, 0)]))
+    with (
+        patch("iris_droid.client.open_microphone", side_effect=[ambient, speech]),
+        patch("iris_droid.client.play_wav"),
+    ):
+        pcm, _ = read_wav(record_turn(1, 30, 10, None, pause_threshold=pause))
+    assert bool(np.any(np.frombuffer(pcm, dtype="<i2") == 1000)) is expected_second_phrase
+
+
+def test_client_passes_pause_setting_to_capture():
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("iris_droid.client.record_turn", side_effect=KeyboardInterrupt) as record,
+    ):
+        assert iris.main(["client", "--activation", "continuous", "--pause-threshold", "2"]) == 0
+    assert record.call_args.args[6] == 2
+
+
+@pytest.mark.parametrize("pause", [0, 0.49, 10.1, float("nan"), float("inf")])
+def test_invalid_pause_setting_does_not_open_audio_or_network(pause):
+    with (
+        patch("iris_droid.client.open_microphone") as microphone,
+        patch("httpx.Client") as transport,
+    ):
+        assert iris.main(["client", "--pause-threshold", str(pause)]) == 1
+        with pytest.raises(ValueError, match="Pause threshold"):
+            record_turn(1, 30, 10, None, pause_threshold=pause)
+    microphone.assert_not_called()
+    transport.assert_not_called()

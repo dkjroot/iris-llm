@@ -503,6 +503,14 @@ After you speak, the microphone closes, the client prints the recording's durati
 
 If the echo contains only the first part of your sentence, the recording was cut short before the server received it. If the whole sentence sounds clear but the printed transcript is incomplete, investigate recognition on the server. This makes it easier to check the audio before changing models or microphone settings. Remove `--echo-recording` when you've finished checking; it adds playback time to every voice turn.
 
+#### Recordings that stop halfway through a sentence
+
+The client briefly calibrates to background noise before the listening cue, then keeps that threshold fixed for the turn. Keep quiet during calibration and speak after `Speak now...`. The threshold doesn't keep rising with your voice while you're talking.
+
+By default, 1.2 seconds of audio below the calibrated threshold ends the recording. If you pause to think while speaking, add `--pause-threshold 2` to your existing client command to allow a longer gap. This option works with Enter, continuous and wake activation, on all platforms. Keep `--echo-recording` enabled while checking that your whole sentence is captured.
+
+`--pause-threshold` accepts 0.5–10 seconds. A longer value also means a longer wait before Iris sends your finished message. `--listen-timeout` only controls waiting for speech to begin; increasing it won't prevent a sentence ending early. `--phrase-time-limit` is the overall turn cap, so check that too if recordings consistently stop at the same duration.
+
 #### Fast or crackly microphone recordings
 
 The client uses an 8,192-frame microphone buffer (about 186 ms at 44.1 kHz), giving capture more breathing room than the speech library's 1,024-frame default. It also checks for input overflow: if PortAudio reports that samples were lost, the client discards the current recording and stops with an error instead of sending damaged speech to the server. These checks apply while waiting for the wake phrase as well as while recording a message.
