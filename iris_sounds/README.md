@@ -1,22 +1,31 @@
 # IRIS feedback sounds
 
-The four WAV files here are original procedural cues made for IRIS on 20 October
-2026. They use only sine waves and mathematical envelopes, with no recordings,
+The WAV files here are original procedural cues made for IRIS. The initial
+four cues were added on 20 October 2026, with the error cue added on 1 November 2026. They use only sine waves and mathematical envelopes, with no recordings,
 samples, melodies copied from elsewhere, or external sound-generation service.
 The generator and cues are supplied under the repository's
 [GNU GPL version 3](../LICENSE), where copyright applies.
 
 | File | Purpose and character |
 | --- | --- |
-| `chirp.wav` | Ready for push-to-talk: a short, gentle rising chirp. |
+| `chirp.wav` | Ready for the next turn: a short, gentle rising chirp. |
 | `bleep.wav` | Listening is about to begin: one clear, brief mid/high tone. |
-| `longbleep.wav` | Longer feedback cue: two soft descending tones, distinct from the listening cue. Reserved for callers that use it; the current main chat loop does not. |
-| `workinglongquiet.wav` | Loading/transcribing/thinking: very quiet, spaced low pulses for 3.6 seconds. Nonblocking; it is not a promise that a task will finish in that time. |
+| `longbleep.wav` | Recording finished: two soft descending tones, distinct from the listening cue. |
+| `workinglongquiet.wav` | Waiting for the server: low pulses in a 3.6-second loop, repeated until the request finishes or fails. |
+| `error.wav` | No speech or a failed turn: three short low pulses. The terminal explains the error. |
 
-The beeps-and-bleeps provider uses these files locally at their native pitch and
-sample rate. It needs `sounddevice` and its normal NumPy/PortAudio dependencies,
-but no FFmpeg or MP3 decoder for these cues. Choose `iris_sounds.no_sounds` in
-`configure.py` to disable feedback sounds.
+The client owns feedback playback, including in a remote-client setup. Cues use
+its selected `--speaker` device and the same sample-rate conversion as spoken
+replies. Short cues finish with the microphone closed. The working cue plays
+without blocking the server request and stops before speech or further capture,
+on request failure and on Ctrl-C. In wake mode, the ready chirp follows calibration;
+say the wake phrase after that chirp and your message after the listening bloop.
+
+Use `python iris.py client --no-sounds` to disable feedback while keeping spoken
+replies. These commands and options are shared by Windows PowerShell, macOS and
+Linux Bash. Text mode doesn't play cues. Missing or unplayable feedback produces
+a warning and disables cues for that run; it doesn't make the conversation depend
+on optional sound files. No FFmpeg or MP3 decoder is needed.
 
 ## Recreate or change them
 
@@ -31,7 +40,7 @@ PowerShell and Linux Bash. Without activation, use
 python iris_sounds/generate_sounds.py
 ```
 
-The script uses only Python's standard library and writes four mono, 24 kHz,
+The script uses only Python's standard library and writes five mono, 24 kHz,
 16-bit PCM WAV files beside itself. It makes no network requests and does not
 open an audio device. Edit its frequencies, volumes, and durations to make your
 own variations. Smooth fades avoid sharp clicks; the working cue is deliberately
@@ -39,7 +48,7 @@ quieter than the short cues. Start playback at a comfortable device volume.
 
 ## Bring your own sounds
 
-You can instead create or download your own cues and save them under the four
+You can instead create or download your own cues and save them under the five
 filenames above, as **mono, 16-bit PCM WAV** files. Keep the listening cue short
 so it finishes before microphone capture. Use distinctive, gentle sounds with
 little background noise; a quiet working pulse should not mask speech.

@@ -15,7 +15,12 @@ from uuid import uuid4
 
 import httpx
 
-from iris_droid.capture import DEFAULT_MICROPHONE_BUFFER, CheckedMicrophoneStream
+from iris_droid.capture import (
+    DEFAULT_MICROPHONE_BUFFER,
+    CheckedMicrophoneStream,
+    validate_capture_options,
+)
+from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
 from iris_droid.wake import WakeDetector
 
@@ -64,7 +69,7 @@ class DroidClient:
         return TurnReply.model_validate_json(bytes(data))
 
 
-def play_wav(data: bytes, device: int | None = None) -> None:
+def play_wav(data: bytes, device: int | None = None, *, loop: bool = False) -> None:
     import numpy as np
     import sounddevice as sd
     import speech_recognition as sr
@@ -82,23 +87,43 @@ def play_wav(data: bytes, device: int | None = None) -> None:
             )
             pcm = sr.AudioData(pcm, rate, 2).get_raw_data(convert_rate=output_rate)
             rate = output_rate
-        sd.play(np.frombuffer(pcm, dtype="<i2"), rate, device=device, blocking=True)
+        samples = np.frombuffer(pcm, dtype="<i2")
+        if loop:
+            sd.play(samples, rate, device=device, blocking=False, loop=True)
+        else:
+            sd.play(samples, rate, device=device, blocking=True)
     except sd.PortAudioError as error:
         raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
 
 
+def stop_playback() -> None:
+    import sounddevice as sd
+
+    try:
+        sd.stop()
+    except sd.PortAudioError as error:
+        raise OSError(f"Cannot stop feedback playback: {error}") from error
+
+
 @contextmanager
 def open_microphone(
-    device: int | None, buffer_frames: int = DEFAULT_MICROPHONE_BUFFER
+    device: int | None,
+    buffer_frames: int = DEFAULT_MICROPHONE_BUFFER,
+    sample_rate: int | None = None,
 ) -> Iterator[sr.Microphone]:
     import speech_recognition as sr
 
-    if not 256 <= buffer_frames <= 65536:
-        raise ValueError("Microphone buffer must be between 256 and 65536 frames")
+    validate_capture_options(buffer_frames=buffer_frames, sample_rate=sample_rate)
     try:
-        # Let PyAudio choose the hardware's default rate; conversion to the
+        # Leave rate selection to PyAudio unless overridden. Conversion to the
         # server's 16 kHz format happens after recording.
-        microphone = sr.Microphone(device_index=device, chunk_size=buffer_frames)
+        microphone = (
+            sr.Microphone(device_index=device, chunk_size=buffer_frames)
+            if sample_rate is None
+            else sr.Microphone(
+                device_index=device, chunk_size=buffer_frames, sample_rate=sample_rate
+            )
+        )
         source = microphone.__enter__()
     except (OSError, ValueError, AssertionError, AttributeError) as error:
         raise OSError(f"Cannot open microphone {device}: {error}") from error
@@ -107,7 +132,8 @@ def open_microphone(
     if source.stream is None:
         raise OSError(
             f"Cannot open microphone {device}: no capture stream. Check the device's "
-            "input channels, supported sample rates and whether it is already in use."
+            "input channels, supported sample rates and whether it is already in use. "
+            f"Requested rate: {sample_rate or 'device default'}; buffer: {buffer_frames} frames."
         )
     try:
         source.stream = CheckedMicrophoneStream(source.stream)
@@ -124,28 +150,62 @@ def record_turn(
     speaker: int | None = None,
     buffer_frames: int = DEFAULT_MICROPHONE_BUFFER,
     pause_threshold: float = 1.2,
+    *,
+    sample_rate: int | None = None,
+    energy_threshold: float | None = None,
+    calibration_duration: float = 0.6,
+    diagnostics: bool = False,
+    feedback: ClientFeedback | None = None,
+    announce_ready: bool = False,
 ) -> bytes:
     import speech_recognition as sr
 
-    if not 0.5 <= pause_threshold <= 10:
-        raise ValueError("Pause threshold must be between 0.5 and 10 seconds")
+    validate_capture_options(
+        buffer_frames=buffer_frames,
+        pause_threshold=pause_threshold,
+        sample_rate=sample_rate,
+        energy_threshold=energy_threshold,
+        calibration_duration=calibration_duration,
+    )
     recognizer = sr.Recognizer()
     recognizer.pause_threshold = pause_threshold
-    with open_microphone(microphone, buffer_frames) as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.6)
+    with open_microphone(microphone, buffer_frames, sample_rate) as source:
+        if energy_threshold is None:
+            # Always read at least one buffer, even at low device rates or with
+            # a large buffer. The library otherwise calibrates using no audio.
+            duration = max(calibration_duration, source.CHUNK / source.SAMPLE_RATE * 1.01)
+            recognizer.adjust_for_ambient_noise(source, duration=duration)
+        else:
+            recognizer.energy_threshold = energy_threshold
         # Some SpeechRecognition versions also adapt during the phrase. Steady
         # speech then raises the threshold above the voice and ends capture early.
         recognizer.dynamic_energy_threshold = False
-        if wake is not None:
+        if diagnostics:
+            print(
+                f"Microphone: {source.SAMPLE_RATE} Hz, mono, {source.CHUNK} frames "
+                f"({source.CHUNK / source.SAMPLE_RATE * 1000:.0f} ms); "
+                f"speech threshold: {recognizer.energy_threshold:.0f}; "
+                f"end pause: {pause_threshold:g} s.",
+                flush=True,
+            )
+    # Ready means calibration is finished. In wake mode the next capture waits
+    # for the wake phrase; cue playback never shares an open microphone.
+    if announce_ready and feedback is not None:
+        feedback.ready()
+    if wake is not None:
+        with open_microphone(microphone, buffer_frames, sample_rate) as source:
             wake.wait(source)
-        # A short acknowledgement lets a headless droid tell us when to speak.
-        # Close the input while playing it, then reopen to discard the cue/echo.
-    play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
-    with open_microphone(microphone, buffer_frames) as source:
+    if feedback is None:
+        play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
+    else:
+        feedback.listening()
+    with open_microphone(microphone, buffer_frames, sample_rate) as source:
         print("Speak now...", flush=True)
         audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
     # SpeechRecognition's chunk boundaries can run slightly over its time cap.
     pcm = audio.get_raw_data(convert_rate=16000, convert_width=2)
+    if feedback is not None:
+        feedback.recorded()
     return write_wav(pcm[: int(limit * 16000) * 2], 16000)
 
 
@@ -157,6 +217,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list-microphones", action="store_true", help="List microphone indices")
     parser.add_argument("--text", action="store_true", help="Test transport without any audio")
     parser.add_argument(
+        "--no-sounds",
+        action="store_true",
+        help="Disable feedback cues and busy sound (spoken replies and recording echo still play)",
+    )
+    parser.add_argument(
         "--echo-recording",
         action="store_true",
         help="Play each captured recording locally before sending it (voice mode only)",
@@ -165,6 +230,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wake-model", type=Path)
     parser.add_argument("--wake-phrase", default="hey iris")
     parser.add_argument("--microphone", type=int)
+    parser.add_argument(
+        "--microphone-rate",
+        type=int,
+        help="Capture rate in Hz (8000–192000; default: device rate). Must be supported by input.",
+    )
+    parser.add_argument(
+        "--energy-threshold",
+        type=float,
+        help="Fixed speech energy threshold (0–32768, exclusive of 0); skips ambient calibration",
+    )
+    parser.add_argument(
+        "--calibration-duration",
+        type=float,
+        default=0.6,
+        help="Ambient calibration in seconds (0.1–10; default: 0.6, at least one input buffer)",
+    )
+    parser.add_argument(
+        "--test-microphone",
+        action="store_true",
+        help="Record and play one local test; no server, key, wake model or saved files needed",
+    )
     parser.add_argument("--speaker", type=int, help="sounddevice output device index")
     parser.add_argument(
         "--microphone-buffer",
@@ -190,70 +276,123 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
-        if not 0.5 <= args.pause_threshold <= 10:
-            raise ValueError("Pause threshold must be between 0.5 and 10 seconds")
-        if not 256 <= args.microphone_buffer <= 65536:
-            raise ValueError("Microphone buffer must be between 256 and 65536 frames")
-        with httpx.Client(
-            trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
-        ) as transport:
-            client = DroidClient(args.server, os.environ.get("IRIS_DROID_TOKEN", ""), transport)
-            wake = None
-            if not args.text and args.activation == "wake":
-                if args.wake_model is None:
-                    raise ValueError(
-                        "Wake mode requires --wake-model with a local Vosk model folder"
-                    )
-                wake = WakeDetector(args.wake_model, args.wake_phrase)
-            print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
-            while True:
+        validate_capture_options(
+            buffer_frames=args.microphone_buffer,
+            pause_threshold=args.pause_threshold,
+            sample_rate=args.microphone_rate,
+            energy_threshold=args.energy_threshold,
+            calibration_duration=args.calibration_duration,
+        )
+        with ClientFeedback(
+            args.speaker, play_wav, stop_playback, enabled=not args.no_sounds and not args.text
+        ) as feedback:
+            if args.test_microphone:
                 if args.text:
-                    body = input("You: ").encode()
-                    if not body.strip():
-                        continue
-                else:
-                    import speech_recognition as sr
+                    raise ValueError("--test-microphone cannot be combined with --text")
+                print("Local microphone test. Stay quiet until the listening cue, then speak.")
+                import speech_recognition as sr
 
-                    if args.activation == "enter":
-                        input("Press Enter to talk...")
-                    try:
-                        body = record_turn(
-                            args.microphone,
-                            args.phrase_time_limit,
-                            args.listen_timeout,
-                            wake,
-                            args.speaker,
-                            args.microphone_buffer,
-                            args.pause_threshold,
-                        )
-                    except sr.WaitTimeoutError:
-                        print("Didn't hear speech. Try again.")
-                        continue
-                    if args.echo_recording:
-                        pcm, rate = read_wav(body, input_audio=True)
-                        print(
-                            f"Recorded {len(pcm) / (rate * 2):.1f} seconds. "
-                            "Playing recording before sending...",
-                            flush=True,
-                        )
-                        play_wav(body, args.speaker)
                 try:
-                    reply = client.turn(body, text_only=args.text)
-                except httpx.HTTPError as error:
-                    status = (
-                        str(error.response.status_code)
-                        if isinstance(error, httpx.HTTPStatusError)
-                        else type(error).__name__
+                    body = record_turn(
+                        args.microphone,
+                        args.phrase_time_limit,
+                        args.listen_timeout,
+                        None,
+                        args.speaker,
+                        args.microphone_buffer,
+                        args.pause_threshold,
+                        sample_rate=args.microphone_rate,
+                        energy_threshold=args.energy_threshold,
+                        calibration_duration=args.calibration_duration,
+                        diagnostics=True,
+                        feedback=feedback,
                     )
+                except sr.WaitTimeoutError:
+                    feedback.error()
                     print(
-                        f"Droid connection/turn failed ({status}). Check the PC; turn not resent."
+                        "Didn't hear speech during the local test. "
+                        "Check input gain and speech threshold."
                     )
-                    continue
-                print(f"You: {reply.heard}\nIris: {reply.text}")
-                if reply.audio and not args.text:
-                    play_wav(base64.b64decode(reply.audio, validate=True), args.speaker)
-                if reply.finished:
-                    return 0
+                    return 1
+                pcm, rate = read_wav(body, input_audio=True)
+                print(
+                    f"Recorded {len(pcm) / (rate * 2):.1f} seconds. Playing local test...",
+                    flush=True,
+                )
+                play_wav(body, args.speaker)
+                return 0
+            with httpx.Client(
+                trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
+            ) as transport:
+                client = DroidClient(args.server, os.environ.get("IRIS_DROID_TOKEN", ""), transport)
+                wake = None
+                if not args.text and args.activation == "wake":
+                    if args.wake_model is None:
+                        raise ValueError(
+                            "Wake mode requires --wake-model with a local Vosk model folder"
+                        )
+                    wake = WakeDetector(args.wake_model, args.wake_phrase)
+                print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
+                while True:
+                    if not args.text and args.activation == "enter":
+                        feedback.ready()
+                    if args.text:
+                        body = input("You: ").encode()
+                        if not body.strip():
+                            continue
+                    else:
+                        import speech_recognition as sr
+
+                        if args.activation == "enter":
+                            input("Press Enter to talk...")
+                        try:
+                            body = record_turn(
+                                args.microphone,
+                                args.phrase_time_limit,
+                                args.listen_timeout,
+                                wake,
+                                args.speaker,
+                                args.microphone_buffer,
+                                args.pause_threshold,
+                                sample_rate=args.microphone_rate,
+                                energy_threshold=args.energy_threshold,
+                                calibration_duration=args.calibration_duration,
+                                diagnostics=args.echo_recording,
+                                feedback=feedback,
+                                announce_ready=args.activation != "enter",
+                            )
+                        except sr.WaitTimeoutError:
+                            feedback.error()
+                            print("Didn't hear speech. Try again.")
+                            continue
+                        if args.echo_recording:
+                            pcm, rate = read_wav(body, input_audio=True)
+                            print(
+                                f"Recorded {len(pcm) / (rate * 2):.1f} seconds. "
+                                "Playing recording before sending...",
+                                flush=True,
+                            )
+                            play_wav(body, args.speaker)
+                    try:
+                        with feedback.working():
+                            reply = client.turn(body, text_only=args.text)
+                    except httpx.HTTPError as error:
+                        feedback.error()
+                        status = (
+                            str(error.response.status_code)
+                            if isinstance(error, httpx.HTTPStatusError)
+                            else type(error).__name__
+                        )
+                        print(
+                            f"Droid connection/turn failed ({status}). "
+                            "Check the PC; turn not resent."
+                        )
+                        continue
+                    print(f"You: {reply.heard}\nIris: {reply.text}")
+                    if reply.audio and not args.text:
+                        play_wav(base64.b64decode(reply.audio, validate=True), args.speaker)
+                    if reply.finished:
+                        return 0
     except (KeyboardInterrupt, EOFError):
         return 0
     except (ValueError, OSError, ImportError) as error:

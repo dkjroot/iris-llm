@@ -28,7 +28,9 @@ RECORDING = write_wav(b"\x01\x00" * 1600, 16000)
 def test_recording_loads_the_real_packaged_cue_before_reopening_microphone() -> None:
     events = []
     microphone = Mock()
-    microphone.__enter__ = Mock(side_effect=lambda: events.append("opened") or Mock())
+    microphone.__enter__ = Mock(
+        side_effect=lambda: events.append("opened") or Mock(CHUNK=8192, SAMPLE_RATE=44100)
+    )
     microphone.__exit__ = Mock(side_effect=lambda *args: events.append("closed"))
     recognizer = Mock()
     recognizer.listen.return_value = sr.AudioData(b"\x01\x00" * 1600, 16000, 2)
@@ -164,7 +166,7 @@ def test_real_http_transport_auth_validation_and_voice_turn() -> None:
                     patch("iris_droid.client.record_turn") as record,
                     patch("iris_droid.client.play_wav") as play,
                 ):
-                    assert iris.main(["client", "--server", url, "--text"]) == 0
+                    assert iris.main(["client", "--no-sounds", "--server", url, "--text"]) == 0
                 record.assert_not_called()
                 play.assert_not_called()
         finally:
@@ -220,10 +222,10 @@ def test_empty_or_invalid_header_keys_are_rejected(token: str) -> None:
         validate_token(token)
 
 
-@pytest.mark.parametrize("native_rate", [44100, 48000])
+@pytest.mark.parametrize("native_rate", [8000, 16000, 22050, 44100, 48000, 96000])
 def test_native_capture_is_converted_to_server_format(native_rate):
     microphone = Mock()
-    source = Mock(SAMPLE_RATE=native_rate)
+    source = Mock(SAMPLE_RATE=native_rate, CHUNK=8192)
     microphone.__enter__ = Mock(return_value=source)
     microphone.__exit__ = Mock()
     # A second of real PCM conversion must remain a second at the server rate.
@@ -241,9 +243,9 @@ def test_native_capture_is_converted_to_server_format(native_rate):
     assert all(
         call.kwargs == {"device_index": 1, "chunk_size": 8192} for call in factory.call_args_list
     )
-    assert factory.call_count == 2
+    assert factory.call_count == 3
     wake.wait.assert_called_once_with(source)
-    assert microphone.__exit__.call_count == 2
+    assert microphone.__exit__.call_count == 3
 
 
 @pytest.mark.parametrize("output_rate", [44100, 48000])
@@ -336,7 +338,11 @@ def test_capture_buffer_and_checked_reads_reach_the_native_stream(buffer_frames)
 def test_capture_overflow_aborts_before_any_network_turn(capsys):
     native = Mock()
     native.read.side_effect = OSError(-9981, "Input overflowed")
-    source = SimpleNamespace(stream=SimpleNamespace(pyaudio_stream=native, close=Mock()))
+    source = SimpleNamespace(
+        stream=SimpleNamespace(pyaudio_stream=native, close=Mock()),
+        SAMPLE_RATE=44100,
+        CHUNK=8192,
+    )
     microphone = Mock()
     microphone.__enter__ = Mock(return_value=source)
     microphone.__exit__ = Mock(side_effect=lambda *args: source.stream.close())
@@ -349,7 +355,7 @@ def test_capture_overflow_aborts_before_any_network_turn(capsys):
         patch("iris_droid.client.DroidClient.turn") as turn,
         patch("iris_droid.client.play_wav") as play,
     ):
-        assert iris.main(["client", "--activation", "continuous"]) == 1
+        assert iris.main(["client", "--no-sounds", "--activation", "continuous"]) == 1
     output = capsys.readouterr().out
     assert "input overflow" in output and "recording discarded" in output
     assert "--microphone-buffer" in output
@@ -378,7 +384,17 @@ def test_client_passes_requested_buffer_to_recording():
         patch("iris_droid.client.record_turn", side_effect=KeyboardInterrupt) as record,
     ):
         assert (
-            iris.main(["client", "--activation", "continuous", "--microphone-buffer", "16384"]) == 0
+            iris.main(
+                [
+                    "client",
+                    "--no-sounds",
+                    "--activation",
+                    "continuous",
+                    "--microphone-buffer",
+                    "16384",
+                ]
+            )
+            == 0
         )
     assert record.call_args.args[5] == 16384
 
@@ -389,7 +405,7 @@ def test_invalid_capture_buffer_does_not_open_devices_or_network(frames):
         patch("speech_recognition.Microphone") as microphone,
         patch("httpx.Client") as transport,
     ):
-        assert iris.main(["client", "--microphone-buffer", str(frames)]) == 1
+        assert iris.main(["client", "--no-sounds", "--microphone-buffer", str(frames)]) == 1
         with pytest.raises(ValueError, match="Microphone buffer"):
             with open_microphone(1, frames):
                 pytest.fail("Invalid buffer must not open")
@@ -402,7 +418,7 @@ def test_invalid_capture_buffer_does_not_open_devices_or_network(frames):
 def test_echo_plays_exact_outgoing_recording_before_send(activation, echo, capsys):
     events = []
 
-    def record(*args):
+    def record(*args, **kwargs):
         events.append("recorded")
         return RECORDING
 
@@ -415,7 +431,7 @@ def test_echo_plays_exact_outgoing_recording_before_send(activation, echo, capsy
         events.append("sent")
         return SimpleNamespace(heard="exit", text="Goodbye", audio="", finished=True)
 
-    argv = ["client", "--activation", activation, "--speaker", "7"]
+    argv = ["client", "--no-sounds", "--activation", activation, "--speaker", "7"]
     if echo:
         argv.append("--echo-recording")
     if activation == "wake":
@@ -444,7 +460,10 @@ def test_failed_or_interrupted_echo_never_sends_the_recording(failure, code):
         patch("iris_droid.client.play_wav", side_effect=failure),
         patch("iris_droid.client.DroidClient.turn") as turn,
     ):
-        assert iris.main(["client", "--activation", "continuous", "--echo-recording"]) == code
+        assert (
+            iris.main(["client", "--no-sounds", "--activation", "continuous", "--echo-recording"])
+            == code
+        )
     turn.assert_not_called()
 
 
@@ -459,7 +478,7 @@ def test_text_mode_ignores_recording_echo():
             return_value=SimpleNamespace(heard="exit", text="Goodbye", audio="", finished=True),
         ) as turn,
     ):
-        assert iris.main(["client", "--text", "--echo-recording"]) == 0
+        assert iris.main(["client", "--no-sounds", "--text", "--echo-recording"]) == 0
     turn.assert_called_once_with(b"exit", text_only=True)
     record.assert_not_called()
     play.assert_not_called()
@@ -475,7 +494,10 @@ def test_silence_does_not_echo_or_send():
         patch("iris_droid.client.play_wav") as play,
         patch("iris_droid.client.DroidClient.turn") as turn,
     ):
-        assert iris.main(["client", "--activation", "continuous", "--echo-recording"]) == 0
+        assert (
+            iris.main(["client", "--no-sounds", "--activation", "continuous", "--echo-recording"])
+            == 0
+        )
     play.assert_not_called()
     turn.assert_not_called()
 
@@ -500,9 +522,9 @@ class SyntheticMicrophone(sr.AudioSource):
         self._data.close()
 
 
-def synthetic_audio(sections):
+def synthetic_audio(sections, rate=44100):
     return b"".join(
-        np.full(round(seconds * 44100), amplitude, dtype="<i2").tobytes()
+        np.full(round(seconds * rate), amplitude, dtype="<i2").tobytes()
         for seconds, amplitude in sections
     )
 
@@ -553,7 +575,12 @@ def test_client_passes_pause_setting_to_capture():
         patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
         patch("iris_droid.client.record_turn", side_effect=KeyboardInterrupt) as record,
     ):
-        assert iris.main(["client", "--activation", "continuous", "--pause-threshold", "2"]) == 0
+        assert (
+            iris.main(
+                ["client", "--no-sounds", "--activation", "continuous", "--pause-threshold", "2"]
+            )
+            == 0
+        )
     assert record.call_args.args[6] == 2
 
 
@@ -563,8 +590,190 @@ def test_invalid_pause_setting_does_not_open_audio_or_network(pause):
         patch("iris_droid.client.open_microphone") as microphone,
         patch("httpx.Client") as transport,
     ):
-        assert iris.main(["client", "--pause-threshold", str(pause)]) == 1
+        assert iris.main(["client", "--no-sounds", "--pause-threshold", str(pause)]) == 1
         with pytest.raises(ValueError, match="Pause threshold"):
             record_turn(1, 30, 10, None, pause_threshold=pause)
     microphone.assert_not_called()
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("rate", [16000, 22050, 44100, 48000, 96000])
+def test_explicit_capture_rate_is_used_for_both_opens_and_wake(rate):
+    source = Mock(SAMPLE_RATE=rate, CHUNK=8192)
+    microphone = Mock()
+    microphone.__enter__ = Mock(return_value=source)
+    microphone.__exit__ = Mock()
+    recognizer = Mock()
+    recognizer.listen.return_value = sr.AudioData(b"\x01\x00" * rate, rate, 2)
+    wake = Mock()
+    with (
+        patch("speech_recognition.Microphone", return_value=microphone) as factory,
+        patch("speech_recognition.Recognizer", return_value=recognizer),
+        patch("iris_droid.client.play_wav"),
+    ):
+        pcm, output_rate = read_wav(record_turn(1, 30, 10, wake, sample_rate=rate))
+    assert factory.call_count == 3
+    assert all(
+        call.kwargs == {"device_index": 1, "chunk_size": 8192, "sample_rate": rate}
+        for call in factory.call_args_list
+    )
+    assert output_rate == 16000 and abs(len(pcm) // 2 - 16000) <= 2
+    wake.wait.assert_called_once_with(source)
+    assert source.SAMPLE_RATE == rate
+
+
+@pytest.mark.parametrize("rate,chunk", [(8000, 8192), (16000, 16384), (48000, 8192)])
+def test_calibration_reads_audio_even_when_buffer_exceeds_requested_duration(rate, chunk):
+    ambient = SyntheticMicrophone(synthetic_audio([(3, 0)], rate), rate=rate, chunk=chunk)
+    speech = SyntheticMicrophone(synthetic_audio([(2, 4000), (4, 0)], rate), rate=rate, chunk=chunk)
+    recognizer = sr.Recognizer()
+    with (
+        patch("iris_droid.client.open_microphone", side_effect=[ambient, speech]),
+        patch("iris_droid.client.play_wav"),
+        patch("speech_recognition.Recognizer", return_value=recognizer),
+    ):
+        pcm, _ = read_wav(record_turn(1, 30, 10, None, calibration_duration=0.1))
+    assert recognizer.energy_threshold < 300  # Silence was actually sampled.
+    assert recognizer.dynamic_energy_threshold is False
+    assert len(pcm) > 16000 * 2
+
+
+def test_manual_energy_threshold_skips_calibration_and_keeps_quiet_speech():
+    ambient = SyntheticMicrophone(synthetic_audio([(1, 0)]))
+    ambient.read = Mock(wraps=ambient.read)
+    speech = SyntheticMicrophone(synthetic_audio([(1, 150), (3, 0)]))
+    recognizer = sr.Recognizer()
+    with (
+        patch("iris_droid.client.open_microphone", side_effect=[ambient, speech]),
+        patch("speech_recognition.Recognizer", return_value=recognizer),
+        patch("iris_droid.client.play_wav"),
+    ):
+        pcm, rate = read_wav(record_turn(1, 30, 10, None, energy_threshold=125))
+    ambient.read.assert_not_called()
+    assert recognizer.energy_threshold == 125
+    assert recognizer.dynamic_energy_threshold is False
+    assert np.count_nonzero(np.frombuffer(pcm, dtype="<i2") == 150) / rate > 0.9
+
+
+@pytest.mark.parametrize("local", [False, True])
+def test_new_capture_options_reach_live_and_local_capture(local):
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("iris_droid.client.record_turn", side_effect=KeyboardInterrupt) as record,
+    ):
+        argv = [
+            "client",
+            "--no-sounds",
+            "--activation",
+            "continuous",
+            "--microphone-rate",
+            "48000",
+            "--energy-threshold",
+            "125",
+            "--calibration-duration",
+            "1.5",
+        ]
+        if local:
+            argv.append("--test-microphone")
+        assert iris.main(argv) == 0
+    assert record.call_args.kwargs == {
+        "sample_rate": 48000,
+        "energy_threshold": 125,
+        "calibration_duration": 1.5,
+        "diagnostics": local,
+        "feedback": record.call_args.kwargs["feedback"],
+        **({"announce_ready": True} if not local else {}),
+    }
+
+
+def test_local_microphone_test_has_no_network_key_wake_model_or_files(capsys):
+    with (
+        patch.dict("os.environ", {}, clear=True),
+        patch("httpx.Client") as transport,
+        patch("iris_droid.client.WakeDetector") as wake,
+        patch("iris_droid.client.record_turn", return_value=RECORDING) as record,
+        patch("iris_droid.client.play_wav") as play,
+        patch("pathlib.Path.write_bytes") as write,
+    ):
+        assert (
+            iris.main(
+                [
+                    "client",
+                    "--no-sounds",
+                    "--test-microphone",
+                    "--microphone",
+                    "1",
+                    "--speaker",
+                    "7",
+                    "--activation",
+                    "wake",
+                ]
+            )
+            == 0
+        )
+    assert record.call_args.args[0] == 1 and record.call_args.args[3] is None
+    play.assert_called_once_with(RECORDING, 7)
+    transport.assert_not_called()
+    wake.assert_not_called()
+    write.assert_not_called()
+    assert "Recorded 0.1 seconds" in capsys.readouterr().out
+
+
+def test_local_test_silence_reports_actionable_failure(capsys):
+    with (
+        patch("iris_droid.client.record_turn", side_effect=sr.WaitTimeoutError()),
+        patch("httpx.Client") as transport,
+    ):
+        assert iris.main(["client", "--no-sounds", "--test-microphone"]) == 1
+    assert "Check input gain and speech threshold" in capsys.readouterr().out
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "flag,keyword,value",
+    [
+        ("--microphone-rate", "sample_rate", 7999),
+        ("--microphone-rate", "sample_rate", 192001),
+        ("--energy-threshold", "energy_threshold", 0),
+        ("--energy-threshold", "energy_threshold", -1),
+        ("--energy-threshold", "energy_threshold", 32769),
+        ("--energy-threshold", "energy_threshold", float("nan")),
+        ("--energy-threshold", "energy_threshold", float("inf")),
+        ("--calibration-duration", "calibration_duration", 0.09),
+        ("--calibration-duration", "calibration_duration", 10.1),
+        ("--calibration-duration", "calibration_duration", float("nan")),
+        ("--calibration-duration", "calibration_duration", float("inf")),
+    ],
+)
+def test_invalid_capture_options_fail_before_audio_or_network(flag, keyword, value):
+    with (
+        patch("iris_droid.client.open_microphone") as microphone,
+        patch("httpx.Client") as transport,
+    ):
+        assert iris.main(["client", "--no-sounds", flag, str(value)]) == 1
+        with pytest.raises(ValueError):
+            record_turn(1, 30, 10, None, **{keyword: value})
+    microphone.assert_not_called()
+    transport.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [OSError("Device unavailable"), KeyboardInterrupt()])
+def test_local_test_audio_failure_or_interrupt_never_contacts_server(failure):
+    with (
+        patch("iris_droid.client.record_turn", side_effect=failure),
+        patch("httpx.Client") as transport,
+    ):
+        assert iris.main(["client", "--no-sounds", "--test-microphone"]) == (
+            0 if isinstance(failure, KeyboardInterrupt) else 1
+        )
+    transport.assert_not_called()
+
+
+def test_local_microphone_test_rejects_text_mode_without_opening_audio():
+    with (
+        patch("iris_droid.client.record_turn") as record,
+        patch("httpx.Client") as transport,
+    ):
+        assert iris.main(["client", "--no-sounds", "--test-microphone", "--text"]) == 1
+    record.assert_not_called()
     transport.assert_not_called()

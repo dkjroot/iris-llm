@@ -417,7 +417,7 @@ Type a message and check that a reply prints. This goes through Iris and the cha
 
 ### 4. Set up listening and audio devices
 
-The client records mono audio at the microphone's reported default sample rate and converts it to 16 kHz for the server. For playback, it checks whether the speaker accepts the audio's rate; if necessary it converts the samples to the speaker's reported default rate, keeping the duration and pitch. A USB device running at 44.1 or 48 kHz doesn't need to support the speech models' rates directly. Wake recognition uses the microphone's actual rate too.
+The client records mono audio at the microphone's reported default sample rate, unless you override it with `--microphone-rate`, and converts it to 16 kHz for the server. For playback, it checks whether the speaker accepts the audio's rate; if necessary it converts the samples to the speaker's reported default rate, keeping the duration and pitch. A USB device running at 44.1 or 48 kHz doesn't need to support the speech models' rates directly. Wake recognition uses the microphone's actual rate too.
 
 All the commands in this section run on the **client**, with its Python environment active. You don't need to run `configure` or download Whisper or Kokoro on the Pi; those belong on the PC server. Keep the same `IRIS_DROID_TOKEN` and server address that worked for your text test.
 
@@ -485,11 +485,69 @@ On Linux, device enumeration can print ALSA `Unknown PCM` messages and warnings 
 
 If that doesn't work:
 
-- **No listening cue:** try the playback check above. Check the output index, speaker volume and mute controls. On Raspberry Pi OS, `alsamixer -c 3` opens the mixer for card 3, if it has mixer controls. A playback failure can stop the client before it records your sentence.
+- **No listening cue:** try the playback check above. Check the output index, speaker volume and mute controls. On Raspberry Pi OS, `alsamixer -c 3` opens the mixer for card 3, if it has mixer controls. Check that `--no-sounds` is absent and look for a feedback warning; optional cue failure disables feedback without preventing capture.
 - **Cue plays, but no speech is heard:** check the microphone index and input gain/mute, and speak after `Speak now...`. `Didn't hear speech. Try again.` means speech didn't start within the listening timeout. An HTTP `422` means the recording reached the PC but its recogniser couldn't understand it.
 - **Invalid device, channel or sample-rate errors:** recheck both device lists. To inspect your output device, run `python -c "import sounddevice as sd; print(sd.query_devices(1))"`, replacing `1` with your speaker index. `default_samplerate` is the rate the client uses if the speaker rejects the cue or reply's original rate. If this still fails, check that the selected devices support mono capture/playback and that their reported default rates work. An ALSA test using `plughw:3,0` can apply format conversion that a direct `hw:3,0` entry doesn't provide. An appropriate `default` or `sysdefault` entry may help if it routes to your device. Changing `--listen-timeout` won't fix a format error. The [ALSA configuration guide](https://www.alsa-project.org/wiki/Asoundrc) explains hardware and conversion plugins.
 - **Device busy:** stop any `arecord`, `aplay` or other audio test still using the hardware before starting Iris. Run the client as your normal user in the same environment as the successful tests, rather than trying `sudo` as an audio fix.
 - **Transcript and reply print, but no spoken reply:** repeat the playback check with the same speaker index. A text-mode run never plays speech; make sure `--text` is absent. An HTTP `503` points to the PC's speech service instead.
+
+#### Feedback sounds on the client
+
+The client plays feedback through the device selected with `--speaker`, including when the server is on another computer. The server doesn't need a speaker. The cues tell you which part of a turn Iris has reached:
+
+| Sound | Meaning |
+| --- | --- |
+| Short rising chirp | Ready for the next turn, including after a spoken reply. In Enter mode, press Enter; in wake mode, say your wake phrase. In continuous mode the listening cue follows automatically. |
+| Brief listening bloop | Start your sentence now. In wake mode this confirms the wake phrase was accepted. |
+| Two descending tones | Recording has finished; the microphone is closed. If recording echo is enabled, you'll hear your recording next. |
+| Repeating low working pulses | Waiting for the server to transcribe, ask the model and generate speech. These stop before the spoken reply, or if the turn fails or you stop the client. |
+| Three short low pulses | No speech was heard, or a turn/audio service failed. Check the terminal for the reason. |
+
+In wake and continuous modes, the ready chirp follows ambient calibration. Wait for that chirp before saying the wake phrase, and for the listening bloop before your sentence. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
+
+Feedback is on by default. Add `--no-sounds` to your client start script to disable the cues and working sound; spoken replies, `--echo-recording` and local-test playback still work. Text mode is always silent. If a feedback asset or cue playback fails, the client prints a warning and continues without feedback; a failure to play the actual reply or diagnostic echo is still an audio error.
+
+The cues are original generated WAV files, so they don't need FFmpeg, downloads or a remote sound service. See [the sound guide](iris_sounds/README.md) for the filenames, generator and replacement advice. The busy sound covers the whole server request; it doesn't report individual STT, chat or synthesis progress.
+
+#### Start with a local microphone test
+
+If speech recognition is poor, start by listening to the recording. Stop any other client or audio test using the microphone, activate the client environment, and run this shared command on Windows PowerShell, macOS or Linux Bash:
+
+```sh
+python iris.py client --test-microphone --microphone 2 --speaker 7
+```
+
+Replace `2` and `7` with indices from your own microphone and speaker lists. Keep quiet until the cue and `Speak now...`, then say a complete sentence with a natural pause in it. The client records one turn, prints the capture rate, buffer size, speech threshold and recorded duration, then plays it back locally. It uses the listening and recording-finished cues but no working sound because it makes no server request. It needs no server, connection key or downloaded speech model, and saves no file. This is a plain recording test: `--activation` and wake-model options don't make it wait for a wake phrase. Ctrl-C cancels it. `--text` can't be combined with this test.
+
+Check that the beginning, middle and end are all present, that the speed sounds natural, and that your voice is clear rather than very quiet or distorted. The duration includes retained silence around the sentence, so it won't be an exact measure of speaking time. If the test fails to hear speech, check the selected input, hardware gain and the sensitivity controls below.
+
+Once that sounds right, use [the recording echo](#hear-what-iris-recorded-before-sending-it) during a real conversation. The local test sends nothing; echo mode sends the recording after playback. A clean, complete echo with an inaccurate transcript points towards the server's recogniser, language or model settings. An incomplete or damaged echo means capture or playback still needs attention before changing Whisper.
+
+#### Client recording controls
+
+These options apply to the local microphone test and to normal voice turns, including continuous and wake activation. Keep them in your client start command or script; they aren't server settings. Try one change at a time and compare the same sentence with the local test.
+
+| Option | Default | When to change it |
+| --- | --- | --- |
+| `--microphone-rate HZ` | The selected microphone's reported default rate | Override a misleading device default, or select a rate you've verified the microphone supports, such as `48000`. Allowed range: 8,000–192,000 Hz; being in that range doesn't mean your hardware supports it. |
+| `--microphone-buffer FRAMES` | `8192` | Increase for input overflow; reduce for finer capture timing if the device remains reliable. Allowed range: 256–65,536 frames. |
+| `--pause-threshold SECONDS` | `1.2` | Increase if a thinking pause ends your sentence. Allowed range: 0.5–10 seconds. |
+| `--listen-timeout SECONDS` | `10` | Allow more time for speech to begin after the cue. Allowed range: greater than 0, up to 300 seconds. |
+| `--phrase-time-limit SECONDS` | `30` | Allow longer messages. Allowed range: greater than 0, up to 300 seconds; the server's `phrase_time_limit` must allow the same length. |
+| `--calibration-duration SECONDS` | `0.6`, extended if needed to read at least one input buffer | Sample background noise for longer before the cue. Stay quiet during calibration. Allowed range: 0.1–10 seconds; actual calibration is rounded to audio buffers. |
+| `--energy-threshold LEVEL` | Calibrated from background noise each turn | Set speech sensitivity manually when automatic calibration doesn't suit the room. A value greater than 0, up to 32,768, skips calibration. Lower values detect quieter speech but can also detect noise; higher values require louder speech. This isn't a microphone gain or volume control. |
+
+The recording rate is a hardware choice; the outgoing format stays mono, 16-bit PCM at 16 kHz so the server receives the same format from every client. Increasing the capture rate doesn't change the Whisper model. Wake recognition is told the actual capture rate. Input is currently mono; a device that only supports multichannel capture needs a suitable mono route from the operating system.
+
+There is no fixed ALSA card number, device index, input rate or speech energy level chosen for a particular microphone. The default buffer is a general reliability/timing tradeoff, not a hardware-specific preset: 8,192 frames is about 186 ms at 44.1 kHz, 171 ms at 48 kHz, or 512 ms at 16 kHz. A large buffer at a low rate makes both calibration and speech-boundary decisions coarser. Leave the rate automatic unless testing gives you a reason to override it.
+
+For example, to test a microphone known to support 48 kHz while allowing two-second pauses (shared command for all platforms):
+
+```sh
+python iris.py client --test-microphone --microphone 2 --speaker 7 --microphone-rate 48000 --pause-threshold 2
+```
+
+If you need manual sensitivity, first look at the speech threshold printed by the local test or `--echo-recording`, then try a lower or higher value relative to that. A threshold that works for one microphone and input-gain setting needn't work for another. The threshold stays fixed while you speak so sustained speech doesn't get mistaken for rising background noise.
 
 #### Hear what Iris recorded before sending it
 
@@ -524,6 +582,39 @@ python iris.py client --server http://192.168.1.10:8765 --microphone 2 --speaker
 The setting is in frames, not milliseconds; larger buffers make capture less responsive to speech starting and stopping. The allowed range is 256–65,536 frames. Check for other processes keeping the client CPU busy too. A larger buffer is something to try, not a guarantee that every source of crackling is an overflow.
 
 If a native ALSA recording sounds clean but an Iris recording sounds shortened or crackly, compare both recordings through the same playback route. Check offline sample-rate conversion separately from microphone capture before changing the Whisper model. Keep any diagnostic recordings local; ordinary client operation doesn't save them.
+
+#### Linux / Raspberry Pi OS: compare ALSA with Python capture
+
+If you still hear fast, shortened or crackly audio, compare capture and conversion separately. These commands are for Linux Bash and deliberately create local test WAV files under `/tmp`. Use a non-private test sentence and remove the files when you've finished.
+
+First check `arecord -l` and `aplay -l` for the card and device. This example assumes card 3, device 0 supports 44.1 kHz, mono, 16-bit recording; replace the address and rate with ones supported by your device. `hw:3,0` is an ALSA address, not an Iris index:
+
+```sh
+arecord -D hw:3,0 -f S16_LE -r 44100 -c 1 --buffer-time=500000 -d 8 /tmp/iris-native.wav
+aplay -D plughw:3,0 --buffer-time=500000 /tmp/iris-native.wav
+```
+
+Speak through the eight-second recording. The buffer setting here is 500,000 **microseconds**, or half a second; Iris's `--microphone-buffer` uses **frames** instead. Watch for `overrun` during recording or `underrun` during playback. ALSA tools come from the `alsa-utils` package.
+
+Now play that **same file** through Python, replacing `7` with your sounddevice speaker index:
+
+```sh
+python -c "from pathlib import Path; from iris_droid.client import play_wav; play_wav(Path('/tmp/iris-native.wav').read_bytes(), device=7)"
+```
+
+If ALSA sounds clean but Python playback doesn't, investigate output-device selection and playback before blaming the microphone. If both sound clean while `--test-microphone` sounds damaged, check Python capture and conversion. To test conversion alone, use the clean ALSA file without reopening the microphone:
+
+```sh
+python -c "from pathlib import Path; import speech_recognition as sr
+with sr.AudioFile('/tmp/iris-native.wav') as source:
+    audio = sr.Recognizer().record(source)
+Path('/tmp/iris-converted.wav').write_bytes(audio.get_wav_data(convert_rate=16000, convert_width=2))"
+aplay -D plughw:3,0 --buffer-time=500000 /tmp/iris-converted.wav
+```
+
+If the converted file is clean too, live Python capture is the remaining difference: compare the buffer, actual capture rate and input gain, and check for overflow reports. If conversion sounds damaged, play that same converted file through Python too, so you don't confuse an ALSA playback-conversion problem with a recording problem. Using different files for the two playback tests doesn't isolate playback.
+
+On Windows or macOS, the shared local test and echo controls above work the same way. You can also compare with a recording from the operating system's recorder; when comparing playback applications, use the same saved file in both. Actual audio quality still needs checking on the device you're using; automated capture tests don't establish microphone quality or platform-wide hardware compatibility.
 
 The normal turn limit is 30 seconds. `--phrase-time-limit` changes it on the client; don't exceed the server's `phrase_time_limit` setting. The client `--listen-timeout` controls how long it waits for speech to start (10 seconds by default). Device listing and the cue test stay on the client; an actual voice turn sends the recording to your configured Iris server.
 

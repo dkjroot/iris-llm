@@ -7,6 +7,26 @@ from typing import Protocol
 DEFAULT_MICROPHONE_BUFFER = 8192
 
 
+def validate_capture_options(
+    *,
+    buffer_frames: int = DEFAULT_MICROPHONE_BUFFER,
+    pause_threshold: float = 1.2,
+    sample_rate: int | None = None,
+    energy_threshold: float | None = None,
+    calibration_duration: float = 0.6,
+) -> None:
+    if not 256 <= buffer_frames <= 65536:
+        raise ValueError("Microphone buffer must be between 256 and 65536 frames")
+    if not 0.5 <= pause_threshold <= 10:
+        raise ValueError("Pause threshold must be between 0.5 and 10 seconds")
+    if sample_rate is not None and not 8000 <= sample_rate <= 192000:
+        raise ValueError("Microphone rate must be between 8000 and 192000 Hz")
+    if energy_threshold is not None and not 0 < energy_threshold <= 32768:
+        raise ValueError("Energy threshold must be greater than 0 and at most 32768")
+    if not 0.1 <= calibration_duration <= 10:
+        raise ValueError("Calibration duration must be between 0.1 and 10 seconds")
+
+
 class CaptureReader(Protocol):
     def read(self, num_frames: int, exception_on_overflow: bool = True) -> bytes: ...
 

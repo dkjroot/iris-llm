@@ -46,6 +46,7 @@ def cues() -> dict[str, list[float]]:
         "bleep.wav": tone(660, 660, 0.13, 0.18),
         "longbleep.wav": tone(440, 440, 0.20, 0.16) + silence(0.06) + tone(330, 330, 0.30, 0.16),
         "workinglongquiet.wav": working,
+        "error.wav": (tone(180, 140, 0.10, 0.16) + silence(0.08)) * 3,
     }
 
 
@@ -62,7 +63,7 @@ def write_wav(path: Path, samples: list[float]) -> None:
 
 
 def main() -> None:
-    """Regenerate the four bundled cues; no network or audio device is used."""
+    """Regenerate the bundled cues; no network or audio device is used."""
     for filename, samples in cues().items():
         path = OUTPUT / filename
         write_wav(path, samples)
