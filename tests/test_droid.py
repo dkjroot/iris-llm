@@ -15,7 +15,7 @@ import pytest
 import speech_recognition as sr
 
 import iris
-from iris_droid.client import DroidClient, record_turn
+from iris_droid.client import DroidClient, open_microphone, play_wav, record_turn
 from iris_droid.protocol import MAX_BODY, read_wav, validate_token, write_wav
 from iris_droid.server import Brain, handler_for
 from iris_droid.wake import WakeDetector
@@ -42,6 +42,7 @@ def test_recording_loads_the_real_packaged_cue_before_reopening_microphone() -> 
         patch("speech_recognition.Microphone", return_value=microphone),
         patch("speech_recognition.Recognizer", return_value=recognizer),
         patch("sounddevice.play", side_effect=play),
+        patch("sounddevice.check_output_settings"),
     ):
         recording = record_turn(None, 30, 10, None, speaker=7)
     assert events == ["opened", "closed", "cue", "opened", "closed"]
@@ -196,12 +197,15 @@ def test_wake_uses_local_path_and_only_accepts_complete_phrase(tmp_path) -> None
     detector.AcceptWaveform.side_effect = [True, False, True]
     detector.Result.side_effect = ['{"text":"[unk]"}', '{"text":"hey iris"}']
     vosk = SimpleNamespace(Model=Mock(), KaldiRecognizer=Mock(return_value=detector))
-    source = SimpleNamespace(stream=Mock(read=Mock(return_value=b"pcm")), CHUNK=1024)
+    source = SimpleNamespace(
+        stream=Mock(read=Mock(return_value=b"pcm")), CHUNK=1024, SAMPLE_RATE=44100
+    )
     with patch.dict(sys.modules, {"vosk": vosk}):
         wake = WakeDetector(tmp_path, "Hey Iris")
         wake.wait(source)
     vosk.Model.assert_called_once_with(str(tmp_path))
     assert source.stream.read.call_count == 3
+    assert vosk.KaldiRecognizer.call_args.args[1] == 44100
     assert json.loads(vosk.KaldiRecognizer.call_args.args[2]) == ["hey iris", "[unk]"]
 
 
@@ -214,3 +218,97 @@ def test_short_droid_key_warns_but_is_accepted() -> None:
 def test_empty_or_invalid_header_keys_are_rejected(token: str) -> None:
     with pytest.raises(ValueError, match="non-empty ASCII"):
         validate_token(token)
+
+
+@pytest.mark.parametrize("native_rate", [44100, 48000])
+def test_native_capture_is_converted_to_server_format(native_rate):
+    microphone = Mock()
+    source = Mock(SAMPLE_RATE=native_rate)
+    microphone.__enter__ = Mock(return_value=source)
+    microphone.__exit__ = Mock()
+    # A second of real PCM conversion must remain a second at the server rate.
+    captured = sr.AudioData(b"\x01\x00" * native_rate, native_rate, 2)
+    recognizer = Mock()
+    recognizer.listen.return_value = captured
+    wake = Mock()
+    with (
+        patch("speech_recognition.Microphone", return_value=microphone) as factory,
+        patch("speech_recognition.Recognizer", return_value=recognizer),
+        patch("iris_droid.client.play_wav"),
+    ):
+        pcm, rate = read_wav(record_turn(1, 30, 10, wake, speaker=1), input_audio=True)
+    assert rate == 16000 and abs(len(pcm) // 2 - 16000) <= 1
+    assert all(call.kwargs == {"device_index": 1} for call in factory.call_args_list)
+    assert factory.call_count == 2
+    wake.wait.assert_called_once_with(source)
+    assert microphone.__exit__.call_count == 2
+
+
+@pytest.mark.parametrize("output_rate", [44100, 48000])
+def test_playback_resamples_when_hardware_rejects_voice_rate(output_rate):
+    import sounddevice as sd
+
+    # A known tone checks duration and pitch, rather than just the rate argument.
+    samples = (np.sin(2 * np.pi * 440 * np.arange(24000) / 24000) * 12000).astype("<i2")
+    with (
+        patch("sounddevice.check_output_settings", side_effect=[sd.PortAudioError("rate"), None]),
+        patch(
+            "sounddevice.query_devices", return_value={"default_samplerate": output_rate}
+        ) as query,
+        patch("sounddevice.play") as play,
+    ):
+        play_wav(write_wav(samples.tobytes(), 24000), device=1)
+    actual, rate = play.call_args.args
+    assert rate == output_rate and abs(len(actual) - output_rate) <= 2
+    frequency = np.fft.rfftfreq(len(actual), 1 / rate)[np.argmax(abs(np.fft.rfft(actual)))]
+    assert abs(frequency - 440) < 2
+    assert play.call_args.kwargs == {"device": 1, "blocking": True}
+    query.assert_called_once_with(1, "output")
+
+
+def test_supported_playback_preserves_samples_without_querying_default():
+    with (
+        patch("sounddevice.check_output_settings"),
+        patch("sounddevice.query_devices") as query,
+        patch("sounddevice.play") as play,
+    ):
+        play_wav(RECORDING, device=1)
+    query.assert_not_called()
+    samples, rate = play.call_args.args
+    assert rate == 16000 and samples.tobytes() == read_wav(RECORDING)[0]
+
+
+def test_failed_output_preflight_reports_device_and_never_plays():
+    import sounddevice as sd
+
+    with (
+        patch("sounddevice.check_output_settings", side_effect=sd.PortAudioError("unsupported")),
+        patch("sounddevice.query_devices", return_value={"default_samplerate": 44100}),
+        patch("sounddevice.play") as play,
+        pytest.raises(OSError, match="Speaker 1.*unsupported"),
+    ):
+        play_wav(RECORDING, device=1)
+    play.assert_not_called()
+
+
+def test_failed_microphone_open_does_not_mask_error_with_cleanup():
+    microphone = Mock()
+    microphone.__enter__ = Mock(return_value=SimpleNamespace(stream=None))
+    microphone.__exit__ = Mock(side_effect=AttributeError("None has no close"))
+    with (
+        patch("speech_recognition.Microphone", return_value=microphone),
+        pytest.raises(OSError, match="Cannot open microphone 1: no capture stream"),
+        open_microphone(1),
+    ):
+        pytest.fail("A failed capture stream must never be used")
+    microphone.__exit__.assert_not_called()
+
+
+def test_microphone_is_closed_when_recording_raises():
+    microphone = Mock()
+    microphone.__enter__ = Mock(return_value=Mock())
+    microphone.__exit__ = Mock()
+    with patch("speech_recognition.Microphone", return_value=microphone):
+        with pytest.raises(sr.WaitTimeoutError), open_microphone(1):
+            raise sr.WaitTimeoutError()
+    microphone.__exit__.assert_called_once()

@@ -5,8 +5,11 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -14,6 +17,9 @@ import httpx
 
 from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
 from iris_droid.wake import WakeDetector
+
+if TYPE_CHECKING:
+    import speech_recognition as sr
 
 
 class DroidClient:
@@ -60,9 +66,48 @@ class DroidClient:
 def play_wav(data: bytes, device: int | None = None) -> None:
     import numpy as np
     import sounddevice as sd
+    import speech_recognition as sr
 
     pcm, rate = read_wav(data)
-    sd.play(np.frombuffer(pcm, dtype="<i2"), rate, device=device, blocking=True)
+    try:
+        try:
+            sd.check_output_settings(device=device, channels=1, dtype="int16", samplerate=rate)
+        except sd.PortAudioError:
+            # Direct ALSA hardware often accepts only 44.1/48 kHz. Convert the
+            # samples too: changing just the rate would change pitch and speed.
+            output_rate = int(sd.query_devices(device, "output")["default_samplerate"])
+            sd.check_output_settings(
+                device=device, channels=1, dtype="int16", samplerate=output_rate
+            )
+            pcm = sr.AudioData(pcm, rate, 2).get_raw_data(convert_rate=output_rate)
+            rate = output_rate
+        sd.play(np.frombuffer(pcm, dtype="<i2"), rate, device=device, blocking=True)
+    except sd.PortAudioError as error:
+        raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
+
+
+@contextmanager
+def open_microphone(device: int | None) -> Iterator[sr.Microphone]:
+    import speech_recognition as sr
+
+    try:
+        # Let PyAudio choose the hardware's default rate; conversion to the
+        # server's 16 kHz format happens after recording.
+        microphone = sr.Microphone(device_index=device)
+        source = microphone.__enter__()
+    except (OSError, ValueError, AssertionError, AttributeError) as error:
+        raise OSError(f"Cannot open microphone {device}: {error}") from error
+    # Some SpeechRecognition versions swallow the opening error and terminate
+    # PyAudio, leaving no stream. Their __exit__ then masks it with AttributeError.
+    if source.stream is None:
+        raise OSError(
+            f"Cannot open microphone {device}: no capture stream. Check the device's "
+            "input channels, supported sample rates and whether it is already in use."
+        )
+    try:
+        yield source
+    finally:
+        microphone.__exit__(None, None, None)
 
 
 def record_turn(
@@ -75,14 +120,14 @@ def record_turn(
     import speech_recognition as sr
 
     recognizer = sr.Recognizer()
-    with sr.Microphone(device_index=microphone, sample_rate=16000) as source:
+    with open_microphone(microphone) as source:
         recognizer.adjust_for_ambient_noise(source, duration=0.3)
         if wake is not None:
             wake.wait(source)
         # A short acknowledgement lets a headless droid tell us when to speak.
         # Close the input while playing it, then reopen to discard the cue/echo.
     play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
-    with sr.Microphone(device_index=microphone, sample_rate=16000) as source:
+    with open_microphone(microphone) as source:
         print("Speak now...", flush=True)
         audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
     # SpeechRecognition's chunk boundaries can run slightly over its time cap.

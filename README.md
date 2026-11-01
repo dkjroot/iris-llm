@@ -49,25 +49,30 @@ listening again. Wake detection currently needs the phrase before each turn;
 a conversation window is something I'd like to work on once the basic setup is
 getting regular use.
 
-## 1. Install the bits each machine needs
+## Choose where each half runs
 
-Use Python 3.11–3.13. I'd start with 3.12; using the newest Python isn't always
-the easiest route when audio and model libraries are involved. You'll also need
-Git, a working microphone and speaker on the client, and a chat model running on
-the PC. The PC doesn't need a microphone or speaker of its own.
+Follow [How to set up the server](#how-to-set-up-the-server) on the PC that handles the models, then [How to set up the client](#how-to-set-up-the-client) on the laptop or Pi with the microphone and speaker. Each guide includes its own installation, connection key and startup steps.
 
-Get the repository on each machine you'll be using:
+You can run both on one computer. Follow both guides, use one checkout and Python environment, and keep the server and client in separate terminals. Installing the client packages adds microphone support to the server installation. Use `http://127.0.0.1:8765` for the client connection; there's no need to open a LAN listener. If you use uv, include all three extras as shown in the guides.
+
+## How to set up the server
+
+Do this on the computer that will run speech recognition and synthesis and connect to the chat model. It doesn't need a microphone or speaker. Use Python 3.11–3.13; I'd start with 3.12, since the newest Python isn't always the easiest route with model libraries.
+
+### 1. Install the server
+
+Install Git first if needed. On Debian-based Linux or Raspberry Pi OS, use `sudo apt update` followed by `sudo apt install git`; on Windows or macOS, use your usual Git installation. Then get the repository (shared commands for all platforms):
 
 ```sh
 git clone https://github.com/dkjroot/iris-llm.git
 cd iris-llm
 ```
 
-If you've already got it, use that checkout. There's no need to clone another copy.
+If you've already got the repository, open a terminal in that checkout instead. There's no need to clone another copy. If its `.venv` already exists, activate it rather than creating it again.
 
-### Windows
+#### Windows (PowerShell)
 
-With Python 3.12 installed, open PowerShell in the repository:
+With Python 3.12 and Git installed, open PowerShell in the repository:
 
 ```powershell
 py -3.12 -m venv .venv
@@ -76,21 +81,11 @@ python -m ensurepip --upgrade
 python -m pip install --upgrade pip
 ```
 
-If PowerShell won't activate the environment, use
-`.\.venv\Scripts\python.exe` in place of `python` below. You don't need to change
-your execution policy just to run Iris. In Command Prompt, you can activate it
-with `.venv\Scripts\activate.bat` instead.
+If PowerShell won't activate the environment, use `.\.venv\Scripts\python.exe` in place of `python` below. You don't need to change your execution policy just to run Iris. In Command Prompt, you can activate it with `.venv\Scripts\activate.bat` instead.
 
-### macOS
+#### macOS (Terminal)
 
-Use an installed Python 3.12. The client also needs PortAudio before pip can
-build its PyAudio microphone adapter. With Homebrew, install it in Terminal:
-
-```sh
-brew install portaudio
-```
-
-Then create your Python environment:
+With Git and Python 3.12 installed, run these commands in the repository:
 
 ```sh
 python3.12 -m venv .venv
@@ -99,68 +94,34 @@ python -m ensurepip --upgrade
 python -m pip install --upgrade pip
 ```
 
-Allow microphone access for the terminal or application you're using to launch
-the client when macOS asks for it.
+#### Linux (Bash)
 
-If pip stops with `fatal error: 'portaudio.h' file not found`, PortAudio is the
-missing piece. Run the Homebrew command above, then retry
-`python -m pip install -e ".[microphone]"` in your activated environment. You
-don't need to recreate the environment or install the full Xcode application
-for that error; the compiler has already got far enough to look for the header.
-
-### Linux and Raspberry Pi OS
-
-Install the Python venv/development packages, a compiler and PortAudio. On a
-Debian-based system whose `python3` is a supported version:
+On a Debian-based system with a supported `python3`, install the prerequisites, then create the environment in the repository:
 
 ```sh
 sudo apt update
-sudo apt install git python3-venv python3-dev build-essential portaudio19-dev libportaudio2
+sudo apt install git python3-venv python3-dev build-essential libportaudio2
 python3 -m venv .venv
 source .venv/bin/activate
 python -m ensurepip --upgrade
 python -m pip install --upgrade pip
 ```
 
-Check `python3 --version` first. If your distribution ships a Python outside
-3.11–3.13, install a supported interpreter and use its matching venv/development
-packages. Other distributions need their equivalents of the packages above.
-For a Pi, use a 64-bit OS. A Pi 4 with 8 GB should have plenty of room for the
-client's part; it isn't being asked to load the PC's models.
+Check `python3 --version` first. If your distribution ships a Python outside 3.11–3.13, install a supported interpreter and use its matching venv/development packages. Other distributions need their equivalents of the packages above.
 
-### Install the server or client packages
+#### Install the Python packages (all platforms)
 
-Once your environment is active, these commands are the same on all platforms.
-On the **PC server**:
+With the environment active:
 
 ```sh
 python -m pip install -e ".[whisper,kokoro]"
 ```
 
-On the **laptop or Pi client**:
+The server uses Whisper for recognition and Kokoro for its voice. Neither ordinary startup nor an import downloads model files; preparing those is a separate step below. The server doesn't need the client's `microphone` extra.
 
-```sh
-python -m pip install -e ".[microphone]"
-```
+If you prefer uv, use `uv sync --locked --python 3.12 --extra whisper --extra kokoro` instead of the venv/pip steps. Run subsequent commands with `uv run --no-sync python` instead of `python`. You can pick pip or uv; you don't need to use both. If this environment also runs the client, include `--extra microphone` in the sync command so all three extras stay installed.
 
-If you're running both on one machine, install both sets together:
-
-```sh
-python -m pip install -e ".[microphone,whisper,kokoro]"
-```
-
-The server uses Whisper for recognition and Kokoro for its voice. The client
-doesn't need either model. Neither ordinary startup nor an import downloads
-model files. The first download is a separate setup step below.
-
-If you prefer uv, the checked-in lockfile provides the reproducible route:
-`uv sync --locked --extra whisper --extra kokoro` on the server, or
-`uv sync --locked --extra microphone` on the client. Include all three extras
-for one machine, and run subsequent commands with `uv run --no-sync python`
-instead of `python`. Use a supported interpreter, for example with `--python 3.12`.
-You can pick pip or uv; you don't need to use both.
-
-## 2. Configure the PC server
+### 2. Configure the server and chat connection
 
 Get your chat model working first. Iris doesn't load the chat model itself; it
 uses an OpenAI-compatible chat endpoint. That describes the API format, rather
@@ -179,7 +140,7 @@ its own interface first. Keep it running in its own process while Iris runs.
 The model endpoint can stay on localhost: the laptop or Pi connects to Iris,
 which talks to the model on its behalf.
 
-On the PC, run:
+On the PC, run (shared commands for all platforms):
 
 ```sh
 python iris.py configure
@@ -190,7 +151,7 @@ The configuration script asks for the model address and name, the recogniser,
 and the voice and speaking speed. If you don't know the model name yet, the
 check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
-that listing route can still work; try the client text test below.
+that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
 
 These are the normal choices for a local setup:
 
@@ -219,6 +180,38 @@ configuration files have their desktop-only fields removed when loaded, and
 old system/Google voice choices are switched to Kokoro. Run configuration again
 to save the cleaned-up file.
 
+#### Does my LLM need a key as well?
+
+There are two connections here: **client → Iris server → model server**.
+`IRIS_DROID_TOKEN` belongs to the first connection. Most local model servers
+work without a key on the second, in which case there's nothing else to set.
+
+If your model endpoint requires authentication, its key belongs in
+`IRIS_API_KEY` on the **PC server only**. That value is sent to the model endpoint;
+it isn't the key that lets the laptop or Pi connect to Iris. Use the key your
+model endpoint expects. Iris doesn't impose a minimum length on it either.
+
+```powershell
+# Windows PowerShell, on the PC server only, if the model requires a key.
+$env:IRIS_API_KEY = 'your-model-endpoint-key'
+```
+
+```bat
+REM Windows Command Prompt, on the PC server only, if the model requires a key.
+set "IRIS_API_KEY=your-model-endpoint-key"
+```
+
+```sh
+# macOS, Linux or Raspberry Pi OS, on the server only, if the model requires a key.
+export IRIS_API_KEY='your-model-endpoint-key'
+```
+
+This is an optional credential for your chosen model endpoint, rather than a
+second key everybody needs to invent for Iris. If the endpoint is outside the
+PC, you'll also need to enable outbound remote services in configuration.
+
+### 3. Download the speech models
+
 Now download the server's speech models:
 
 ```sh
@@ -231,7 +224,7 @@ afterwards normal startup uses the cached files. Kokoro's fixed files are checke
 for size and SHA-256 hash. Use `--download-voices` to prepare just Kokoro, or
 `--list-voices` to see the voice suggestions without loading a model.
 
-## 3. Set the droid connection key
+### 4. Set the client connection key
 
 Iris needs a shared key so the client can connect to the server. Choose one and
 set **the same value in both terminals**, whether those terminals are on one
@@ -268,90 +261,27 @@ they don't update an already-running program or carry over into a new terminal.
 If you're using an IDE or a service, put the value in its launch environment.
 Keep the key out of committed configuration files.
 
-### Does my LLM need a key as well?
+### 5. Start the server
 
-There are two connections here: **client → Iris server → model server**.
-`IRIS_DROID_TOKEN` belongs to the first connection. Most local model servers
-work without a key on the second, in which case there's nothing else to set.
+With the server's environment active, its connection key set, and the chat model still running, choose the command for your setup. These commands are shared by all platforms.
 
-If your model endpoint requires authentication, its key belongs in
-`IRIS_API_KEY` on the **PC server only**. That value is sent to the model endpoint;
-it isn't the key that lets the laptop or Pi connect to Iris. Use the key your
-model endpoint expects. Iris doesn't impose a minimum length on it either.
-
-```powershell
-# Windows PowerShell, on the PC server only, if the model requires a key.
-$env:IRIS_API_KEY = 'your-model-endpoint-key'
-```
-
-```bat
-REM Windows Command Prompt, on the PC server only, if the model requires a key.
-set "IRIS_API_KEY=your-model-endpoint-key"
-```
-
-```sh
-# macOS, Linux or Raspberry Pi OS, on the server only, if the model requires a key.
-export IRIS_API_KEY='your-model-endpoint-key'
-```
-
-This is an optional credential for your chosen model endpoint, rather than a
-second key everybody needs to invent for Iris. If the endpoint is outside the
-PC, you'll also need to enable outbound remote services in configuration.
-
-## 4. Start Iris and try a conversation
-
-### Both halves on one computer
-
-In the first terminal, with your environment active and the droid key set:
-
-```sh
-python iris.py server
-```
-
-In a second terminal in the same repository, activate the environment, set the
-same key, and try a text turn:
-
-```sh
-python iris.py client --text
-```
-
-This goes through the same Iris server as voice does; it just skips microphone
-capture, transcription and synthesis for the turn. Type `exit` to finish.
-Then run the voice client:
-
-```sh
-python iris.py client
-```
-
-Press Enter, wait for the short listening cue, then speak. The terminal shows
-what Iris heard and her reply, and the client plays her voice. Say `exit` or
-press Ctrl-C to stop the client. The server stays running until you stop it.
-
-### A laptop or Pi talking to the PC
-
-On the PC, allow Iris to listen for connections from another machine:
+For a laptop or Pi connecting over the LAN:
 
 ```sh
 python iris.py server --host 0.0.0.0
 ```
 
-On the laptop or Pi, use the PC's actual LAN address:
+Allow inbound TCP port 8765 in the PC firewall for your private LAN, ideally restricted to the client. You don't need to change the router for two machines on the same LAN.
+
+If both halves run on this computer:
 
 ```sh
-python iris.py client --server http://192.168.1.10:8765 --text
+python iris.py server
 ```
 
-Replace `192.168.1.10` with your PC's address. Once the text test works, leave off
-`--text` to use the microphone and speaker. The address is Iris's port `8765`,
-not the model server's address or port. `0.0.0.0` is a listening address, not an
-address to give the client; `127.0.0.1` always means the machine you're on.
+This uses `127.0.0.1:8765` and doesn't need a LAN listener. Leave this terminal running while you follow [How to set up the client](#how-to-set-up-the-client) in a second terminal. Ctrl-C stops the server.
 
-Allow inbound TCP port 8765 in the PC firewall for your private LAN, ideally
-restricted to the client. The client doesn't need an incoming firewall rule.
-Both machines need to be able to reach each other; guest Wi-Fi sometimes keeps
-devices apart even when they're connected to the same router.
-
-### What opening the LAN listener means
+#### What opening the LAN listener means
 
 By default Iris listens on `127.0.0.1`, so only this computer can connect.
 `--host 0.0.0.0` listens on all of its IPv4 interfaces, including the LAN, subject
@@ -372,27 +302,198 @@ public tunnels. Keep it on your trusted network and don't forward this port to
 the internet. This small HTTP service doesn't encrypt the key or conversation;
 if you need to cross an untrusted network, use an encrypted VPN or HTTPS proxy.
 
-## Listening and audio devices
+## How to set up the client
 
-The client defaults to Enter-to-talk. Use `--activation continuous` to listen
-whenever it's your turn. These are client choices; changing the server config
-doesn't change when the microphone opens.
+Do this on the laptop or Raspberry Pi with the microphone and speaker, or in the same checkout as the server if you're using one computer. The client records your speech and plays replies; Whisper, Kokoro and the chat model run on the server. You don't need to run `configure` or download those models on a separate client.
 
-To list microphone indices on the client:
+Use Python 3.11–3.13 (I'd start with 3.12), Git, and a working microphone and speaker. For a Pi, use a 64-bit OS; it isn't being asked to load the PC's models.
+
+### 1. Install the client
+
+Install Git first if needed. On Debian-based Linux or Raspberry Pi OS, use `sudo apt update` followed by `sudo apt install git`; on Windows or macOS, use your usual Git installation. Then get the repository (shared commands for all platforms):
+
+```sh
+git clone https://github.com/dkjroot/iris-llm.git
+cd iris-llm
+```
+
+If you've already got the repository, open a terminal in that checkout instead. There's no need to clone another copy. If its `.venv` already exists, activate it rather than creating it again.
+
+#### Windows (PowerShell)
+
+With Python 3.12 and Git installed, open PowerShell in the repository:
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip
+```
+
+If PowerShell won't activate the environment, use `.\.venv\Scripts\python.exe` in place of `python` below. You don't need to change your execution policy just to run Iris. In Command Prompt, you can activate it with `.venv\Scripts\activate.bat` instead.
+
+#### macOS (Terminal)
+
+With Git and Python 3.12 installed, install PortAudio with Homebrew before building the PyAudio microphone adapter:
+
+```sh
+brew install portaudio
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip
+```
+
+Allow microphone access for the terminal or application you're using to launch the client when macOS asks for it. If pip stops with `fatal error: 'portaudio.h' file not found`, run the Homebrew command above and retry the client package installation below in your activated environment. You don't need to recreate the environment or install the full Xcode application for that error; the compiler has already got far enough to look for the header.
+
+#### Linux and Raspberry Pi OS (Bash)
+
+On a Debian-based system with a supported `python3`, install the prerequisites, then create the environment in the repository:
+
+```sh
+sudo apt update
+sudo apt install git python3-venv python3-dev build-essential portaudio19-dev libportaudio2 alsa-utils
+python3 -m venv .venv
+source .venv/bin/activate
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip
+```
+
+Check `python3 --version` first. If your distribution ships a Python outside 3.11–3.13, install a supported interpreter and use its matching venv/development packages. Other distributions need their equivalents of the packages above.
+
+#### Install the Python packages (all platforms)
+
+With the environment active:
+
+```sh
+python -m pip install -e ".[microphone]"
+```
+
+If you're sharing the server's environment on one computer, this adds microphone support to the packages already installed for the server.
+
+If you prefer uv, use `uv sync --locked --python 3.12 --extra microphone` instead of the venv/pip steps. Run subsequent commands with `uv run --no-sync python` instead of `python`. If this environment also runs the server, use `uv sync --locked --python 3.12 --extra microphone --extra whisper --extra kokoro` so all three extras stay installed. You can pick pip or uv; you don't need to use both.
+
+### 2. Set the connection key
+
+Use the **same `IRIS_DROID_TOKEN` value you chose for the server**, rather than generating another one. Set it in the terminal where you'll start the client, with its environment active.
+
+**Windows PowerShell:**
+
+```powershell
+$env:IRIS_DROID_TOKEN = 'paste-your-chosen-key-here'
+```
+
+**Windows Command Prompt:**
+
+```bat
+set "IRIS_DROID_TOKEN=paste-your-chosen-key-here"
+```
+
+**macOS zsh, Linux Bash, and Raspberry Pi OS:**
+
+```sh
+export IRIS_DROID_TOKEN='paste-your-chosen-key-here'
+```
+
+This applies to the current terminal and programs launched from it. Set it again in a new terminal, or put it in your IDE or service's launch environment. Keep the key out of committed files. A client on the same computer still needs this key in its own terminal. The client doesn't need `IRIS_API_KEY`; any model endpoint credentials belong on the server.
+
+### 3. Test the connection with text
+
+Leave the Iris server and its model server running. For a client on another computer, use the PC's actual LAN address (shared command for all platforms):
+
+```sh
+python iris.py client --server http://192.168.1.10:8765 --text
+```
+
+Replace `192.168.1.10` with your PC's address. This is Iris's port `8765`, not the model server's address or port. `0.0.0.0` is a listening address, not an address to give the client; `127.0.0.1` always means the machine you're on. The client doesn't need an incoming firewall rule. Guest Wi-Fi sometimes keeps devices apart even when they're connected to the same router.
+
+If the client and server are on the same computer, open a second terminal in the repository, activate the same environment, set the same key, and run:
+
+```sh
+python iris.py client --server http://127.0.0.1:8765 --text
+```
+
+Type a message and check that a reply prints. This goes through Iris and the chat model but skips microphone capture, transcription and synthesis. Type `exit` to finish the text test, then choose the audio devices below. For all subsequent client commands, use your PC's LAN address for a separate machine, or `http://127.0.0.1:8765` when both halves run on one computer.
+
+### 4. Set up listening and audio devices
+
+The client records mono audio at the microphone's reported default sample rate and converts it to 16 kHz for the server. For playback, it checks whether the speaker accepts the audio's rate; if necessary it converts the samples to the speaker's reported default rate, keeping the duration and pitch. A USB device running at 44.1 or 48 kHz doesn't need to support the speech models' rates directly. Wake recognition uses the microphone's actual rate too.
+
+All the commands in this section run on the **client**, with its Python environment active. You don't need to run `configure` or download Whisper or Kokoro on the Pi; those belong on the PC server. Keep the same `IRIS_DROID_TOKEN` and server address that worked for your text test.
+
+The client defaults to Enter-to-talk. Use `--activation continuous` to listen whenever it's your turn. These are client choices; changing the server config doesn't change when the microphone opens. `--text` skips all audio, so a working text conversation confirms the connection but doesn't test recording or playback.
+
+#### Choose the microphone and speaker
+
+These commands are shared by Windows PowerShell, macOS and Linux Bash, including Raspberry Pi OS:
 
 ```sh
 python iris.py client --list-microphones
+python -m sounddevice
 ```
 
-Pass your chosen index with `--microphone N`. For output devices, run
-`python -m sounddevice` and use `--speaker N`. The microphone and speaker lists
-come from different audio APIs, so their indices don't necessarily match.
+The first command lists names and indices from SpeechRecognition/PyAudio for `--microphone`. The second lists sounddevice devices for `--speaker`; choose one with output channels (`out`). The first list can include playback-only devices too, so choose an entry for your microphone rather than assuming every listed device can record. The two libraries enumerate devices separately, so choose each index from its own list.
 
-The normal turn limit is 30 seconds. `--phrase-time-limit` changes it on the
-client; don't exceed the server's `phrase_time_limit` setting. The client
-`--listen-timeout` controls how long it waits for speech to start.
+For example, if your microphone is index `2` in the first list and your speaker is index `7` in the second, run:
 
-### Local wake detection
+```sh
+python iris.py client --server http://192.168.1.10:8765 --microphone 2 --speaker 7
+```
+
+Replace the address and both indices with yours. These numbers are examples, not defaults. `--speaker` selects the output for both the listening cue and Iris's spoken reply. Without these options, the libraries use their default input and output devices. Device choices are command-line options; they aren't saved by the server's configuration script. Include them each time you launch the client, including with continuous or wake activation.
+
+#### Raspberry Pi: ALSA card 3, device 0
+
+If `arecord -l` and `aplay -l` show **card 3, device 0**, the ALSA hardware address is `hw:3,0`. That is a different kind of number from an Iris device index: don't automatically pass `--microphone 3 --speaker 3`. Iris currently accepts integer indices for these options, rather than ALSA addresses such as `hw:3,0` or `plughw:3,0`.
+
+Run the two Python listing commands above on the Pi. Look for your device's name and `(hw:3,0)` in each list. For example, you might see:
+
+Microphone list:
+
+```text
+2: USB Audio Device: Audio (hw:3,0)
+```
+
+Speaker list:
+
+```text
+7 USB Audio Device: Audio (hw:3,0), ALSA (1 in, 2 out)
+```
+
+With those example lists, use `--microphone 2 --speaker 7`, as in the launch command above. Your actual indices may differ, even though the ALSA card and device are the same. Recheck the lists after reconnecting USB audio devices or changing the audio setup.
+
+If you need to check the ALSA names again, these are **Linux / Raspberry Pi OS** commands:
+
+```sh
+arecord -l
+aplay -l
+```
+
+Both tools come from `alsa-utils` (`sudo apt install alsa-utils` on Raspberry Pi OS). An ALSA recording/playback test is a useful first step, but Iris still needs the right devices selected through its Python libraries. You can select them explicitly without changing the whole system's default audio device.
+
+#### Check playback, then try a voice turn
+
+To test the chosen speaker without contacting the server, this shared command plays Iris's packaged listening cue through the same playback function the client uses. Replace `7` with your sounddevice output index:
+
+```sh
+python -c "from importlib.resources import files; from iris_droid.client import play_wav; play_wav(files('iris_sounds').joinpath('bleep.wav').read_bytes(), device=7)"
+```
+
+Then launch the voice client with both device options and your PC's address. Press Enter, wait for the cue and `Speak now...`, then say a short sentence and pause. The client stops recording after silence, sends the recording to the PC, prints the transcript and reply, and plays the reply. Enter starts a turn; it isn't a key you hold while talking. Say `exit` or press Ctrl-C to finish.
+
+On Linux, device enumeration can print ALSA `Unknown PCM` messages and warnings that JACK isn't running before showing the list. Those messages alone don't establish that your selected device failed; check the device list and the result of the playback or capture attempt. `python -m sounddevice` only lists devices; adding an index to that command doesn't select or test one.
+
+If that doesn't work:
+
+- **No listening cue:** try the playback check above. Check the output index, speaker volume and mute controls. On Raspberry Pi OS, `alsamixer -c 3` opens the mixer for card 3, if it has mixer controls. A playback failure can stop the client before it records your sentence.
+- **Cue plays, but no speech is heard:** check the microphone index and input gain/mute, and speak after `Speak now...`. `Didn't hear speech. Try again.` means speech didn't start within the listening timeout. An HTTP `422` means the recording reached the PC but its recogniser couldn't understand it.
+- **Invalid device, channel or sample-rate errors:** recheck both device lists. To inspect your output device, run `python -c "import sounddevice as sd; print(sd.query_devices(1))"`, replacing `1` with your speaker index. `default_samplerate` is the rate the client uses if the speaker rejects the cue or reply's original rate. If this still fails, check that the selected devices support mono capture/playback and that their reported default rates work. An ALSA test using `plughw:3,0` can apply format conversion that a direct `hw:3,0` entry doesn't provide. An appropriate `default` or `sysdefault` entry may help if it routes to your device. Changing `--listen-timeout` won't fix a format error. The [ALSA configuration guide](https://www.alsa-project.org/wiki/Asoundrc) explains hardware and conversion plugins.
+- **Device busy:** stop any `arecord`, `aplay` or other audio test still using the hardware before starting Iris. Run the client as your normal user in the same environment as the successful tests, rather than trying `sudo` as an audio fix.
+- **Transcript and reply print, but no spoken reply:** repeat the playback check with the same speaker index. A text-mode run never plays speech; make sure `--text` is absent. An HTTP `503` points to the PC's speech service instead.
+
+The normal turn limit is 30 seconds. `--phrase-time-limit` changes it on the client; don't exceed the server's `phrase_time_limit` setting. The client `--listen-timeout` controls how long it waits for speech to start (10 seconds by default). Device listing and the cue test stay on the client; an actual voice turn sends the recording to your configured Iris server.
+
+### 5. Optional: local wake detection
 
 For hands-free use, install the optional Vosk library on the client:
 

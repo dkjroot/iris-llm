@@ -20,7 +20,9 @@ class WakeDetector:
             raise ValueError("The wake phrase must contain words separated by spaces")
 
     def wait(self, source: Any) -> None:
-        detector = self.recognizer_type(self.model, 16000, json.dumps([self.phrase, "[unk]"]))
+        detector = self.recognizer_type(
+            self.model, source.SAMPLE_RATE, json.dumps([self.phrase, "[unk]"])
+        )
         print(f'(waiting for "{self.phrase}"...)', flush=True)
         while True:
             data = source.stream.read(source.CHUNK)

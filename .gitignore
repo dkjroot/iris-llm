@@ -3,6 +3,9 @@
 .env
 *~
 iris_sounds/*.mp3
+run_server.ps1
+run_client.sh
+.vscode
 
 __pycache__/
 *.py[cod]
