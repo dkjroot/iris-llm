@@ -84,6 +84,40 @@ def main() -> int:
             )
             == "yes"
         )
+        data["tools_enabled"] = (
+            choose(
+                "Let the model optionally call Iris skills",
+                ["yes", "no"],
+                "yes" if previous.tools_enabled else "no",
+            )
+            == "yes"
+        )
+        if data["tools_enabled"]:
+            data["local_timezone"] = (
+                input(f"Local timezone (IANA name) [{previous.local_timezone}]: ").strip()
+                or previous.local_timezone
+            )
+            print(
+                "The clock skill runs locally. Weather uses Open-Meteo online; "
+                "it receives the configured town/coordinates, not your conversation or audio."
+            )
+            data["weather_enabled"] = (
+                choose(
+                    "Enable online weather skill",
+                    ["yes", "no"],
+                    "yes" if previous.weather_enabled else "no",
+                )
+                == "yes"
+            )
+            if data["weather_enabled"]:
+                data["weather_location"] = (
+                    input(f"Weather town [{previous.weather_location}]: ").strip()
+                    or previous.weather_location
+                )
+                data["weather_country"] = (
+                    input(f"Weather country code [{previous.weather_country}]: ").strip()
+                    or previous.weather_country
+                )
         settings = Settings.model_validate(data)
         path.write_text(
             json.dumps(settings.model_dump(mode="json"), indent=4) + "\n",

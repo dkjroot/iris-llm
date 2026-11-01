@@ -10,6 +10,7 @@ Each library's authors retain their copyright and license.
 | Component | Upstream credit and source | License |
 | --- | --- | --- |
 | HTTPX | [Encode and contributors](https://github.com/encode/httpx) | BSD-3-Clause |
+| tzdata | [Python tzdata and the IANA time zone database](https://github.com/python/tzdata) | Apache-2.0 for the package; IANA data are public domain |
 | Pydantic and pydantic-settings | [Pydantic contributors](https://github.com/pydantic/pydantic) and [settings contributors](https://github.com/pydantic/pydantic-settings) | MIT |
 | faster-whisper (optional) | [SYSTRAN and contributors](https://github.com/SYSTRAN/faster-whisper) | MIT; CTranslate2, PyAV and other dependencies retain their own notices |
 | kokoro-onnx (optional) | [thewh1teagle and contributors](https://github.com/thewh1teagle/kokoro-onnx) | MIT; model/voice assets have separate Apache-2.0 terms |

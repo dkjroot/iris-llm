@@ -148,7 +148,7 @@ python iris.py --check
 ```
 
 The configuration script asks for the model address and name, the recogniser,
-and the voice and speaking speed. If you don't know the model name yet, the
+the voice and speaking speed, and optional time and weather skills. If you don't know the model name yet, the
 check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
@@ -173,12 +173,118 @@ speech to another machine or an online service. It doesn't need to be enabled
 for a laptop or Pi to connect to Iris. With a local model, Whisper and Kokoro,
 leave it off.
 
+Online weather has its own `weather_enabled` switch, described below. You can
+enable it while keeping your chat model and speech processing local.
+
 Configuration goes into `local-config.json`, which stays out of Git. The full
 server defaults are in `config_template.json`; environment values named
 `IRIS_<SETTING>` override the file. Unknown settings are rejected. Earlier
 configuration files have their desktop-only fields removed when loaded, and
 old system/Google voice choices are switched to Kokoro. Run configuration again
 to save the cleaned-up file.
+
+#### Optional skills: the clock and local weather
+
+Iris can let the model choose when to use a skill during a conversation. There
+are no special phrases to memorise: try “What day is it?”, “Will I need a coat
+tomorrow?” or “What does the weekend weather look like?”. She can still just
+chat or answer questions from her own knowledge. These are model function calls,
+so your model and model server need to support them.
+
+The first two skills are `get_local_time` and `get_local_weather`. The clock reads
+the Iris server's system clock in your configured timezone, including daylight
+saving. Keep that computer's date and time synchronised. Weather comes from
+[Open-Meteo](https://open-meteo.com/), with current modelled conditions and a
+daily forecast for up to seven days, in Celsius, mph and mm. The results include
+dates, rain probabilities and the resolved location, rather than relying on the
+model's memory of the weather. Iris asks the model to credit Open-Meteo when
+using its data. Open-Meteo's free API needs no key for this personal setup; see
+its [usage plans](https://open-meteo.com/en/pricing) for other uses.
+
+Run `python iris.py configure` on the server to enable weather and set your town,
+country and timezone. The clock skill is on by default; online weather starts
+off. For Stroud in Gloucestershire, these are the relevant `local-config.json`
+fields. Merge them into your existing configuration rather than replacing it:
+
+```json
+{
+    "tools_enabled": true,
+    "local_timezone": "Europe/London",
+    "weather_enabled": true,
+    "weather_location": "Stroud",
+    "weather_country": "GB"
+}
+```
+
+These settings also accept the usual `IRIS_` environment overrides. Weather
+requests send the configured town and country to Open-Meteo's geocoder, then
+coordinates and forecast options to its weather API. Conversation text, audio
+and the model API key aren't sent to the weather service. The resolved location
+is reused for that conversation; each weather call fetches a fresh forecast.
+The weather result is then sent to your configured chat model so Iris can put it
+into words. If the service fails, the model receives an error and is told to say
+it couldn't check, rather than make up a forecast.
+
+For **Gemma 4 with KoboldCPP**, use a recent KoboldCPP build with **Use Jinja**
+enabled (or add `--jinja` to its launch command), and use a model chat template
+that supports Gemma's tool calls. KoboldCPP handles the model's native format
+and returns structured `tool_calls` through `/v1/chat/completions`; Iris runs
+the named skill and sends its result back for the final reply. See the
+[KoboldCPP implementation](https://github.com/LostRuins/koboldcpp/blob/concedo/koboldcpp.py)
+and [Gemma function-calling guide](https://ai.google.dev/gemma/docs/capabilities/text/function-calling-gemma4).
+Support in the upstream software doesn't establish that every older build or
+GGUF template will work, so try the text client before testing speech.
+
+To see what is happening, temporarily set `"trace": true` on the server, restart
+it, and run `python iris.py client --text`. Ask for the time and tomorrow's
+weather, then have an ordinary chat. A real call prints `Skill get_local_time:
+ok` or `Skill get_local_weather: ok`, with its elapsed time; the trace also shows
+the requested tool and returned result. A plausible answer alone doesn't prove
+that a skill ran. Trace prints conversation text too, so turn it off after
+testing. If generation stops before a complete call or reply, check KoboldCPP's
+console and consider raising Iris's `max_tokens` for your model's thinking and
+answer. The default is 250 tokens per model request.
+
+Tools are optional (`tool_choice` is `auto`), and a normal answer still needs
+only one model request. A skill needs another model request to turn the result
+into a reply. Iris allows up to four tool rounds and eight calls per user turn.
+She keeps complete tool exchanges in history and removes whole turns when the
+history limit is reached. “Clear context” removes those exchanges too. Set
+`"tools_enabled": false` to return to plain chat requests with no tool definitions
+if your model server doesn't support them.
+
+#### Using another model host or adding an adapter
+
+The skills and conversation loop don't depend on KoboldCPP. The default adapter
+uses the OpenAI-compatible Chat Completions API, with `base_url`, `model` and
+`IRIS_API_KEY` selecting your local host or online endpoint. Set `allow_remote`
+to `true` for a model endpoint outside localhost. That endpoint still needs to
+support the chat and tool-call fields Iris uses; we haven't tested other hosts
+as part of this feature.
+
+Jinja is a setting in the model host, rather than a template engine Iris runs.
+Leave Iris's `chat_template_kwargs` empty to let the host use its defaults. If
+your host accepts per-request template options, put them in that dictionary.
+Iris sends them as `chat_template_kwargs` without interpreting them. Additional
+non-secret request fields can go in `chat_request_options`. Both settings are
+empty by default, so Iris doesn't send template options or assume a particular
+host. They also accept JSON through `IRIS_CHAT_TEMPLATE_KWARGS` and
+`IRIS_CHAT_REQUEST_OPTIONS`. Use only fields supported by your chosen endpoint;
+Iris's named settings and conversation/tool fields can't be replaced through
+the extra options. Trace output includes these options, so keep authentication
+in `IRIS_API_KEY`.
+
+If your endpoint uses a different API format, implement the small `ChatBackend`
+interface in [backends.py](iris_chat_engines/backends.py). Its `complete(messages,
+tools)` method receives the conversation and skill definitions, and returns one
+assistant `Message`, containing text or tool calls. The adapter translates to
+and from the provider's format and raises `ChatError` on failure. Preserve tool
+IDs and any reasoning the provider needs on subsequent calls, and leave the
+input messages alone. Wire your adapter into `make_backend`, or pass it directly
+to `ChatEngine(..., backend=your_adapter)` when embedding Iris. The history,
+tool execution, call limits and voice client can carry on using the same code.
+Adding another skill is separate again: register its argument schema and
+handler in [iris_tools](iris_tools/__init__.py).
 
 #### Does my LLM need a key as well?
 
@@ -500,10 +606,11 @@ The client plays feedback through the device selected with `--speaker`, includin
 | Subtle rising chirp | Ready for the next turn, including after a spoken reply. In Enter mode, press Enter. In wake mode, use the wake phrase to open a conversation; once it is open, the listening cue follows automatically. |
 | Brief listening bloop | Start your sentence now. In wake mode this confirms the wake phrase was accepted. |
 | Short higher chirp | Recording has finished; the microphone is closed. If recording echo is enabled, you'll hear your recording next. |
+| Quick quadruple chirp | A command was accepted: “clear context” keeps the conversation open; “stop listening” returns to wake waiting. |
 | Repeating low working pulses | Waiting for the server to transcribe, ask the model and generate speech. These stop before the spoken reply, or if the turn fails or you stop the client. |
 | Three short low pulses | No speech was heard, or a turn/audio service failed. Check the terminal for the reason. |
 
-In wake and continuous modes, the ready chirp follows ambient calibration. When starting a wake conversation, wait for that chirp before saying the wake phrase. During an open conversation, wait for the listening bloop before each sentence; you don't need to repeat the wake phrase. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
+In wake and continuous modes, the ready chirp follows microphone preparation. When starting a wake conversation, wait for that chirp before saying the wake phrase. During an open conversation, wait for the listening bloop before each sentence; you don't need to repeat the wake phrase. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
 
 Feedback is on by default. Add `--no-sounds` to your client start script to disable the cues and working sound; spoken replies, `--echo-recording` and local-test playback still work. Text mode is always silent. If a feedback asset or cue playback fails, the client prints a warning and continues without feedback; a failure to play the actual reply or diagnostic echo is still an audio error.
 
@@ -566,7 +673,7 @@ These options apply to the local microphone test and to normal voice turns, incl
 | `--listen-timeout SECONDS` | `10` | Allow more time for speech to begin after the cue. Allowed range: greater than 0, up to 300 seconds. |
 | `--phrase-time-limit SECONDS` | `30` | Allow longer messages. Allowed range: greater than 0, up to 300 seconds; the server's `phrase_time_limit` must allow the same length. |
 | `--calibration-duration SECONDS` | `0.6`, extended if needed to read at least one input buffer | Sample background noise for longer before the cue. Stay quiet during calibration. Allowed range: 0.1–10 seconds; actual calibration is rounded to audio buffers. |
-| `--energy-threshold LEVEL` | Calibrated from background noise each turn | Set speech sensitivity manually when automatic calibration doesn't suit the room. A value greater than 0, up to 32,768, skips calibration. Lower values detect quieter speech but can also detect noise; higher values require louder speech. This isn't a microphone gain or volume control. |
+| `--energy-threshold LEVEL` | Calibrated from background noise; reused within an open wake conversation | Set speech sensitivity manually when automatic calibration doesn't suit the room. A value greater than 0, up to 32,768, skips calibration. Lower values detect quieter speech but can also detect noise; higher values require louder speech. This isn't a microphone gain or volume control. |
 
 The recording rate is a hardware choice; the outgoing format stays mono, 16-bit PCM at 16 kHz so the server receives the same format from every client. Increasing the capture rate doesn't change the Whisper model. Wake recognition is told the actual capture rate. Input is currently mono; a device that only supports multichannel capture needs a suitable mono route from the operating system.
 
@@ -594,7 +701,7 @@ If the echo contains only the first part of your sentence, the recording was cut
 
 #### Recordings that stop halfway through a sentence
 
-The client briefly calibrates to background noise before the listening cue, then keeps that threshold fixed for the turn. Keep quiet during calibration and speak after `Speak now...`. The threshold doesn't keep rising with your voice while you're talking.
+The client briefly calibrates to background noise before the listening cue, then keeps that threshold fixed for the turn. In wake mode, it reuses the threshold throughout the open conversation, saving another calibration and microphone setup between replies. It calibrates again when it returns to waiting for the wake phrase. If the room noise changes during a conversation, say “stop listening” and wake Iris again to refresh it. Enter and continuous modes still calibrate each turn. Keep quiet during calibration and speak after `Speak now...`. The threshold doesn't keep rising with your voice while you're talking.
 
 By default, 1.2 seconds of audio below the calibrated threshold ends the recording. If you pause to think while speaking, add `--pause-threshold 2` to your existing client command to allow a longer gap. This option works with Enter, continuous and wake activation, on all platforms. Keep `--echo-recording` enabled while checking that your whole sentence is captured.
 
@@ -675,6 +782,8 @@ Say **“stop listening”** as a complete utterance to close the conversation w
 Five minutes without a new detected utterance also returns the client to wake waiting, without sending that silence to the server or playing an error cue. Server processing and reply playback don't use up the idle interval; the timer starts afresh after each reply. Change the idle period with `--conversation-timeout SECONDS` on the client (default `300`, greater than 0, up to `3600`). `--listen-timeout` still applies to ordinary Enter/continuous turns; an open wake conversation waits for the remaining conversation interval instead.
 
 Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to clear the session and stop the client, or use Ctrl-C to stop it. Starting a fresh client creates a fresh session.
+
+Say **“clear context”** as a complete utterance to start afresh without stopping the client. The server discards this client's conversation history, keeping Iris's configured personality and instructions. It prints a confirmation without calling the chat model or generating a spoken reply. In wake mode, the conversation stays open, so wait for the next listening cue and carry on without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 

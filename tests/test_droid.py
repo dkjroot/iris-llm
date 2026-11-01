@@ -643,17 +643,15 @@ def test_calibration_reads_audio_even_when_buffer_exceeds_requested_duration(rat
 
 
 def test_manual_energy_threshold_skips_calibration_and_keeps_quiet_speech():
-    ambient = SyntheticMicrophone(synthetic_audio([(1, 0)]))
-    ambient.read = Mock(wraps=ambient.read)
     speech = SyntheticMicrophone(synthetic_audio([(1, 150), (3, 0)]))
     recognizer = sr.Recognizer()
     with (
-        patch("iris_droid.client.open_microphone", side_effect=[ambient, speech]),
+        patch("iris_droid.client.open_microphone", return_value=speech) as microphone,
         patch("speech_recognition.Recognizer", return_value=recognizer),
         patch("iris_droid.client.play_wav"),
     ):
         pcm, rate = read_wav(record_turn(1, 30, 10, None, energy_threshold=125))
-    ambient.read.assert_not_called()
+    microphone.assert_called_once()
     assert recognizer.energy_threshold == 125
     assert recognizer.dynamic_energy_threshold is False
     assert np.count_nonzero(np.frombuffer(pcm, dtype="<i2") == 150) / rate > 0.9
@@ -686,7 +684,9 @@ def test_new_capture_options_reach_live_and_local_capture(local):
         "calibration_duration": 1.5,
         "diagnostics": local,
         "feedback": record.call_args.kwargs["feedback"],
-        **({"announce_ready": True, "conversation": None} if not local else {}),
+        **(
+            {"announce_ready": True, "conversation": None, "calibration": None} if not local else {}
+        ),
     }
 
 

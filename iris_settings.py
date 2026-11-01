@@ -7,8 +7,9 @@ import warnings
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, JsonValue, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 
@@ -37,6 +38,55 @@ class Settings(BaseSettings):
     timeout: float = Field(default=120, gt=0, le=600)
     trace: bool = False
     reply_encoding: Literal["text", "html", "double-html"] = "text"
+    tools_enabled: bool = True
+    chat_template_kwargs: dict[str, JsonValue] = Field(default_factory=dict)
+    chat_request_options: dict[str, JsonValue] = Field(default_factory=dict)
+    local_timezone: str = "Europe/London"
+    weather_enabled: bool = False
+    weather_location: str = "Stroud"
+    weather_country: str = "GB"
+
+    @field_validator("chat_request_options")
+    @classmethod
+    def valid_chat_request_options(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
+        reserved = {
+            "model",
+            "messages",
+            "tools",
+            "tool_choice",
+            "stream",
+            "temperature",
+            "max_tokens",
+            "chat_template_kwargs",
+        }
+        if reserved.intersection(value):
+            raise ValueError(
+                "chat_request_options cannot replace conversation/tool fields or named settings"
+            )
+        return value
+
+    @field_validator("local_timezone")
+    @classmethod
+    def valid_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ValueError("Use an IANA timezone such as Europe/London") from error
+        return value
+
+    @field_validator("weather_location")
+    @classmethod
+    def valid_weather_location(cls, value: str) -> str:
+        if not 1 <= len(value.strip()) <= 100:
+            raise ValueError("Weather location must be a town name of 1–100 characters")
+        return value.strip()
+
+    @field_validator("weather_country")
+    @classmethod
+    def valid_weather_country(cls, value: str) -> str:
+        if len(value) != 2 or not value.isascii() or not value.isalpha():
+            raise ValueError("Use a two-letter country code such as GB")
+        return value.upper()
 
     stt_engine: Literal["whisper", "wav2vec2", "google"] = "whisper"
     whisper_model: str = "base.en"

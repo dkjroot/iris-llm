@@ -18,8 +18,61 @@ RECORDING = write_wav(b"\x01\x00" * 1600, 16000)
 REPLY = write_wav(b"\x02\x00" * 1600, 16000)
 CUES = {
     name: files("iris_sounds").joinpath(name).read_bytes()
-    for name in ("chirp.wav", "bleep.wav", "longbleep.wav", "workinglongquiet.wav", "error.wav")
+    for name in (
+        "chirp.wav",
+        "bleep.wav",
+        "longbleep.wav",
+        "workinglongquiet.wav",
+        "error.wav",
+        "acknowledge.wav",
+    )
 }
+
+
+@pytest.mark.parametrize("phrase", ["Clear context.", "Stop listening."])
+@pytest.mark.parametrize("silent", [False, True])
+def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phrase, silent):
+    events = []
+    waiting = []
+
+    def record(*args, **kwargs):
+        waiting.append(args[3] is not None)
+        if len(waiting) == 2:
+            kwargs["feedback"].listening()
+            raise KeyboardInterrupt()
+        return RECORDING
+
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": "test"}),
+        patch("iris_droid.client.WakeDetector"),
+        patch("iris_droid.client.record_turn", side_effect=record),
+        patch("iris_droid.client.play_wav", side_effect=player_for(events)),
+        patch("iris_droid.client.stop_playback", side_effect=lambda: events.append("stop")),
+        patch(
+            "iris_droid.client.DroidClient.turn",
+            return_value=SimpleNamespace(
+                heard=phrase,
+                text="Command accepted.",
+                audio="",
+                finished=False,
+            ),
+        ),
+    ):
+        argv = ["client", "--speaker", "7", "--activation", "wake", "--wake-model", "."]
+        if silent:
+            argv.append("--no-sounds")
+        assert iris.main(argv) == 0
+    assert waiting == [True, phrase == "Stop listening."]
+    assert events == (
+        []
+        if silent
+        else [
+            "workinglongquiet.wav",
+            "stop",
+            "acknowledge.wav",
+            "bleep.wav",
+        ]
+    )
 
 
 def player_for(events):

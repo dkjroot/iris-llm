@@ -17,6 +17,7 @@ import httpx
 
 from iris_droid.capture import (
     DEFAULT_MICROPHONE_BUFFER,
+    CaptureCalibration,
     CheckedMicrophoneStream,
     validate_capture_options,
 )
@@ -25,6 +26,7 @@ from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import (
     MAX_BODY,
     TurnReply,
+    is_clear_context,
     is_stop_listening,
     read_wav,
     validate_token,
@@ -191,6 +193,7 @@ def record_turn(
     feedback: ClientFeedback | None = None,
     announce_ready: bool = False,
     conversation: WakeConversation | None = None,
+    calibration: CaptureCalibration | None = None,
 ) -> bytes:
     import speech_recognition as sr
 
@@ -203,25 +206,22 @@ def record_turn(
     )
     recognizer = sr.Recognizer()
     recognizer.pause_threshold = pause_threshold
-    with open_microphone(microphone, buffer_frames, sample_rate) as source:
-        if energy_threshold is None:
+    threshold = energy_threshold
+    if threshold is None and calibration is not None and wake is None:
+        threshold = calibration.energy_threshold
+    if threshold is None:
+        with open_microphone(microphone, buffer_frames, sample_rate) as source:
             # Always read at least one buffer, even at low device rates or with
             # a large buffer. The library otherwise calibrates using no audio.
             duration = max(calibration_duration, source.CHUNK / source.SAMPLE_RATE * 1.01)
             recognizer.adjust_for_ambient_noise(source, duration=duration)
-        else:
-            recognizer.energy_threshold = energy_threshold
-        # Some SpeechRecognition versions also adapt during the phrase. Steady
-        # speech then raises the threshold above the voice and ends capture early.
-        recognizer.dynamic_energy_threshold = False
-        if diagnostics:
-            print(
-                f"Microphone: {source.SAMPLE_RATE} Hz, mono, {source.CHUNK} frames "
-                f"({source.CHUNK / source.SAMPLE_RATE * 1000:.0f} ms); "
-                f"speech threshold: {recognizer.energy_threshold:.0f}; "
-                f"end pause: {pause_threshold:g} s.",
-                flush=True,
-            )
+        if calibration is not None:
+            calibration.energy_threshold = recognizer.energy_threshold
+    else:
+        recognizer.energy_threshold = threshold
+    # Some SpeechRecognition versions also adapt during the phrase. Steady
+    # speech then raises the threshold above the voice and ends capture early.
+    recognizer.dynamic_energy_threshold = False
     # Ready means calibration is finished. In wake mode the next capture waits
     # for the wake phrase; cue playback never shares an open microphone.
     if announce_ready and feedback is not None:
@@ -236,6 +236,14 @@ def record_turn(
     else:
         feedback.listening()
     with open_microphone(microphone, buffer_frames, sample_rate) as source:
+        if diagnostics:
+            print(
+                f"Microphone: {source.SAMPLE_RATE} Hz, mono, {source.CHUNK} frames "
+                f"({source.CHUNK / source.SAMPLE_RATE * 1000:.0f} ms); "
+                f"speech threshold: {recognizer.energy_threshold:.0f}; "
+                f"end pause: {pause_threshold:g} s.",
+                flush=True,
+            )
         print("Speak now...", flush=True)
         if conversation is not None and conversation.active:
             timeout = conversation.remaining()
@@ -418,6 +426,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     wake = WakeDetector(args.wake_model, args.wake_phrase)
                 conversation = wake_window if wake is not None else None
+                calibration = CaptureCalibration() if conversation is not None else None
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
                     if (
@@ -454,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                                 feedback=feedback,
                                 announce_ready=args.activation != "enter",
                                 conversation=conversation,
+                                calibration=calibration,
                             )
                         except sr.WaitTimeoutError:
                             if conversation is not None and conversation.active:
@@ -491,6 +501,11 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         continue
                     print(f"You: {reply.heard}\nIris: {reply.text}")
+                    if not reply.audio and (
+                        is_clear_context(reply.heard)
+                        or (conversation is not None and is_stop_listening(reply.heard))
+                    ):
+                        feedback.acknowledge()
                     if conversation is not None and is_stop_listening(reply.heard):
                         conversation.sleep()
                         print(f'Waiting for "{args.wake_phrase}" again.', flush=True)

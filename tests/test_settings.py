@@ -22,6 +22,9 @@ from iris_settings import Settings, load_settings, migrate_config
         {"base_url": "https://example.com/v1"},
         {"tts_engine": "gtts"},
         {"stt_engine": "google"},
+        {"local_timezone": "Mars/Olympus"},
+        {"weather_location": " "},
+        {"weather_country": "UK-long"},
     ],
 )
 def test_bad_settings_fail_before_loading_providers(data: dict[str, object]) -> None:
@@ -86,3 +89,14 @@ def test_unknown_modules_and_old_implicit_hosted_endpoint_are_rejected() -> None
 def test_distributed_default_and_template_match_model_defaults() -> None:
     root = Path(__file__).resolve().parents[1]
     assert load_settings(root / "config_template.json") == Settings()
+
+
+def test_skill_settings_can_be_overridden_from_environment(monkeypatch):
+    monkeypatch.setenv("IRIS_LOCAL_TIMEZONE", "Asia/Tokyo")
+    monkeypatch.setenv("IRIS_WEATHER_LOCATION", "Tokyo")
+    monkeypatch.setenv("IRIS_WEATHER_COUNTRY", "jp")
+    monkeypatch.setenv("IRIS_WEATHER_ENABLED", "true")
+    settings = Settings()
+    assert settings.local_timezone == "Asia/Tokyo"
+    assert settings.weather_location == "Tokyo" and settings.weather_country == "JP"
+    assert settings.weather_enabled and not settings.allow_remote

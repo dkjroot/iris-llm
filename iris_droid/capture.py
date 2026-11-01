@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 DEFAULT_MICROPHONE_BUFFER = 8192
+
+
+@dataclass
+class CaptureCalibration:
+    """Ambient threshold reused within one open wake conversation."""
+
+    energy_threshold: float | None = None
 
 
 def validate_capture_options(

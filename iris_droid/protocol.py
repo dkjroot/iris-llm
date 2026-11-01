@@ -15,6 +15,10 @@ def is_stop_listening(text: str) -> bool:
     return " ".join(text.casefold().split()).strip(" .!?,") == "stop listening"
 
 
+def is_clear_context(text: str) -> bool:
+    return " ".join(text.casefold().split()).strip(" .!?,") == "clear context"
+
+
 def validate_token(token: str) -> None:
     if (
         not token.strip()

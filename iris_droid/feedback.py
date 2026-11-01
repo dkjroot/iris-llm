@@ -59,6 +59,9 @@ class ClientFeedback:
     def error(self) -> None:
         self._cue("error.wav")
 
+    def acknowledge(self) -> None:
+        self._cue("acknowledge.wav")
+
     def stop_working(self) -> None:
         if self._working:
             self._working = False

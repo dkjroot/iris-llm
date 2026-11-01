@@ -22,6 +22,7 @@ from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.protocol import (
     MAX_BODY,
     TurnReply,
+    is_clear_context,
     is_stop_listening,
     read_wav,
     validate_token,
@@ -67,6 +68,9 @@ class Brain:
             heard = self.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
         if not heard:
             raise sr.UnknownValueError()
+        if is_clear_context(heard):
+            self.sessions.pop(session, None)
+            return TurnReply(heard=heard, text="Context cleared. Ready for a fresh conversation.")
         if wake_conversation and not text_only and is_stop_listening(heard):
             # A control utterance isn't a chat turn and doesn't clear history.
             return TurnReply(heard=heard, text="Waiting for the wake phrase.")
@@ -149,7 +153,8 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
             except sr.UnknownValueError:
                 self.respond(422, b'{"error":"No speech recognized; please try again"}')
                 return
-            except ChatError:
+            except ChatError as error:
+                LOGGER.warning("Chat failed: %s", error)
                 self.respond(502, b'{"error":"Chat failed; check the PC model server"}')
                 return
             except Exception as error:

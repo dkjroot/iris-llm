@@ -29,7 +29,7 @@ def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: 
     assert settings.tts_engine == "kokoro"
     assert not settings.allow_remote
     assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
-    assert len(prompts) == 6
+    assert len(prompts) == 9
     assert not any("Start listening" in prompt or "Feedback sounds" in prompt for prompt in prompts)
 
 
@@ -47,7 +47,7 @@ def test_kokoro_wizard_offers_named_voices_and_saves_selection(
 ) -> None:
     with (
         patch.object(configure, "ROOT", tmp_path),
-        patch("builtins.input", side_effect=["", "", "", "bf_emma", "1.3", ""]),
+        patch("builtins.input", side_effect=["", "", "", "bf_emma", "1.3", "", "", "", ""]),
     ):
         assert configure.main() == 0
     settings = load_settings(tmp_path / "local-config.json")
@@ -94,3 +94,19 @@ def test_existing_config_switches_to_droid_tts_and_preserves_other_settings(
 def test_kokoro_speed_reprompts_for_invalid_values_and_keeps_existing_default() -> None:
     with patch("builtins.input", side_effect=["quick", "nan", "inf", "0.4", "2.1", ""]):
         assert configure.choose_kokoro_speed(1.3) == 1.3
+
+
+def test_wizard_configures_optional_online_weather_without_enabling_remote_chat(tmp_path):
+    def answer(prompt):
+        if prompt.startswith("Enable online weather"):
+            return "yes"
+        if prompt.startswith("Weather town"):
+            return "Edinburgh"
+        return ""
+
+    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main() == 0
+    settings = load_settings(tmp_path / "local-config.json")
+    assert settings.tools_enabled and settings.weather_enabled
+    assert settings.weather_location == "Edinburgh" and settings.weather_country == "GB"
+    assert settings.local_timezone == "Europe/London" and not settings.allow_remote

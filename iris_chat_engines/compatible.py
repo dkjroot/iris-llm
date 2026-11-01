@@ -1,100 +1,71 @@
-"""The small chat API shared by KoboldCPP, llama.cpp and other local servers."""
+"""Conversation history and optional skill execution, independent of the model host."""
 
 from __future__ import annotations
 
 import html
-import json
-import time
-from typing import Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from iris_chat_engines.backends import ChatBackend, make_backend
+from iris_chat_engines.messages import ChatError as ChatError
+from iris_chat_engines.messages import Message as Message
 from iris_settings import Settings
-
-
-class ChatError(RuntimeError):
-    """A failed turn which leaves the conversation history alone."""
-
-
-class Message(BaseModel):
-    model_config = ConfigDict(strict=True)
-    role: Literal["system", "user", "assistant"]
-    content: str
-
-
-class Choice(BaseModel):
-    message: Message
-
-
-class ChatResponse(BaseModel):
-    choices: list[Choice] = Field(min_length=1)
+from iris_tools import ToolRegistry
 
 
 class ChatEngine:
-    def __init__(self, settings: Settings, client: httpx.Client) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.Client, *, backend: ChatBackend | None = None
+    ) -> None:
         self.settings = settings
-        self.client = client
+        self.backend = backend if backend is not None else make_backend(settings, client)
+        self.tools = ToolRegistry(settings, client)
         self.history: list[Message] = []
 
     def get_response(self, user_text: str) -> str:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
         messages = [
-            Message(role="system", content=self.settings.system_prompt),
+            Message(role="system", content=self.settings.system_prompt + self.tools.instructions()),
             *self.history,
             Message(role="user", content=user_text),
         ]
-        payload = {
-            "model": self.settings.model,
-            "messages": [message.model_dump() for message in messages],
-            "temperature": self.settings.temperature,
-            "max_tokens": self.settings.max_tokens,
-            "stream": False,
-        }
-        if self.settings.trace:
-            print("Sending:", json.dumps(payload, ensure_ascii=False))
-        headers = {}
-        if self.settings.api_key:
-            headers["Authorization"] = f"Bearer {self.settings.api_key.get_secret_value()}"
-        started = time.monotonic()
-        try:
-            response = self.client.post(
-                f"{self.settings.base_url}/chat/completions",
-                json=payload,
-                headers=headers,
-                timeout=httpx.Timeout(self.settings.timeout, connect=10),
-            )
-            response.raise_for_status()
-            reply = ChatResponse.model_validate_json(response.content).choices[0].message
-        except httpx.TimeoutException as error:
-            raise ChatError(
-                "The model took too long to reply. Check the server or timeout setting."
-            ) from error
-        except httpx.HTTPStatusError as error:
-            raise ChatError(
-                f"The chat server returned HTTP {error.response.status_code}. "
-                "Check its model, API settings and console."
-            ) from error
-        except httpx.RequestError as error:
-            raise ChatError(
-                "Couldn't reach the chat server. Is it running at the configured address?"
-            ) from error
-        except ValidationError as error:
-            raise ChatError(
-                "The server didn't return a text chat reply in the expected format."
-            ) from error
-        text = reply.content
-        # Modern chat APIs return plain text. Only decode for a server explicitly
-        # configured to escape HTML; otherwise an explanation of &#x27; must survive.
-        passes = {"text": 0, "html": 1, "double-html": 2}[self.settings.reply_encoding]
-        for _ in range(passes):
-            text = html.unescape(text)
-        if reply.role != "assistant" or not text.strip():
-            raise ChatError("The server returned an empty or invalid assistant reply")
-        if self.settings.trace:
-            print(f"Received ({time.monotonic() - started:.2f}s):", text)
-        self.history.extend([messages[-1], Message(role="assistant", content=text)])
-        limit = self.settings.history_turns * 2
-        self.history = self.history[-limit:] if limit else []
-        return text
+        turn_start = len(messages) - 1
+        call_ids: set[str] = set()
+        for round_number in range(5):
+            reply = self.backend.complete(messages, self.tools.definitions())
+            if reply.role != "assistant":
+                raise ChatError("The server returned an invalid assistant reply")
+            if not reply.tool_calls:
+                text = reply.content
+                if text is None or not text.strip():
+                    raise ChatError("The server returned an empty assistant reply")
+                # Only decode for a server explicitly configured to escape HTML.
+                passes = {"text": 0, "html": 1, "double-html": 2}[self.settings.reply_encoding]
+                for _ in range(passes):
+                    text = html.unescape(text)
+                messages.append(Message(role="assistant", content=text))
+                history = [*self.history, *messages[turn_start:]]
+                starts = [index for index, message in enumerate(history) if message.role == "user"]
+                limit = self.settings.history_turns
+                self.history = history[starts[max(0, len(starts) - limit)] :] if limit else []
+                return text
+            if not self.tools.skills:
+                raise ChatError("The model requested a tool, but tools are disabled")
+            if round_number == 4 or len(call_ids) + len(reply.tool_calls) > 8:
+                raise ChatError("The model exceeded the tool-call limit; try a simpler question")
+            # Preserve the complete exchange, including reasoning needed by some
+            # model templates, and trim history only at whole user-turn boundaries.
+            messages.append(reply)
+            for call in reply.tool_calls:
+                if call.id in call_ids:
+                    raise ChatError("The model returned duplicate tool-call IDs")
+                call_ids.add(call.id)
+                messages.append(
+                    Message(
+                        role="tool",
+                        tool_call_id=call.id,
+                        content=self.tools.execute(call.function.name, call.function.arguments),
+                    )
+                )
+        raise ChatError("The model didn't finish its response")
