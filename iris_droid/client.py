@@ -532,8 +532,11 @@ def main(argv: list[str] | None = None) -> int:
                                 **({"companion_idle": True} if proactive else {}),
                             )
                     except httpx.HTTPError as error:
-                        if companion.enabled:
-                            companion.update(True, proactive=proactive)
+                        # Failed input hasn't confirmed intelligible speech. Keep
+                        # its deadline and unanswered-opener backoff intact, but
+                        # pace failed proactive requests so they don't spin.
+                        if companion.enabled and proactive:
+                            companion.update(True, proactive=True)
                         if conversation is not None and conversation.active:
                             conversation.activate()
                         if not proactive:

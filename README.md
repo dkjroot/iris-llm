@@ -795,7 +795,11 @@ Sometimes I just want Iris to hang out and chat, rather than keep asking what sh
 
 While companion mode is on, Iris can start a conversation herself after a random stretch of quiet. Initially that's somewhere between 90 seconds and four minutes, measured from when she finishes speaking. She picks from a bank of ideas and asks the model to write something fresh, using the recent conversation for context. There are ordinary check-ins, but also terrible robot business ideas, suspiciously specific awards, useless superpowers and things a pigeon might put in a strongly worded letter. The idea is to get an occasional unexpected thought or a laugh, rather than hear the same recorded “how was your day?” every time.
 
-If you leave an opener unanswered, she gives you more space. The next random interval doubles, then doubles again, up to eight times the original range: eventually 12–32 minutes between attempts with the defaults. Speaking to her resets that backoff. This is an initial attempt at getting the balance right; living with it for a while will be the useful test. To change the base interval, add these options to your usual client command, for example:
+If you leave an opener unanswered, she gives you more space. The next random interval doubles, then doubles again, up to eight times the original range: eventually 12–32 minutes between attempts with the defaults.
+
+A successfully recognised turn and completed reply start a fresh interval and reset that backoff. Background noise that triggers a recording but produces no recognised words doesn't reset either, and neither does a failed connection. She finishes the current recording and server request before checking whether an opener is due. Recognition can still mistake background sounds for words, so microphone sensitivity and placement matter too.
+
+This is an initial attempt at getting the balance right; living with it for a while will be the useful test. To change the base interval, add these options to your usual client command, for example:
 
 ```sh
 python iris.py client --companion-idle-min 180 --companion-idle-max 600

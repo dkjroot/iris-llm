@@ -200,9 +200,12 @@ def test_invalid_timer_options_fail_before_network_or_devices(minimum, maximum):
     record.assert_not_called()
 
 
-def test_recording_waits_for_companion_deadline_instead_of_normal_timeout():
-    timer = CompanionTimer(clock=lambda: 0, uniform=lambda lo, hi: 90)
+@pytest.mark.parametrize("elapsed", [0, 100])
+def test_recording_waits_for_companion_deadline_instead_of_normal_timeout(elapsed):
+    now = [0]
+    timer = CompanionTimer(clock=lambda: now[0], uniform=lambda lo, hi: 90)
     timer.update(True)
+    now[0] = elapsed
     recognizer = Mock(listen=Mock(side_effect=sr.WaitTimeoutError()))
     with (
         patch("iris_droid.client.open_microphone"),
@@ -210,7 +213,77 @@ def test_recording_waits_for_companion_deadline_instead_of_normal_timeout():
         pytest.raises(sr.WaitTimeoutError),
     ):
         record_turn(1, 30, 10, None, energy_threshold=100, companion_timer=timer, feedback=Mock())
-    assert recognizer.listen.call_args.kwargs == {"timeout": 90, "phrase_time_limit": 30}
+    if elapsed == 0:
+        assert recognizer.listen.call_args.kwargs == {"timeout": 90, "phrase_time_limit": 30}
+    else:
+        recognizer.listen.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["unrecognized", "offline"])
+def test_failed_voice_turns_preserve_companion_deadline_and_unanswered_backoff(failure):
+    now = [0.0]
+    timer = CompanionTimer(clock=lambda: now[0], uniform=lambda lo, hi: 90)
+    request = httpx.Request("POST", "http://iris/turn")
+    error = (
+        httpx.HTTPStatusError(
+            "No speech recognized", request=request, response=httpx.Response(422, request=request)
+        )
+        if failure == "unrecognized"
+        else httpx.ConnectError("offline", request=request)
+    )
+    captures = 0
+
+    def record(*args, **kwargs):
+        nonlocal captures
+        captures += 1
+        if captures == 2:
+            now[0] = 90
+            raise sr.WaitTimeoutError()
+        if captures == 3:
+            assert timer.unanswered == 1 and timer.remaining() == 180
+            now[0] = 120
+        if captures == 4:
+            assert timer.unanswered == 1 and timer.remaining() == 150
+            now[0] = 200
+        if captures == 5:
+            assert timer.unanswered == 1 and timer.remaining() == 70
+            now[0] = 280
+            raise sr.WaitTimeoutError()
+        if captures == 6:
+            assert timer.unanswered == 2 and timer.remaining() == 360
+        if captures == 7:
+            assert timer.unanswered == 0 and timer.remaining() == 90
+        return RECORDING
+
+    def play(*args, **kwargs):
+        now[0] += 20  # The fresh human-turn interval must start after playback.
+
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("iris_droid.client.CompanionTimer", return_value=timer),
+        patch("iris_droid.client.record_turn", side_effect=record),
+        patch("iris_droid.client.play_wav", side_effect=play),
+        patch(
+            "iris_droid.client.DroidClient.turn",
+            side_effect=[
+                TurnReply(heard="companion mode on", text="On", companion_mode=True),
+                TurnReply(heard="", text="First opener", companion_mode=True),
+                error,
+                error,
+                TurnReply(heard="", text="Second opener", companion_mode=True),
+                TurnReply(
+                    heard="I'm making supper",
+                    text="What's cooking?",
+                    audio=base64.b64encode(RECORDING).decode(),
+                    companion_mode=True,
+                ),
+                TurnReply(heard="exit", text="Bye", finished=True),
+            ],
+        ) as turn,
+    ):
+        assert iris.main(["client", "--no-sounds", "--activation", "continuous"]) == 0
+    assert turn.call_count == 7
+    assert turn.call_args_list[4].kwargs == {"text_only": False, "companion_idle": True}
 
 
 @pytest.mark.parametrize("activation", ["enter", "continuous", "wake"])
