@@ -509,6 +509,37 @@ Feedback is on by default. Add `--no-sounds` to your client start script to disa
 
 The cues are original generated WAV files, so they don't need FFmpeg, downloads or a remote sound service. See [the sound guide](iris_sounds/README.md) for the filenames, generator and replacement advice. The busy sound covers the whole server request; it doesn't report individual STT, chat or synthesis progress.
 
+#### Spoken formatting and missing opening words
+
+Iris removes paired Markdown emphasis markers such as `**bold**` and `*italic*` from the text sent to Kokoro. The printed reply and chat history keep the model's original text. This is a small speech-rendering step; it doesn't remove meaningful operators such as `2**3` or rewrite the reply's words.
+
+For playback, the client asks PortAudio for its more conservative `high` output latency and puts 0.3 seconds of silence at the start of the **same audio stream** as each spoken reply. A sleep before opening the speaker stream doesn't provide that lead-in. These output settings are separate from microphone buffers and recording rates. If PortAudio reports a playback underrun, the client prints a warning because audio may have been lost.
+
+If an opening word is still missing, save a reply so you can compare the same audio file through different playback routes. Add this option to your existing voice-client command or start script (shared syntax for Windows PowerShell, macOS and Linux Bash):
+
+```sh
+--save-reply .cache/iris-reply.wav
+```
+
+This is opt-in: it writes the **unmodified server WAV**, before client playback padding, and replaces that file on each spoken reply. It contains conversation audio, so keep it local and delete it after debugging. The suggested `.cache` directory is ignored by Git. Ordinary conversations still save nothing.
+
+Stop the running client before testing the speaker. These shared commands play that file without a server, key or microphone, using your selected output index:
+
+```sh
+python iris.py client --play-wav .cache/iris-reply.wav --speaker 7 --speech-lead-in 0
+python iris.py client --play-wav .cache/iris-reply.wav --speaker 7 --speech-lead-in 0.3
+```
+
+Replace `7` with your speaker index. The first run adds no silence; the second uses the normal reply lead-in. `--speech-lead-in` accepts 0–2 seconds and can also be put in the ordinary client start script. Compare the first word, not just whether sound plays. On Linux you can also play that same file through ALSA, replacing the card/device address with yours:
+
+```sh
+aplay -D plughw:3,0 --buffer-time=500000 .cache/iris-reply.wav
+```
+
+If ordinary playback routes preserve the first word but Iris playback loses it, concentrate on output startup. If the word is missing in the file through every route, inspect the generated speech and the server's printed reply instead. Local tests with Heart and Emma retained opening words through synthesis and preparation, but that doesn't establish what every voice and speaker will do.
+
+For a further output-startup experiment, add `--speech-primer` to the file test or your voice-client command. It puts the soft ready chirp, then the configured silence, then the speech into one playback stream. This is off by default and is separate from `--no-sounds`; use it to see whether an audible onset helps a speaker that clips the start. It doesn't insert extra spoken syllables or change the text sent to Kokoro. There is no supported text style-tag control in the installed Kokoro adapter; its voice style comes from the selected voice data.
+
 #### Start with a local microphone test
 
 If speech recognition is poor, start by listening to the recording. Stop any other client or audio test using the microphone, activate the client environment, and run this shared command on Windows PowerShell, macOS or Linux Bash:

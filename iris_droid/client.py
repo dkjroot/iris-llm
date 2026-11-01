@@ -81,7 +81,16 @@ class DroidClient:
         return TurnReply.model_validate_json(bytes(data))
 
 
-def play_wav(data: bytes, device: int | None = None, *, loop: bool = False) -> None:
+def play_wav(
+    data: bytes,
+    device: int | None = None,
+    *,
+    loop: bool = False,
+    lead_in: float = 0,
+    primer: bool = False,
+) -> None:
+    if not 0 <= lead_in <= 2:
+        raise ValueError("Speech lead-in must be between 0 and 2 seconds")
     import numpy as np
     import sounddevice as sd
     import speech_recognition as sr
@@ -100,10 +109,22 @@ def play_wav(data: bytes, device: int | None = None, *, loop: bool = False) -> N
             pcm = sr.AudioData(pcm, rate, 2).get_raw_data(convert_rate=output_rate)
             rate = output_rate
         samples = np.frombuffer(pcm, dtype="<i2")
+        prefixes = []
+        if primer:
+            cue, cue_rate = read_wav(files("iris_sounds").joinpath("chirp.wav").read_bytes())
+            cue = sr.AudioData(cue, cue_rate, 2).get_raw_data(convert_rate=rate)
+            prefixes.append(np.frombuffer(cue, dtype="<i2"))
+        if lead_in:
+            prefixes.append(np.zeros(round(rate * lead_in), dtype="<i2"))
+        if prefixes:
+            samples = np.concatenate([*prefixes, samples])
         if loop:
-            sd.play(samples, rate, device=device, blocking=False, loop=True)
+            sd.play(samples, rate, device=device, blocking=False, loop=True, latency="high")
         else:
-            sd.play(samples, rate, device=device, blocking=True)
+            sd.play(samples, rate, device=device, blocking=True, latency="high")
+            status = sd.get_status()
+            if status is not None and status.output_underflow:
+                print("Speaker playback underrun: some audio may have been lost.", flush=True)
     except sd.PortAudioError as error:
         raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
 
@@ -278,6 +299,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--speaker", type=int, help="sounddevice output device index")
     parser.add_argument(
+        "--speech-lead-in",
+        type=float,
+        default=0.3,
+        help="Silence prepended in the reply playback stream (0–2 seconds; default: 0.3)",
+    )
+    parser.add_argument(
+        "--speech-primer",
+        action="store_true",
+        help="Diagnostic: prepend a soft chirp in the same stream as spoken replies",
+    )
+    parser.add_argument(
+        "--save-reply",
+        type=Path,
+        help="Diagnostic: save the unmodified reply WAV here, replacing it each voice turn",
+    )
+    parser.add_argument(
+        "--play-wav",
+        type=Path,
+        help="Play a local WAV with reply playback settings, without server or microphone",
+    )
+    parser.add_argument(
         "--microphone-buffer",
         type=int,
         default=DEFAULT_MICROPHONE_BUFFER,
@@ -301,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
+        if not 0 <= args.speech_lead_in <= 2:
+            raise ValueError("Speech lead-in must be between 0 and 2 seconds")
         wake_window = WakeConversation(args.conversation_timeout)
         validate_capture_options(
             buffer_frames=args.microphone_buffer,
@@ -309,6 +353,16 @@ def main(argv: list[str] | None = None) -> int:
             energy_threshold=args.energy_threshold,
             calibration_duration=args.calibration_duration,
         )
+        if args.play_wav is not None:
+            if args.text or args.test_microphone:
+                raise ValueError("--play-wav cannot be combined with --text or --test-microphone")
+            play_wav(
+                args.play_wav.read_bytes(),
+                args.speaker,
+                lead_in=args.speech_lead_in,
+                primer=args.speech_primer,
+            )
+            return 0
         with ClientFeedback(
             args.speaker, play_wav, stop_playback, enabled=not args.no_sounds and not args.text
         ) as feedback:
@@ -442,7 +496,18 @@ def main(argv: list[str] | None = None) -> int:
                         print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
                         continue
                     if reply.audio and not args.text:
-                        play_wav(base64.b64decode(reply.audio, validate=True), args.speaker)
+                        reply_audio = base64.b64decode(reply.audio, validate=True)
+                        read_wav(reply_audio)
+                        if args.save_reply is not None:
+                            args.save_reply.parent.mkdir(parents=True, exist_ok=True)
+                            args.save_reply.write_bytes(reply_audio)
+                            print(f"Saved unmodified reply audio to {args.save_reply}", flush=True)
+                        play_wav(
+                            reply_audio,
+                            args.speaker,
+                            lead_in=args.speech_lead_in,
+                            primer=args.speech_primer,
+                        )
                     if reply.finished:
                         return 0
                     if conversation is not None:

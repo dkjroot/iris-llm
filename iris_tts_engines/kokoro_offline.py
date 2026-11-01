@@ -15,6 +15,7 @@ import numpy as np
 import numpy.typing as npt
 
 from iris_settings import Settings
+from iris_tts_engines.text import plain_speech_text
 
 RECOMMENDED_VOICES = {
     "af_heart": "Heart - American female; suggested starting voice",
@@ -154,8 +155,8 @@ def prepare_audio(samples: npt.NDArray[np.float32], rate: int) -> npt.NDArray[np
     active = np.flatnonzero(np.abs(samples) > max(0.00001, peak * 0.001))
     if not active.size:
         return samples
-    # Kokoro's default trim can eat a quiet opening consonant. Keep a generous
-    # lead-in instead, without making the user wait through seconds of padding.
+    # Kokoro's default trim can eat a quiet opening consonant. Retain up to
+    # 250 ms of existing lead-in; device-start padding belongs to playback.
     start = max(0, int(active[0]) - round(rate * 0.25))
     end = min(len(samples), int(active[-1]) + 1 + round(rate * 0.08))
     return samples[start:end]
@@ -183,6 +184,10 @@ class TTS:
     def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:
         """Generate samples without opening a speaker (also used by the droid server)."""
         samples, rate = self.backend.create(
-            text, voice=self.voice, speed=self.speed, lang=self.language, trim=False
+            plain_speech_text(text),
+            voice=self.voice,
+            speed=self.speed,
+            lang=self.language,
+            trim=False,
         )
         return prepare_audio(samples, rate), rate

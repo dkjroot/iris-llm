@@ -182,3 +182,45 @@ def test_voice_download_command_dispatches_without_loading_backend() -> None:
         assert iris.main(["--download-voices"]) == 0
     download.assert_called_once()
     backend.assert_not_called()
+
+
+def test_kokoro_receives_words_without_markdown_emphasis(assets):
+    settings, data = assets
+    for name, body in data.items():
+        (settings.kokoro_model_dir / name).write_bytes(body)
+    backend = Mock(get_voices=Mock(return_value=["af_heart"]))
+    backend.create.return_value = (np.ones(100, dtype=np.float32) * 0.1, 24000)
+    with patch.object(kokoro, "load_backend", return_value=backend):
+        tts = kokoro.TTS(settings)
+        tts.synthesize("**First**, this is *important*.")
+    assert backend.create.call_args.args[0] == "First, this is important."
+    assert backend.create.call_args.kwargs["trim"] is False
+
+
+def test_speech_cleanup_preserves_displayed_reply_and_model_history(assets):
+    from iris_droid.protocol import write_wav
+    from iris_droid.server import Brain
+
+    settings, data = assets
+    for name, body in data.items():
+        (settings.kokoro_model_dir / name).write_bytes(body)
+    backend = Mock(get_voices=Mock(return_value=["af_heart"]))
+    backend.create.return_value = (np.ones(100, dtype=np.float32) * 0.1, 24000)
+    original = "**Hello**, this is *important*."
+    with (
+        patch.object(kokoro, "load_backend", return_value=backend),
+        httpx.Client(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"role": "assistant", "content": original}}]},
+                )
+            )
+        ) as chat,
+    ):
+        brain = Brain(
+            settings, chat, Mock(recognize=Mock(return_value="hello")), kokoro.TTS(settings)
+        )
+        reply = brain.turn("test", write_wav(b"\x01\x00" * 1600, 16000))
+    assert reply.text == original and brain.sessions["test"].history[-1].content == original
+    assert backend.create.call_args.args[0] == "Hello, this is important."

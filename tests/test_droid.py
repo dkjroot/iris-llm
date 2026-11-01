@@ -35,7 +35,7 @@ def test_recording_loads_the_real_packaged_cue_before_reopening_microphone() -> 
     recognizer = Mock()
     recognizer.listen.return_value = sr.AudioData(b"\x01\x00" * 1600, 16000, 2)
 
-    def play(samples, rate, *, device, blocking):
+    def play(samples, rate, *, device, blocking, latency):
         assert rate == 24000 and len(samples) > 0
         assert device == 7 and blocking is True
         events.append("cue")
@@ -44,6 +44,7 @@ def test_recording_loads_the_real_packaged_cue_before_reopening_microphone() -> 
         patch("speech_recognition.Microphone", return_value=microphone),
         patch("speech_recognition.Recognizer", return_value=recognizer),
         patch("sounddevice.play", side_effect=play),
+        patch("sounddevice.get_status", return_value=None),
         patch("sounddevice.check_output_settings"),
     ):
         recording = record_turn(None, 30, 10, None, speaker=7)
@@ -260,13 +261,14 @@ def test_playback_resamples_when_hardware_rejects_voice_rate(output_rate):
             "sounddevice.query_devices", return_value={"default_samplerate": output_rate}
         ) as query,
         patch("sounddevice.play") as play,
+        patch("sounddevice.get_status", return_value=None),
     ):
         play_wav(write_wav(samples.tobytes(), 24000), device=1)
     actual, rate = play.call_args.args
     assert rate == output_rate and abs(len(actual) - output_rate) <= 2
     frequency = np.fft.rfftfreq(len(actual), 1 / rate)[np.argmax(abs(np.fft.rfft(actual)))]
     assert abs(frequency - 440) < 2
-    assert play.call_args.kwargs == {"device": 1, "blocking": True}
+    assert play.call_args.kwargs == {"device": 1, "blocking": True, "latency": "high"}
     query.assert_called_once_with(1, "output")
 
 
@@ -275,6 +277,7 @@ def test_supported_playback_preserves_samples_without_querying_default():
         patch("sounddevice.check_output_settings"),
         patch("sounddevice.query_devices") as query,
         patch("sounddevice.play") as play,
+        patch("sounddevice.get_status", return_value=None),
     ):
         play_wav(RECORDING, device=1)
     query.assert_not_called()
@@ -289,6 +292,7 @@ def test_failed_output_preflight_reports_device_and_never_plays():
         patch("sounddevice.check_output_settings", side_effect=sd.PortAudioError("unsupported")),
         patch("sounddevice.query_devices", return_value={"default_samplerate": 44100}),
         patch("sounddevice.play") as play,
+        patch("sounddevice.get_status", return_value=None),
         pytest.raises(OSError, match="Speaker 1.*unsupported"),
     ):
         play_wav(RECORDING, device=1)

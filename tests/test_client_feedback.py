@@ -23,7 +23,7 @@ CUES = {
 
 
 def player_for(events):
-    def play(data, device=None, *, loop=False):
+    def play(data, device=None, *, loop=False, lead_in=0, primer=False):
         assert device == 7
         name = next((name for name, cue in CUES.items() if cue == data), None)
         if name is not None:
@@ -197,7 +197,12 @@ def test_busy_loop_resamples_for_selected_speaker():
         play_wav(CUES["workinglongquiet.wav"], 7, loop=True)
     samples, rate = play.call_args.args
     assert rate == 44100 and abs(len(samples) / rate - 3.6) < 0.001
-    assert play.call_args.kwargs == {"device": 7, "blocking": False, "loop": True}
+    assert play.call_args.kwargs == {
+        "device": 7,
+        "blocking": False,
+        "loop": True,
+        "latency": "high",
+    }
 
 
 def test_recording_cues_run_with_microphone_closed():
@@ -219,7 +224,7 @@ def test_recording_cues_run_with_microphone_closed():
         opened = False
         events.append("close")
 
-    def play(data, device=None, *, loop=False):
+    def play(data, device=None, *, loop=False, lead_in=0, primer=False):
         assert not opened and not loop
         events.append("bleep" if data == CUES["bleep.wav"] else "recorded")
 
@@ -255,7 +260,7 @@ def test_wake_ready_cue_follows_calibration_with_input_closed():
         opened = False
         events.append("close")
 
-    def play(data, device=None, *, loop=False):
+    def play(data, device=None, *, loop=False, lead_in=0, primer=False):
         assert not opened
         events.append(next(name for name, cue in CUES.items() if cue == data))
 
