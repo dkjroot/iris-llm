@@ -178,3 +178,5 @@ DEVELOPMENT.md
 agent_docs/
 /TODO.md
 /.cache/
+# Local client launcher (may contain the connection key and device settings)
+/run_client.sh

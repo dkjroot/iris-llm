@@ -1,0 +1,19 @@
+[Unit]
+Description=Iris voice client
+# Keep retrying if audio hardware or the server is unavailable during boot.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# These paths assume the checkout is ~/iris-llm. Change both for another location.
+WorkingDirectory=%h/iris-llm
+ExecStart=/bin/bash "%h/iris-llm/run_client.sh"
+EnvironmentFile=-%h/.config/iris/client.env
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+[Install]
+WantedBy=default.target

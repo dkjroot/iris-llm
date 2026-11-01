@@ -807,6 +807,49 @@ Say **“companion mode off”** to go back to ordinary assistant conversation a
 
 In voice companion mode, Iris listens for follow-up speech without another wake phrase or Enter press, and the ordinary wake conversation timeout is suspended. **Detected speech is sent to the PC throughout companion mode**, so turn it off when you've finished hanging out. The microphone still closes while she speaks; she can't hear interruptions or someone starting to talk while an opener is being generated. There's no camera or arrival detection involved yet: you're telling her when you'd like company. Update both the server and client before trying this feature.
 
+### 7. Start the Pi client at boot
+
+Raspberry Pi OS (including older releases called Raspbian) can run Iris as your normal user from your home directory. The [systemd user service](systemd/iris-client.service) starts `run_client.sh` and restarts it after ten seconds whenever it exits, including when you say `exit`. Use `systemctl --user stop iris-client` when you actually want it to stay stopped.
+
+Use your existing `run_client.sh` if you've already set up the connection key, audio devices and wake model there. Its exported environment variables are passed to the client as usual. The service doesn't read `.bashrc` or inherit an SSH terminal's environment, so the script needs to export the key itself and use the Python environment explicitly, either by activating it or by calling `.venv/bin/python`.
+
+Keep the client in the foreground, with no trailing `&`, and use `exec` for the final command that launches Python. That lets systemd track the client and stop it cleanly. Wake and continuous activation work without a terminal; Enter-to-talk and text mode don't. The launcher is ignored by Git so your local settings stay local.
+
+If you'd rather keep the connection key outside the script, the service also reads an optional `~/.config/iris/client.env` file. Use `IRIS_DROID_TOKEN=your-existing-shared-key` without `export`, and restrict its permissions with `chmod 600 ~/.config/iris/client.env`. You don't need this file when your script already exports the key.
+
+Now install the service from the repository directory:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp systemd/iris-client.service ~/.config/systemd/user/
+nano ~/.config/systemd/user/iris-client.service
+```
+
+The supplied unit assumes the checkout is `~/iris-llm`. If yours is somewhere else, change **both** `WorkingDirectory` and `ExecStart` in that installed copy. `%h` means your home directory; for example, a checkout in `~/git/iris-llm` needs `%h/git/iris-llm` in both paths. Bash runs the launcher, so it doesn't need an executable bit.
+
+Stop any copy of the client running in a terminal, then enable startup:
+
+```sh
+sudo loginctl enable-linger "$USER"
+systemctl --user daemon-reload
+systemctl --user enable --now iris-client.service
+systemctl --user status iris-client.service
+```
+
+[Lingering](https://freedesktop.org/software/systemd/man/latest/systemd-run.html) starts your user service manager at boot and keeps it running after logout. Only that setup command uses `sudo`; Iris itself runs as you. The client handles failed network turns without exiting, and the service restarts it if startup or audio fails. Failed turns aren't automatically resent, so speak again once the PC is available.
+
+Check audio after a reboot without logging into the Pi's desktop too. Direct ALSA devices need permission to access `/dev/snd`; if your account only gets that access during a local desktop session, add it to the `audio` group with `sudo usermod -aG audio "$USER"`, then reboot. If you use a PipeWire or PulseAudio device instead, its user audio service needs to be available at boot too. Keep the device choices that worked in your normal-user tests.
+
+To follow the logs, restart after changing the launcher or key, or stop the client:
+
+```sh
+journalctl --user -u iris-client.service -f
+systemctl --user restart iris-client.service
+systemctl --user stop iris-client.service
+```
+
+To stop it and remove automatic startup, run `systemctl --user disable --now iris-client.service`. A restart creates a fresh client session, so companion mode and conversation history don't carry across client restarts.
+
 ## If something doesn't work
 
 - If the connection fails, check the PC's address, the server's listening address,
