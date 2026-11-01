@@ -238,7 +238,9 @@ def test_native_capture_is_converted_to_server_format(native_rate):
     ):
         pcm, rate = read_wav(record_turn(1, 30, 10, wake, speaker=1), input_audio=True)
     assert rate == 16000 and abs(len(pcm) // 2 - 16000) <= 1
-    assert all(call.kwargs == {"device_index": 1} for call in factory.call_args_list)
+    assert all(
+        call.kwargs == {"device_index": 1, "chunk_size": 8192} for call in factory.call_args_list
+    )
     assert factory.call_count == 2
     wake.wait.assert_called_once_with(source)
     assert microphone.__exit__.call_count == 2
@@ -312,3 +314,84 @@ def test_microphone_is_closed_when_recording_raises():
         with pytest.raises(sr.WaitTimeoutError), open_microphone(1):
             raise sr.WaitTimeoutError()
     microphone.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("buffer_frames", [8192, 16384])
+def test_capture_buffer_and_checked_reads_reach_the_native_stream(buffer_frames):
+    native = Mock()
+    native.read.return_value = b"\x01\x00" * buffer_frames
+    original = SimpleNamespace(pyaudio_stream=native, close=Mock())
+    source = SimpleNamespace(stream=original)
+    microphone = Mock()
+    microphone.__enter__ = Mock(return_value=source)
+    microphone.__exit__ = Mock(side_effect=lambda *args: source.stream.close())
+    with patch("speech_recognition.Microphone", return_value=microphone) as factory:
+        with open_microphone(1, buffer_frames) as opened:
+            assert opened.stream.read(buffer_frames) == b"\x01\x00" * buffer_frames
+    factory.assert_called_once_with(device_index=1, chunk_size=buffer_frames)
+    native.read.assert_called_once_with(buffer_frames, exception_on_overflow=True)
+    original.close.assert_called_once()
+
+
+def test_capture_overflow_aborts_before_any_network_turn(capsys):
+    native = Mock()
+    native.read.side_effect = OSError(-9981, "Input overflowed")
+    source = SimpleNamespace(stream=SimpleNamespace(pyaudio_stream=native, close=Mock()))
+    microphone = Mock()
+    microphone.__enter__ = Mock(return_value=source)
+    microphone.__exit__ = Mock(side_effect=lambda *args: source.stream.close())
+    recognizer = Mock()
+    recognizer.adjust_for_ambient_noise.side_effect = lambda s, **kw: s.stream.read(8192)
+    with (
+        patch("speech_recognition.Microphone", return_value=microphone),
+        patch("speech_recognition.Recognizer", return_value=recognizer),
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("iris_droid.client.DroidClient.turn") as turn,
+        patch("iris_droid.client.play_wav") as play,
+    ):
+        assert iris.main(["client", "--activation", "continuous"]) == 1
+    output = capsys.readouterr().out
+    assert "input overflow" in output and "recording discarded" in output
+    assert "--microphone-buffer" in output
+    turn.assert_not_called()
+    play.assert_not_called()
+    microphone.__exit__.assert_called_once()
+
+
+def test_capture_rejects_short_reads_and_preserves_other_device_errors():
+    from iris_droid.capture import CheckedMicrophoneStream
+
+    native = Mock()
+    stream = CheckedMicrophoneStream(SimpleNamespace(pyaudio_stream=native, close=Mock()))
+    native.read.return_value = b"\x00\x00"
+    with pytest.raises(OSError, match="incomplete audio"):
+        stream.read(8192)
+    native.read.side_effect = OSError(-9999, "Device disconnected")
+    with pytest.raises(OSError, match="Device disconnected") as failure:
+        stream.read(8192)
+    assert failure.value.errno == -9999
+
+
+def test_client_passes_requested_buffer_to_recording():
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("iris_droid.client.record_turn", side_effect=KeyboardInterrupt) as record,
+    ):
+        assert (
+            iris.main(["client", "--activation", "continuous", "--microphone-buffer", "16384"]) == 0
+        )
+    assert record.call_args.args[-1] == 16384
+
+
+@pytest.mark.parametrize("frames", [0, 255, 65537])
+def test_invalid_capture_buffer_does_not_open_devices_or_network(frames):
+    with (
+        patch("speech_recognition.Microphone") as microphone,
+        patch("httpx.Client") as transport,
+    ):
+        assert iris.main(["client", "--microphone-buffer", str(frames)]) == 1
+        with pytest.raises(ValueError, match="Microphone buffer"):
+            with open_microphone(1, frames):
+                pytest.fail("Invalid buffer must not open")
+    microphone.assert_not_called()
+    transport.assert_not_called()

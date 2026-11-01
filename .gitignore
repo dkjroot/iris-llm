@@ -6,6 +6,7 @@ iris_sounds/*.mp3
 run_server.ps1
 run_client.sh
 .vscode
+vosk-model-small-en-us-0.15
 
 __pycache__/
 *.py[cod]

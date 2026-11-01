@@ -491,6 +491,20 @@ If that doesn't work:
 - **Device busy:** stop any `arecord`, `aplay` or other audio test still using the hardware before starting Iris. Run the client as your normal user in the same environment as the successful tests, rather than trying `sudo` as an audio fix.
 - **Transcript and reply print, but no spoken reply:** repeat the playback check with the same speaker index. A text-mode run never plays speech; make sure `--text` is absent. An HTTP `503` points to the PC's speech service instead.
 
+#### Fast or crackly microphone recordings
+
+The client uses an 8,192-frame microphone buffer (about 186 ms at 44.1 kHz), giving capture more breathing room than the speech library's 1,024-frame default. It also checks for input overflow: if PortAudio reports that samples were lost, the client discards the current recording and stops with an error instead of sending damaged speech to the server. These checks apply while waiting for the wake phrase as well as while recording a message.
+
+If you get `Microphone input overflow`, try adding `--microphone-buffer 16384` to your existing client command. This is a client option, shared across Windows, macOS and Linux; it doesn't change the server configuration. For example, using the device indices from the earlier example:
+
+```sh
+python iris.py client --server http://192.168.1.10:8765 --microphone 2 --speaker 7 --microphone-buffer 16384
+```
+
+The setting is in frames, not milliseconds; larger buffers make capture less responsive to speech starting and stopping. The allowed range is 256–65,536 frames. Check for other processes keeping the client CPU busy too. A larger buffer is something to try, not a guarantee that every source of crackling is an overflow.
+
+If a native ALSA recording sounds clean but an Iris recording sounds shortened or crackly, compare both recordings through the same playback route. Check offline sample-rate conversion separately from microphone capture before changing the Whisper model. Keep any diagnostic recordings local; ordinary client operation doesn't save them.
+
 The normal turn limit is 30 seconds. `--phrase-time-limit` changes it on the client; don't exceed the server's `phrase_time_limit` setting. The client `--listen-timeout` controls how long it waits for speech to start (10 seconds by default). Device listing and the cue test stay on the client; an actual voice turn sends the recording to your configured Iris server.
 
 ### 5. Optional: local wake detection

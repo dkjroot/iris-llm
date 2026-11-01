@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import httpx
 
+from iris_droid.capture import DEFAULT_MICROPHONE_BUFFER, CheckedMicrophoneStream
 from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
 from iris_droid.wake import WakeDetector
 
@@ -87,13 +88,17 @@ def play_wav(data: bytes, device: int | None = None) -> None:
 
 
 @contextmanager
-def open_microphone(device: int | None) -> Iterator[sr.Microphone]:
+def open_microphone(
+    device: int | None, buffer_frames: int = DEFAULT_MICROPHONE_BUFFER
+) -> Iterator[sr.Microphone]:
     import speech_recognition as sr
 
+    if not 256 <= buffer_frames <= 65536:
+        raise ValueError("Microphone buffer must be between 256 and 65536 frames")
     try:
         # Let PyAudio choose the hardware's default rate; conversion to the
         # server's 16 kHz format happens after recording.
-        microphone = sr.Microphone(device_index=device)
+        microphone = sr.Microphone(device_index=device, chunk_size=buffer_frames)
         source = microphone.__enter__()
     except (OSError, ValueError, AssertionError, AttributeError) as error:
         raise OSError(f"Cannot open microphone {device}: {error}") from error
@@ -105,6 +110,7 @@ def open_microphone(device: int | None) -> Iterator[sr.Microphone]:
             "input channels, supported sample rates and whether it is already in use."
         )
     try:
+        source.stream = CheckedMicrophoneStream(source.stream)
         yield source
     finally:
         microphone.__exit__(None, None, None)
@@ -116,18 +122,19 @@ def record_turn(
     timeout: float,
     wake: WakeDetector | None,
     speaker: int | None = None,
+    buffer_frames: int = DEFAULT_MICROPHONE_BUFFER,
 ) -> bytes:
     import speech_recognition as sr
 
     recognizer = sr.Recognizer()
-    with open_microphone(microphone) as source:
+    with open_microphone(microphone, buffer_frames) as source:
         recognizer.adjust_for_ambient_noise(source, duration=0.3)
         if wake is not None:
             wake.wait(source)
         # A short acknowledgement lets a headless droid tell us when to speak.
         # Close the input while playing it, then reopen to discard the cue/echo.
     play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
-    with open_microphone(microphone) as source:
+    with open_microphone(microphone, buffer_frames) as source:
         print("Speak now...", flush=True)
         audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
     # SpeechRecognition's chunk boundaries can run slightly over its time cap.
@@ -147,6 +154,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--wake-phrase", default="hey iris")
     parser.add_argument("--microphone", type=int)
     parser.add_argument("--speaker", type=int, help="sounddevice output device index")
+    parser.add_argument(
+        "--microphone-buffer",
+        type=int,
+        default=DEFAULT_MICROPHONE_BUFFER,
+        help="Capture buffer in frames (256–65536; default: 8192). Increase for input overflow.",
+    )
     parser.add_argument("--phrase-time-limit", type=float, default=30)
     parser.add_argument("--listen-timeout", type=float, default=10)
     args = parser.parse_args(argv)
@@ -159,6 +172,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
+        if not 256 <= args.microphone_buffer <= 65536:
+            raise ValueError("Microphone buffer must be between 256 and 65536 frames")
         with httpx.Client(
             trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
         ) as transport:
@@ -188,6 +203,7 @@ def main(argv: list[str] | None = None) -> int:
                             args.listen_timeout,
                             wake,
                             args.speaker,
+                            args.microphone_buffer,
                         )
                     except sr.WaitTimeoutError:
                         print("Didn't hear speech. Try again.")
