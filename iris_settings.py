@@ -70,7 +70,17 @@ class Settings(BaseSettings):
     def valid_timezone(cls, value: str) -> str:
         try:
             ZoneInfo(value)
-        except (ZoneInfoNotFoundError, ValueError) as error:
+        except ZoneInfoNotFoundError as error:
+            # Windows usually relies on tzdata rather than a system IANA database.
+            try:
+                ZoneInfo("UTC")
+            except ZoneInfoNotFoundError:
+                raise ValueError(
+                    "Timezone data are missing. In your Iris environment, run "
+                    "python -m pip install tzdata, then restart Iris."
+                ) from error
+            raise ValueError("Use an IANA timezone such as Europe/London") from error
+        except ValueError as error:
             raise ValueError("Use an IANA timezone such as Europe/London") from error
         return value
 

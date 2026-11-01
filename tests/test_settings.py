@@ -1,10 +1,33 @@
 import json
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pytest
 from pydantic import ValidationError
 
 from iris_settings import Settings, load_settings, migrate_config
+
+
+def test_missing_timezone_database_explains_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_zone(key: str) -> ZoneInfo:
+        raise ZoneInfoNotFoundError(key)
+
+    monkeypatch.setattr("iris_settings.ZoneInfo", missing_zone)
+    with pytest.raises(ValidationError, match="python -m pip install tzdata"):
+        Settings(local_timezone="Europe/London")
+
+
+def test_unknown_timezone_with_database_explains_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    utc = ZoneInfo("UTC")
+
+    def known_utc_only(key: str) -> ZoneInfo:
+        if key == "UTC":
+            return utc
+        raise ZoneInfoNotFoundError(key)
+
+    monkeypatch.setattr("iris_settings.ZoneInfo", known_utc_only)
+    with pytest.raises(ValidationError, match="Use an IANA timezone"):
+        Settings(local_timezone="Mars/Olympus")
 
 
 @pytest.mark.parametrize(

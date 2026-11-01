@@ -121,6 +121,8 @@ The server uses Whisper for recognition and Kokoro for its voice. Neither ordina
 
 If you prefer uv, use `uv sync --locked --python 3.12 --extra whisper --extra kokoro` instead of the venv/pip steps. Run subsequent commands with `uv run --no-sync python` instead of `python`. You can pick pip or uv; you don't need to use both. If this environment also runs the client, include `--extra microphone` in the sync command so all three extras stay installed.
 
+After updating an existing checkout, rerun your package installation or uv sync command to pick up new dependencies. If startup reports missing timezone data, run `python -m pip install tzdata` in the active Iris environment (shared command for Windows and Linux). Windows needs this package to look up names such as `Europe/London`; changing a valid timezone in your config won't fix a missing database.
+
 ### 2. Configure the server and chat connection
 
 Get your chat model working first. Iris doesn't load the chat model itself; it
