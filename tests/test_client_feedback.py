@@ -55,6 +55,7 @@ def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phras
                 text="Command accepted.",
                 audio="",
                 finished=False,
+                companion_mode=False,
             ),
         ),
     ):
@@ -110,7 +111,11 @@ def test_client_feedback_follows_turn_and_stops_before_reply_and_rearming(activa
     def turn(*args, **kwargs):
         events.append("request")
         return SimpleNamespace(
-            heard="hello", text="hello", audio=base64.b64encode(REPLY).decode(), finished=False
+            heard="hello",
+            text="hello",
+            audio=base64.b64encode(REPLY).decode(),
+            finished=False,
+            companion_mode=False,
         )
 
     argv = ["client", "--speaker", "7", "--activation", activation]

@@ -22,6 +22,7 @@ from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.protocol import (
     MAX_BODY,
     TurnReply,
+    companion_command,
     is_clear_context,
     is_stop_listening,
     read_wav,
@@ -56,8 +57,14 @@ class Brain:
         *,
         text_only: bool = False,
         wake_conversation: bool = False,
+        companion_idle: bool = False,
     ) -> TurnReply:
-        if text_only:
+        if companion_idle:
+            chat = self.sessions.get(session)
+            if chat is None or not chat.companion_mode:
+                return TurnReply(heard="", text="Companion mode is off.")
+            heard = ""
+        elif text_only:
             heard = body.decode("utf-8").strip()
             if len(heard) > 8000:
                 raise ValueError("Text turn exceeds 8000 characters")
@@ -66,14 +73,35 @@ class Brain:
             if len(pcm) > rate * 2 * self.settings.phrase_time_limit:
                 raise ValueError("Recording exceeds the configured phrase_time_limit")
             heard = self.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
-        if not heard:
+        if not heard and not companion_idle:
             raise sr.UnknownValueError()
         if is_clear_context(heard):
-            self.sessions.pop(session, None)
-            return TurnReply(heard=heard, text="Context cleared. Ready for a fresh conversation.")
-        if wake_conversation and not text_only and is_stop_listening(heard):
+            existing = self.sessions.get(session)
+            companion = existing is not None and existing.companion_mode
+            if companion:
+                # Reset tool caches too, just as clearing an ordinary session does.
+                fresh = ChatEngine(self.settings, self.client)
+                fresh.companion_mode = True
+                self.sessions[session] = fresh
+            else:
+                self.sessions.pop(session, None)
+            return TurnReply(
+                heard=heard,
+                text="Context cleared. Ready for a fresh conversation.",
+                companion_mode=companion,
+            )
+        existing = self.sessions.get(session)
+        companion = existing is not None and existing.companion_mode
+        if (companion or (wake_conversation and not text_only)) and is_stop_listening(heard):
             # A control utterance isn't a chat turn and doesn't clear history.
-            return TurnReply(heard=heard, text="Waiting for the wake phrase.")
+            if existing is not None:
+                existing.companion_mode = False
+            return TurnReply(
+                heard=heard,
+                text="Waiting for the wake phrase."
+                if wake_conversation and not text_only
+                else "Companion mode off.",
+            )
         finished = heard.casefold().strip(" .!?") == "exit"
         if session not in self.sessions:
             if len(self.sessions) >= 16:
@@ -82,18 +110,35 @@ class Brain:
         self.sessions.move_to_end(session)
         chat = self.sessions[session]
         previous = chat.history.copy()
+        previous_mode = chat.companion_mode
+        previous_seed = chat.last_companion_seed
         try:
-            text = "Shutting down" if finished else chat.get_response(heard)
+            command = companion_command(heard)
+            if command is not None:
+                chat.companion_mode = command
+                text = "Companion mode on. Let's hang out." if command else "Companion mode off."
+            elif companion_idle:
+                text = chat.get_companion_opener()
+            else:
+                text = "Shutting down" if finished else chat.get_response(heard)
             audio = ""
             if not text_only:
                 samples, rate = self.tts.synthesize(text)
                 pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
                 audio = base64.b64encode(write_wav(pcm, rate)).decode("ascii")
-            result = TurnReply(heard=heard, text=text, audio=audio, finished=finished)
+            result = TurnReply(
+                heard=heard,
+                text=text,
+                audio=audio,
+                finished=finished,
+                companion_mode=chat.companion_mode and not finished,
+            )
             if len(result.model_dump_json().encode()) > MAX_BODY:
                 raise ValueError("Synthesized reply exceeds the transport size limit")
         except Exception:
             chat.history = previous
+            chat.companion_mode = previous_mode
+            chat.last_companion_seed = previous_seed
             raise
         if finished:
             del self.sessions[session]
@@ -128,7 +173,8 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
                 self.respond(404, b'{"error":"Unknown route"}')
                 return
             text_only = self.path == "/v1/text"
-            expected = "text/plain" if text_only else "audio/wav"
+            companion_idle = self.headers.get("X-Iris-Companion-Idle") == "1"
+            expected = "text/plain" if text_only or companion_idle else "audio/wav"
             if self.headers.get_content_type() != expected:
                 self.respond(415, b'{"error":"Unexpected content type"}')
                 return
@@ -146,6 +192,7 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
                     body,
                     text_only=text_only,
                     wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
+                    companion_idle=companion_idle,
                 )
             except (ValueError, EOFError):
                 self.respond(400, b'{"error":"Invalid session, text or WAV recording"}')

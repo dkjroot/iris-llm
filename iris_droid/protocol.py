@@ -11,6 +11,11 @@ from pydantic import BaseModel, ConfigDict
 MAX_BODY = 10_000_000
 
 
+def companion_command(text: str) -> bool | None:
+    phrase = " ".join(text.casefold().split()).strip(" .!?,")
+    return {"companion mode on": True, "companion mode off": False}.get(phrase)
+
+
 def is_stop_listening(text: str) -> bool:
     return " ".join(text.casefold().split()).strip(" .!?,") == "stop listening"
 
@@ -43,6 +48,7 @@ class TurnReply(BaseModel):
     text: str
     audio: str = ""  # Base64-encoded mono PCM WAV, at the synthesizer's sample rate.
     finished: bool = False
+    companion_mode: bool = False
 
 
 def read_wav(data: bytes, *, input_audio: bool = False) -> tuple[bytes, int]:

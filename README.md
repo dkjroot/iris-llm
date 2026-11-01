@@ -787,6 +787,24 @@ Say **“clear context”** as a complete utterance to start afresh without stop
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 
+### 6. Companion mode
+
+Sometimes I just want Iris to hang out and chat, rather than keep asking what she can help with. Say **“companion mode on”** as a complete utterance, or type it in text mode. This asks the model to play the part of a relaxed robot companion: follow a tangent, have a bit of a laugh, and let a reply just be a reply without always tacking another question onto the end. She can still help with practical things when you ask. How well she settles into that role depends on the model and your configured personality prompt.
+
+While companion mode is on, Iris can start a conversation herself after a random stretch of quiet. Initially that's somewhere between 90 seconds and four minutes, measured from when she finishes speaking. She picks from a bank of ideas and asks the model to write something fresh, using the recent conversation for context. There are ordinary check-ins, but also terrible robot business ideas, suspiciously specific awards, useless superpowers and things a pigeon might put in a strongly worded letter. The idea is to get an occasional unexpected thought or a laugh, rather than hear the same recorded “how was your day?” every time.
+
+If you leave an opener unanswered, she gives you more space. The next random interval doubles, then doubles again, up to eight times the original range: eventually 12–32 minutes between attempts with the defaults. Speaking to her resets that backoff. This is an initial attempt at getting the balance right; living with it for a while will be the useful test. To change the base interval, add these options to your usual client command, for example:
+
+```sh
+python iris.py client --companion-idle-min 180 --companion-idle-max 600
+```
+
+That starts with three to ten minutes of quiet. The values are seconds and must satisfy `5 <= min <= max <= 3600`; the backoff multiplies that range. Text mode uses the same timing, so you can try the personality and openers with `python iris.py client --text` before getting the microphone involved. Automatic openers don't play the working sound first.
+
+Say **“companion mode off”** to go back to ordinary assistant conversation and stop the spontaneous openers. **“Stop listening”** also switches companion mode off; in wake mode it returns Iris to waiting for her wake phrase. “Clear context” clears the conversation while keeping companion mode on. The mode belongs to the current client session and starts off when you launch a new client.
+
+In voice companion mode, Iris listens for follow-up speech without another wake phrase or Enter press, and the ordinary wake conversation timeout is suspended. **Detected speech is sent to the PC throughout companion mode**, so turn it off when you've finished hanging out. The microphone still closes while she speaks; she can't hear interruptions or someone starting to talk while an opener is being generated. There's no camera or arrival detection involved yet: you're telling her when you'd like company. Update both the server and client before trying this feature.
+
 ## If something doesn't work
 
 - If the connection fails, check the PC's address, the server's listening address,

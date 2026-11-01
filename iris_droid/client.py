@@ -6,7 +6,7 @@ import argparse
 import base64
 import os
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +21,7 @@ from iris_droid.capture import (
     CheckedMicrophoneStream,
     validate_capture_options,
 )
+from iris_droid.companion import CompanionTimer, ConsoleInput
 from iris_droid.conversation import WakeConversation
 from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import (
@@ -63,13 +64,17 @@ class DroidClient:
         if wake_conversation:
             self.headers["X-Iris-Wake-Conversation"] = "1"
 
-    def turn(self, body: bytes, *, text_only: bool = False) -> TurnReply:
+    def turn(
+        self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
+    ) -> TurnReply:
         if not 0 < len(body) <= MAX_BODY:
             raise ValueError("Turn is empty or exceeds the transport size limit")
         headers = {
             **self.headers,
-            "Content-Type": "text/plain" if text_only else "audio/wav",
+            "Content-Type": "text/plain" if text_only or companion_idle else "audio/wav",
         }
+        if companion_idle:
+            headers["X-Iris-Companion-Idle"] = "1"
         route = "text" if text_only else "voice"
         with self.client.stream(
             "POST", f"{self.url}/v1/{route}", content=body, headers=headers
@@ -194,6 +199,7 @@ def record_turn(
     announce_ready: bool = False,
     conversation: WakeConversation | None = None,
     calibration: CaptureCalibration | None = None,
+    companion_timer: CompanionTimer | None = None,
 ) -> bytes:
     import speech_recognition as sr
 
@@ -245,7 +251,11 @@ def record_turn(
                 flush=True,
             )
         print("Speak now...", flush=True)
-        if conversation is not None and conversation.active:
+        if companion_timer is not None and companion_timer.enabled:
+            timeout = companion_timer.remaining()
+            if timeout <= 0:
+                raise sr.WaitTimeoutError("Companion idle timeout")
+        elif conversation is not None and conversation.active:
             timeout = conversation.remaining()
             if timeout <= 0:
                 raise sr.WaitTimeoutError("Conversation idle timeout")
@@ -336,6 +346,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--phrase-time-limit", type=float, default=30)
     parser.add_argument("--listen-timeout", type=float, default=10)
     parser.add_argument(
+        "--companion-idle-min",
+        type=float,
+        default=90,
+        help="Shortest companion silence before an opener, in seconds (default: 90)",
+    )
+    parser.add_argument(
+        "--companion-idle-max",
+        type=float,
+        default=240,
+        help="Longest initial companion silence, in seconds (default: 240; backs off if ignored)",
+    )
+    parser.add_argument(
         "--pause-threshold",
         type=float,
         default=1.2,
@@ -354,6 +376,8 @@ def main(argv: list[str] | None = None) -> int:
         if not 0 <= args.speech_lead_in <= 2:
             raise ValueError("Speech lead-in must be between 0 and 2 seconds")
         wake_window = WakeConversation(args.conversation_timeout)
+        companion = CompanionTimer(args.companion_idle_min, args.companion_idle_max)
+        console = ConsoleInput()
         validate_capture_options(
             buffer_frames=args.microphone_buffer,
             pause_threshold=args.pause_threshold,
@@ -427,32 +451,42 @@ def main(argv: list[str] | None = None) -> int:
                     wake = WakeDetector(args.wake_model, args.wake_phrase)
                 conversation = wake_window if wake is not None else None
                 calibration = CaptureCalibration() if conversation is not None else None
+                companion_calibration = CaptureCalibration()
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
                     if (
                         conversation is not None
+                        and not companion.enabled
                         and conversation.active
                         and conversation.remaining() <= 0
                     ):
                         conversation.sleep()
                         print("Conversation idle; returning to wake waiting.", flush=True)
-                    if not args.text and args.activation == "enter":
+                    proactive = False
+                    if not args.text and args.activation == "enter" and not companion.enabled:
                         feedback.ready()
                     if args.text:
-                        body = input("You: ").encode()
-                        if not body.strip():
+                        line = console.read(
+                            "You: ", companion.remaining() if companion.enabled else None
+                        )
+                        proactive = line is None
+                        body = b"idle" if proactive else (line or "").encode()
+                        if not proactive and not body.strip():
                             continue
                     else:
                         import speech_recognition as sr
 
-                        if args.activation == "enter":
+                        if args.activation == "enter" and not companion.enabled:
                             input("Press Enter to talk...")
                         try:
                             body = record_turn(
                                 args.microphone,
                                 args.phrase_time_limit,
                                 args.listen_timeout,
-                                wake if conversation is None or not conversation.active else None,
+                                wake
+                                if not companion.enabled
+                                and (conversation is None or not conversation.active)
+                                else None,
                                 args.speaker,
                                 args.microphone_buffer,
                                 args.pause_threshold,
@@ -462,20 +496,27 @@ def main(argv: list[str] | None = None) -> int:
                                 diagnostics=args.echo_recording,
                                 feedback=feedback,
                                 announce_ready=args.activation != "enter",
-                                conversation=conversation,
-                                calibration=calibration,
+                                conversation=None if companion.enabled else conversation,
+                                calibration=companion_calibration
+                                if companion.enabled
+                                else calibration,
+                                **({"companion_timer": companion} if companion.enabled else {}),
                             )
                         except sr.WaitTimeoutError:
-                            if conversation is not None and conversation.active:
+                            if companion.enabled:
+                                proactive = True
+                                body = b"idle"
+                            elif conversation is not None and conversation.active:
                                 conversation.sleep()
                                 print("Conversation idle; returning to wake waiting.", flush=True)
                                 continue
-                            feedback.error()
-                            print("Didn't hear speech. Try again.")
-                            continue
+                            else:
+                                feedback.error()
+                                print("Didn't hear speech. Try again.")
+                                continue
                         if conversation is not None:
                             conversation.activate()
-                        if args.echo_recording:
+                        if args.echo_recording and not proactive:
                             pcm, rate = read_wav(body, input_audio=True)
                             print(
                                 f"Recorded {len(pcm) / (rate * 2):.1f} seconds. "
@@ -484,12 +525,19 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             play_wav(body, args.speaker)
                     try:
-                        with feedback.working():
-                            reply = client.turn(body, text_only=args.text)
+                        with nullcontext() if proactive else feedback.working():
+                            reply = client.turn(
+                                body,
+                                text_only=args.text,
+                                **({"companion_idle": True} if proactive else {}),
+                            )
                     except httpx.HTTPError as error:
+                        if companion.enabled:
+                            companion.update(True, proactive=proactive)
                         if conversation is not None and conversation.active:
                             conversation.activate()
-                        feedback.error()
+                        if not proactive:
+                            feedback.error()
                         status = (
                             str(error.response.status_code)
                             if isinstance(error, httpx.HTTPStatusError)
@@ -500,13 +548,18 @@ def main(argv: list[str] | None = None) -> int:
                             "Check the PC; turn not resent."
                         )
                         continue
-                    print(f"You: {reply.heard}\nIris: {reply.text}")
+                    print(
+                        f"Iris: {reply.text}"
+                        if proactive
+                        else f"You: {reply.heard}\nIris: {reply.text}"
+                    )
                     if not reply.audio and (
                         is_clear_context(reply.heard)
                         or (conversation is not None and is_stop_listening(reply.heard))
                     ):
                         feedback.acknowledge()
                     if conversation is not None and is_stop_listening(reply.heard):
+                        companion.update(False)
                         conversation.sleep()
                         print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
                         continue
@@ -525,6 +578,7 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     if reply.finished:
                         return 0
+                    companion.update(reply.companion_mode, proactive=proactive)
                     if conversation is not None:
                         # Give the user a full idle interval after the reply finishes.
                         conversation.activate()
