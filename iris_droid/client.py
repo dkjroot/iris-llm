@@ -149,6 +149,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--list-microphones", action="store_true", help="List microphone indices")
     parser.add_argument("--text", action="store_true", help="Test transport without any audio")
+    parser.add_argument(
+        "--echo-recording",
+        action="store_true",
+        help="Play each captured recording locally before sending it (voice mode only)",
+    )
     parser.add_argument("--activation", choices=["enter", "continuous", "wake"], default="enter")
     parser.add_argument("--wake-model", type=Path)
     parser.add_argument("--wake-phrase", default="hey iris")
@@ -208,6 +213,14 @@ def main(argv: list[str] | None = None) -> int:
                     except sr.WaitTimeoutError:
                         print("Didn't hear speech. Try again.")
                         continue
+                    if args.echo_recording:
+                        pcm, rate = read_wav(body, input_audio=True)
+                        print(
+                            f"Recorded {len(pcm) / (rate * 2):.1f} seconds. "
+                            "Playing recording before sending...",
+                            flush=True,
+                        )
+                        play_wav(body, args.speaker)
                 try:
                     reply = client.turn(body, text_only=args.text)
                 except httpx.HTTPError as error:

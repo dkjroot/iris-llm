@@ -395,3 +395,86 @@ def test_invalid_capture_buffer_does_not_open_devices_or_network(frames):
                 pytest.fail("Invalid buffer must not open")
     microphone.assert_not_called()
     transport.assert_not_called()
+
+
+@pytest.mark.parametrize("activation", ["enter", "continuous", "wake"])
+@pytest.mark.parametrize("echo", [False, True])
+def test_echo_plays_exact_outgoing_recording_before_send(activation, echo, capsys):
+    events = []
+
+    def record(*args):
+        events.append("recorded")
+        return RECORDING
+
+    def play(data, device):
+        assert data is RECORDING and device == 7
+        events.append("echoed")
+
+    def turn(body, *, text_only):
+        assert body is RECORDING and text_only is False
+        events.append("sent")
+        return SimpleNamespace(heard="exit", text="Goodbye", audio="", finished=True)
+
+    argv = ["client", "--activation", activation, "--speaker", "7"]
+    if echo:
+        argv.append("--echo-recording")
+    if activation == "wake":
+        argv.extend(["--wake-model", "."])
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("builtins.input", return_value=""),
+        patch("iris_droid.client.WakeDetector"),
+        patch("iris_droid.client.record_turn", side_effect=record),
+        patch("iris_droid.client.play_wav", side_effect=play),
+        patch("iris_droid.client.DroidClient.turn", side_effect=turn),
+    ):
+        assert iris.main(argv) == 0
+    assert events == (["recorded", "echoed", "sent"] if echo else ["recorded", "sent"])
+    output = capsys.readouterr().out
+    assert ("Recorded 0.1 seconds" in output) is echo
+
+
+@pytest.mark.parametrize(
+    "failure, code", [(OSError("Speaker unavailable"), 1), (KeyboardInterrupt(), 0)]
+)
+def test_failed_or_interrupted_echo_never_sends_the_recording(failure, code):
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("iris_droid.client.record_turn", return_value=RECORDING),
+        patch("iris_droid.client.play_wav", side_effect=failure),
+        patch("iris_droid.client.DroidClient.turn") as turn,
+    ):
+        assert iris.main(["client", "--activation", "continuous", "--echo-recording"]) == code
+    turn.assert_not_called()
+
+
+def test_text_mode_ignores_recording_echo():
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("builtins.input", return_value="exit"),
+        patch("iris_droid.client.record_turn") as record,
+        patch("iris_droid.client.play_wav") as play,
+        patch(
+            "iris_droid.client.DroidClient.turn",
+            return_value=SimpleNamespace(heard="exit", text="Goodbye", audio="", finished=True),
+        ) as turn,
+    ):
+        assert iris.main(["client", "--text", "--echo-recording"]) == 0
+    turn.assert_called_once_with(b"exit", text_only=True)
+    record.assert_not_called()
+    play.assert_not_called()
+
+
+def test_silence_does_not_echo_or_send():
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch(
+            "iris_droid.client.record_turn",
+            side_effect=[sr.WaitTimeoutError(), KeyboardInterrupt()],
+        ),
+        patch("iris_droid.client.play_wav") as play,
+        patch("iris_droid.client.DroidClient.turn") as turn,
+    ):
+        assert iris.main(["client", "--activation", "continuous", "--echo-recording"]) == 0
+    play.assert_not_called()
+    turn.assert_not_called()

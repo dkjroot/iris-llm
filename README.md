@@ -491,6 +491,18 @@ If that doesn't work:
 - **Device busy:** stop any `arecord`, `aplay` or other audio test still using the hardware before starting Iris. Run the client as your normal user in the same environment as the successful tests, rather than trying `sudo` as an audio fix.
 - **Transcript and reply print, but no spoken reply:** repeat the playback check with the same speaker index. A text-mode run never plays speech; make sure `--text` is absent. An HTTP `503` points to the PC's speech service instead.
 
+#### Hear what Iris recorded before sending it
+
+Add `--echo-recording` to your client start script to hear each recording before it goes to the server. This works with Enter, continuous and wake activation. For example (shared command for all platforms, using the earlier example device indices):
+
+```sh
+python iris.py client --server http://192.168.1.10:8765 --microphone 2 --speaker 7 --echo-recording
+```
+
+After you speak, the microphone closes, the client prints the recording's duration and plays the exact outgoing recording through your selected speaker. Once playback finishes, it sends that same recording automatically and waits for Iris's reply. Ctrl-C during the echo stops the client before sending that turn. A playback failure also stops it before sending. Nothing is saved to disk, and `--text` skips the echo.
+
+If the echo contains only the first part of your sentence, the recording was cut short before the server received it. If the whole sentence sounds clear but the printed transcript is incomplete, investigate recognition on the server. This makes it easier to check the audio before changing models or microphone settings. Remove `--echo-recording` when you've finished checking; it adds playback time to every voice turn.
+
 #### Fast or crackly microphone recordings
 
 The client uses an 8,192-frame microphone buffer (about 186 ms at 44.1 kHz), giving capture more breathing room than the speech library's 1,024-frame default. It also checks for input overflow: if PortAudio reports that samples were lost, the client discards the current recording and stops with an error instead of sending damaged speech to the server. These checks apply while waiting for the wake phrase as well as while recording a message.
