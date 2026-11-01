@@ -8,9 +8,9 @@ The generator and cues are supplied under the repository's
 
 | File | Purpose and character |
 | --- | --- |
-| `chirp.wav` | Ready for the next turn: a short, gentle rising chirp. |
+| `chirp.wav` | Ready for the next turn: a subtle 90 ms rising chirp. |
 | `bleep.wav` | Listening is about to begin: one clear, brief mid/high tone. |
-| `longbleep.wav` | Recording finished: two soft descending tones, distinct from the listening cue. |
+| `longbleep.wav` | Recording finished: one gentle 100 ms chirp, slightly higher than the ready cue. |
 | `workinglongquiet.wav` | Waiting for the server: low pulses in a 3.6-second loop, repeated until the request finishes or fails. |
 | `error.wav` | No speech or a failed turn: three short low pulses. The terminal explains the error. |
 
@@ -19,7 +19,9 @@ its selected `--speaker` device and the same sample-rate conversion as spoken
 replies. Short cues finish with the microphone closed. The working cue plays
 without blocking the server request and stops before speech or further capture,
 on request failure and on Ctrl-C. In wake mode, the ready chirp follows calibration;
-say the wake phrase after that chirp and your message after the listening bloop.
+say the wake phrase after that chirp to open a conversation, then give each
+message after the listening bloop. During an open conversation there is no need
+to repeat the wake phrase; “stop listening” closes the window.
 
 Use `python iris.py client --no-sounds` to disable feedback while keeping spoken
 replies. These commands and options are shared by Windows PowerShell, macOS and

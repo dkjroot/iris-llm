@@ -11,6 +11,10 @@ from pydantic import BaseModel, ConfigDict
 MAX_BODY = 10_000_000
 
 
+def is_stop_listening(text: str) -> bool:
+    return " ".join(text.casefold().split()).strip(" .!?,") == "stop listening"
+
+
 def validate_token(token: str) -> None:
     if (
         not token.strip()

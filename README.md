@@ -45,9 +45,9 @@ speaker + printed reply       <------ spoken reply + transcript + reply text
 
 The client can wait for Enter, listen whenever it's your turn, or use a small
 local recogniser to listen for “hey iris”. For now, she finishes speaking before
-listening again. Wake detection currently needs the phrase before each turn;
-a conversation window is something I'd like to work on once the basic setup is
-getting regular use.
+listening again. In wake mode, “hey iris” opens a conversation: after each reply
+you can speak again without repeating her name. Say “stop listening”, or leave
+five minutes of silence, to return to waiting for the wake phrase.
 
 ## Choose where each half runs
 
@@ -497,13 +497,13 @@ The client plays feedback through the device selected with `--speaker`, includin
 
 | Sound | Meaning |
 | --- | --- |
-| Short rising chirp | Ready for the next turn, including after a spoken reply. In Enter mode, press Enter; in wake mode, say your wake phrase. In continuous mode the listening cue follows automatically. |
+| Subtle rising chirp | Ready for the next turn, including after a spoken reply. In Enter mode, press Enter. In wake mode, use the wake phrase to open a conversation; once it is open, the listening cue follows automatically. |
 | Brief listening bloop | Start your sentence now. In wake mode this confirms the wake phrase was accepted. |
-| Two descending tones | Recording has finished; the microphone is closed. If recording echo is enabled, you'll hear your recording next. |
+| Short higher chirp | Recording has finished; the microphone is closed. If recording echo is enabled, you'll hear your recording next. |
 | Repeating low working pulses | Waiting for the server to transcribe, ask the model and generate speech. These stop before the spoken reply, or if the turn fails or you stop the client. |
 | Three short low pulses | No speech was heard, or a turn/audio service failed. Check the terminal for the reason. |
 
-In wake and continuous modes, the ready chirp follows ambient calibration. Wait for that chirp before saying the wake phrase, and for the listening bloop before your sentence. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
+In wake and continuous modes, the ready chirp follows ambient calibration. When starting a wake conversation, wait for that chirp before saying the wake phrase. During an open conversation, wait for the listening bloop before each sentence; you don't need to repeat the wake phrase. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
 
 Feedback is on by default. Add `--no-sounds` to your client start script to disable the cues and working sound; spoken replies, `--echo-recording` and local-test playback still work. Text mode is always silent. If a feedback asset or cue playback fails, the client prints a warning and continues without feedback; a failure to play the actual reply or diagnostic echo is still an audio error.
 
@@ -635,12 +635,17 @@ its parent directory:
 python iris.py client --server http://192.168.1.10:8765 --activation wake --wake-model ./vosk-model-small-en-us-0.15
 ```
 
-Say “hey iris”, wait for the listening cue, then give your message. You can
-change the phrase with `--wake-phrase`, using words the model knows. Background
-audio stays on the client; it isn't sent to the PC while Iris waits for her name.
-This uses constrained local speech recognition, so expect to try it with your
-own accent, microphone, distance and room noise. It isn't a promise that every
-room will give perfect wake detection.
+Update both the server and client before using the conversation controls. Start the client with the same `--activation wake` command as above; no extra flag is needed to enable the conversation window.
+
+Say “hey iris”, wait for the listening bloop, then give your message. After Iris replies, you'll hear the subtle ready chirp and listening cue, and can give your next message without saying her name again. She still finishes speaking before opening the microphone; this isn't simultaneous listening or interruption support.
+
+Say **“stop listening”** as a complete utterance to close the conversation window. The client stays running and returns to waiting locally for “hey iris”. The PC recognises the stop phrase, handles it before the chat model and returns a control acknowledgement without generating speech. It doesn't add that phrase to chat history. Text mode, Enter mode and continuous mode don't treat it as a wake control.
+
+Five minutes without a new detected utterance also returns the client to wake waiting, without sending that silence to the server or playing an error cue. Server processing and reply playback don't use up the idle interval; the timer starts afresh after each reply. Change the idle period with `--conversation-timeout SECONDS` on the client (default `300`, greater than 0, up to `3600`). `--listen-timeout` still applies to ordinary Enter/continuous turns; an open wake conversation waits for the remaining conversation interval instead.
+
+Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to clear the session and stop the client, or use Ctrl-C to stop it. Starting a fresh client creates a fresh session.
+
+You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 
 ## If something doesn't work
 

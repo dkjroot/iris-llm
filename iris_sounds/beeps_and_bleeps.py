@@ -56,6 +56,6 @@ class Sounds(ISounds):
         sd.play(self.bleep, self.bleep_rate, blocking=True)
 
     def play_long_bleep(self) -> None:
-        """Play a longer, descending feedback cue."""
+        """Confirm that recording has finished with a short chirp."""
         sd.stop()
         sd.play(self.longbleep, self.longbleep_rate, blocking=True)

@@ -682,7 +682,7 @@ def test_new_capture_options_reach_live_and_local_capture(local):
         "calibration_duration": 1.5,
         "diagnostics": local,
         "feedback": record.call_args.kwargs["feedback"],
-        **({"announce_ready": True} if not local else {}),
+        **({"announce_ready": True, "conversation": None} if not local else {}),
     }
 
 

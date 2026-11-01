@@ -41,6 +41,14 @@ class SoundTests(unittest.TestCase):
                         self.assertLess(max(abs(value) for value in samples), 32767 * 0.04)
                         self.assertEqual(len(samples), 86400)
 
+    def test_ready_and_recorded_cues_are_short_and_subtle(self) -> None:
+        for filename in ("chirp.wav", "longbleep.wav"):
+            with self.subTest(filename=filename):
+                with wave.open(str(generate_sounds.OUTPUT / filename), "rb") as source:
+                    self.assertLess(source.getnframes() / source.getframerate(), 0.15)
+                    samples = array("h", source.readframes(source.getnframes()))
+                self.assertLess(max(abs(value) for value in samples), 32767 * 0.1)
+
     def test_playback_loads_from_module_and_keeps_listening_cues_blocking(self) -> None:
         """Keep working feedback async and finish short cues before capture."""
         device = Mock()

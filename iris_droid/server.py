@@ -19,7 +19,14 @@ import numpy.typing as npt
 import speech_recognition as sr
 
 from iris_chat_engines.compatible import ChatEngine, ChatError
-from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
+from iris_droid.protocol import (
+    MAX_BODY,
+    TurnReply,
+    is_stop_listening,
+    read_wav,
+    validate_token,
+    write_wav,
+)
 from iris_settings import Settings, load_settings
 from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
@@ -41,7 +48,14 @@ class Brain:
         self.tts = tts
         self.sessions: OrderedDict[str, ChatEngine] = OrderedDict()
 
-    def turn(self, session: str, body: bytes, *, text_only: bool = False) -> TurnReply:
+    def turn(
+        self,
+        session: str,
+        body: bytes,
+        *,
+        text_only: bool = False,
+        wake_conversation: bool = False,
+    ) -> TurnReply:
         if text_only:
             heard = body.decode("utf-8").strip()
             if len(heard) > 8000:
@@ -53,6 +67,9 @@ class Brain:
             heard = self.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
         if not heard:
             raise sr.UnknownValueError()
+        if wake_conversation and not text_only and is_stop_listening(heard):
+            # A control utterance isn't a chat turn and doesn't clear history.
+            return TurnReply(heard=heard, text="Waiting for the wake phrase.")
         finished = heard.casefold().strip(" .!?") == "exit"
         if session not in self.sessions:
             if len(self.sessions) >= 16:
@@ -120,7 +137,12 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
                 body = self.rfile.read(length)
                 if len(body) != length:
                     raise ValueError("Incomplete request")
-                reply = brain.turn(session, body, text_only=text_only)
+                reply = brain.turn(
+                    session,
+                    body,
+                    text_only=text_only,
+                    wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
+                )
             except (ValueError, EOFError):
                 self.respond(400, b'{"error":"Invalid session, text or WAV recording"}')
                 return

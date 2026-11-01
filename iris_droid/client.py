@@ -20,8 +20,16 @@ from iris_droid.capture import (
     CheckedMicrophoneStream,
     validate_capture_options,
 )
+from iris_droid.conversation import WakeConversation
 from iris_droid.feedback import ClientFeedback
-from iris_droid.protocol import MAX_BODY, TurnReply, read_wav, validate_token, write_wav
+from iris_droid.protocol import (
+    MAX_BODY,
+    TurnReply,
+    is_stop_listening,
+    read_wav,
+    validate_token,
+    write_wav,
+)
 from iris_droid.wake import WakeDetector
 
 if TYPE_CHECKING:
@@ -29,7 +37,9 @@ if TYPE_CHECKING:
 
 
 class DroidClient:
-    def __init__(self, url: str, token: str, client: httpx.Client) -> None:
+    def __init__(
+        self, url: str, token: str, client: httpx.Client, *, wake_conversation: bool = False
+    ) -> None:
         parts = urlsplit(url)
         _ = parts.port
         if (
@@ -48,6 +58,8 @@ class DroidClient:
         self.url = url.rstrip("/")
         self.client = client
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
+        if wake_conversation:
+            self.headers["X-Iris-Wake-Conversation"] = "1"
 
     def turn(self, body: bytes, *, text_only: bool = False) -> TurnReply:
         if not 0 < len(body) <= MAX_BODY:
@@ -157,6 +169,7 @@ def record_turn(
     diagnostics: bool = False,
     feedback: ClientFeedback | None = None,
     announce_ready: bool = False,
+    conversation: WakeConversation | None = None,
 ) -> bytes:
     import speech_recognition as sr
 
@@ -195,12 +208,18 @@ def record_turn(
     if wake is not None:
         with open_microphone(microphone, buffer_frames, sample_rate) as source:
             wake.wait(source)
+        if conversation is not None:
+            conversation.activate()
     if feedback is None:
         play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
     else:
         feedback.listening()
     with open_microphone(microphone, buffer_frames, sample_rate) as source:
         print("Speak now...", flush=True)
+        if conversation is not None and conversation.active:
+            timeout = conversation.remaining()
+            if timeout <= 0:
+                raise sr.WaitTimeoutError("Conversation idle timeout")
         audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
     # SpeechRecognition's chunk boundaries can run slightly over its time cap.
     pcm = audio.get_raw_data(convert_rate=16000, convert_width=2)
@@ -229,6 +248,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--activation", choices=["enter", "continuous", "wake"], default="enter")
     parser.add_argument("--wake-model", type=Path)
     parser.add_argument("--wake-phrase", default="hey iris")
+    parser.add_argument(
+        "--conversation-timeout",
+        type=float,
+        default=300,
+        help="Wake conversation idle timeout in seconds (0 < value <= 3600; default: 300)",
+    )
     parser.add_argument("--microphone", type=int)
     parser.add_argument(
         "--microphone-rate",
@@ -276,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
+        wake_window = WakeConversation(args.conversation_timeout)
         validate_capture_options(
             buffer_frames=args.microphone_buffer,
             pause_threshold=args.pause_threshold,
@@ -324,7 +350,12 @@ def main(argv: list[str] | None = None) -> int:
             with httpx.Client(
                 trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
             ) as transport:
-                client = DroidClient(args.server, os.environ.get("IRIS_DROID_TOKEN", ""), transport)
+                client = DroidClient(
+                    args.server,
+                    os.environ.get("IRIS_DROID_TOKEN", ""),
+                    transport,
+                    wake_conversation=args.activation == "wake" and not args.text,
+                )
                 wake = None
                 if not args.text and args.activation == "wake":
                     if args.wake_model is None:
@@ -332,8 +363,16 @@ def main(argv: list[str] | None = None) -> int:
                             "Wake mode requires --wake-model with a local Vosk model folder"
                         )
                     wake = WakeDetector(args.wake_model, args.wake_phrase)
+                conversation = wake_window if wake is not None else None
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
+                    if (
+                        conversation is not None
+                        and conversation.active
+                        and conversation.remaining() <= 0
+                    ):
+                        conversation.sleep()
+                        print("Conversation idle; returning to wake waiting.", flush=True)
                     if not args.text and args.activation == "enter":
                         feedback.ready()
                     if args.text:
@@ -350,7 +389,7 @@ def main(argv: list[str] | None = None) -> int:
                                 args.microphone,
                                 args.phrase_time_limit,
                                 args.listen_timeout,
-                                wake,
+                                wake if conversation is None or not conversation.active else None,
                                 args.speaker,
                                 args.microphone_buffer,
                                 args.pause_threshold,
@@ -360,11 +399,18 @@ def main(argv: list[str] | None = None) -> int:
                                 diagnostics=args.echo_recording,
                                 feedback=feedback,
                                 announce_ready=args.activation != "enter",
+                                conversation=conversation,
                             )
                         except sr.WaitTimeoutError:
+                            if conversation is not None and conversation.active:
+                                conversation.sleep()
+                                print("Conversation idle; returning to wake waiting.", flush=True)
+                                continue
                             feedback.error()
                             print("Didn't hear speech. Try again.")
                             continue
+                        if conversation is not None:
+                            conversation.activate()
                         if args.echo_recording:
                             pcm, rate = read_wav(body, input_audio=True)
                             print(
@@ -377,6 +423,8 @@ def main(argv: list[str] | None = None) -> int:
                         with feedback.working():
                             reply = client.turn(body, text_only=args.text)
                     except httpx.HTTPError as error:
+                        if conversation is not None and conversation.active:
+                            conversation.activate()
                         feedback.error()
                         status = (
                             str(error.response.status_code)
@@ -389,10 +437,17 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         continue
                     print(f"You: {reply.heard}\nIris: {reply.text}")
+                    if conversation is not None and is_stop_listening(reply.heard):
+                        conversation.sleep()
+                        print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
+                        continue
                     if reply.audio and not args.text:
                         play_wav(base64.b64decode(reply.audio, validate=True), args.speaker)
                     if reply.finished:
                         return 0
+                    if conversation is not None:
+                        # Give the user a full idle interval after the reply finishes.
+                        conversation.activate()
     except (KeyboardInterrupt, EOFError):
         return 0
     except (ValueError, OSError, ImportError) as error:

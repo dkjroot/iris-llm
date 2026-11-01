@@ -42,9 +42,9 @@ def cues() -> dict[str, list[float]]:
     for _ in range(6):
         working += tone(220, 247, 0.16, 0.035) + silence(0.44)
     return {
-        "chirp.wav": tone(520, 880, 0.20, 0.18),
+        "chirp.wav": tone(740, 940, 0.09, 0.07),
         "bleep.wav": tone(660, 660, 0.13, 0.18),
-        "longbleep.wav": tone(440, 440, 0.20, 0.16) + silence(0.06) + tone(330, 330, 0.30, 0.16),
+        "longbleep.wav": tone(880, 1080, 0.10, 0.08),
         "workinglongquiet.wav": working,
         "error.wav": (tone(180, 140, 0.10, 0.16) + silence(0.08)) * 3,
     }
