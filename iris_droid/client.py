@@ -38,6 +38,8 @@ from iris_droid.wake import WakeDetector
 if TYPE_CHECKING:
     import speech_recognition as sr
 
+    from iris_droid.vad import SpeechDetector
+
 
 class DroidClient:
     def __init__(
@@ -200,6 +202,9 @@ def record_turn(
     conversation: WakeConversation | None = None,
     calibration: CaptureCalibration | None = None,
     companion_timer: CompanionTimer | None = None,
+    vad: SpeechDetector | None = None,
+    vad_threshold: float = 0.5,
+    quiet: bool = False,
 ) -> bytes:
     import speech_recognition as sr
 
@@ -215,7 +220,7 @@ def record_turn(
     threshold = energy_threshold
     if threshold is None and calibration is not None and wake is None:
         threshold = calibration.energy_threshold
-    if threshold is None:
+    if threshold is None and vad is None:
         with open_microphone(microphone, buffer_frames, sample_rate) as source:
             # Always read at least one buffer, even at low device rates or with
             # a large buffer. The library otherwise calibrates using no audio.
@@ -223,7 +228,7 @@ def record_turn(
             recognizer.adjust_for_ambient_noise(source, duration=duration)
         if calibration is not None:
             calibration.energy_threshold = recognizer.energy_threshold
-    else:
+    elif threshold is not None:
         recognizer.energy_threshold = threshold
     # Some SpeechRecognition versions also adapt during the phrase. Steady
     # speech then raises the threshold above the voice and ends capture early.
@@ -237,16 +242,16 @@ def record_turn(
             wake.wait(source)
         if conversation is not None:
             conversation.activate()
-    if feedback is None:
+    if feedback is None and (not quiet or wake is not None):
         play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
-    else:
+    elif feedback is not None and (not quiet or wake is not None):
         feedback.listening()
     with open_microphone(microphone, buffer_frames, sample_rate) as source:
         if diagnostics:
             print(
                 f"Microphone: {source.SAMPLE_RATE} Hz, mono, {source.CHUNK} frames "
                 f"({source.CHUNK / source.SAMPLE_RATE * 1000:.0f} ms); "
-                f"speech threshold: {recognizer.energy_threshold:.0f}; "
+                f"speech threshold: {vad_threshold if vad else recognizer.energy_threshold}; "
                 f"end pause: {pause_threshold:g} s.",
                 flush=True,
             )
@@ -259,10 +264,22 @@ def record_turn(
             timeout = conversation.remaining()
             if timeout <= 0:
                 raise sr.WaitTimeoutError("Conversation idle timeout")
-        audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
+        if vad is not None:
+            from iris_droid.vad import listen_for_speech
+
+            pcm = listen_for_speech(
+                source,
+                vad,
+                timeout=timeout,
+                limit=limit,
+                pause=pause_threshold,
+                threshold=vad_threshold,
+            )
+        else:
+            audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
+            pcm = audio.get_raw_data(convert_rate=16000, convert_width=2)
     # SpeechRecognition's chunk boundaries can run slightly over its time cap.
-    pcm = audio.get_raw_data(convert_rate=16000, convert_width=2)
-    if feedback is not None:
+    if feedback is not None and not quiet:
         feedback.recorded()
     return write_wav(pcm[: int(limit * 16000) * 2], 16000)
 
@@ -287,6 +304,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--activation", choices=["enter", "continuous", "wake"], default="enter")
     parser.add_argument("--wake-model", type=Path)
     parser.add_argument("--wake-phrase", default="hey iris")
+    parser.add_argument("--vad-model", type=Path, help="Enable local Silero speech detection")
+    parser.add_argument(
+        "--download-vad-model",
+        type=Path,
+        metavar="PATH",
+        help="Download the pinned Silero model here and exit (no microphone or server)",
+    )
+    parser.add_argument(
+        "--vad-threshold",
+        type=float,
+        default=0.5,
+        help="Speech probability needed to start a turn (0–1 exclusive; default: 0.5)",
+    )
     parser.add_argument(
         "--conversation-timeout",
         type=float,
@@ -365,6 +395,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
+        if args.download_vad_model is not None:
+            from iris_droid.vad import download_model
+
+            download_model(args.download_vad_model)
+            print(f"Silero model saved to {args.download_vad_model}")
+            return 0
         if args.list_microphones:
             import speech_recognition as sr
 
@@ -375,6 +411,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Recording limit and listen timeout must be in (0, 300]")
         if not 0 <= args.speech_lead_in <= 2:
             raise ValueError("Speech lead-in must be between 0 and 2 seconds")
+        if not 0 < args.vad_threshold < 1:
+            raise ValueError("--vad-threshold must be between 0 and 1, exclusive")
         wake_window = WakeConversation(args.conversation_timeout)
         companion = CompanionTimer(args.companion_idle_min, args.companion_idle_max)
         console = ConsoleInput()
@@ -395,6 +433,12 @@ def main(argv: list[str] | None = None) -> int:
                 primer=args.speech_primer,
             )
             return 0
+        vad = None
+        if args.vad_model is not None and not args.text:
+            from iris_droid.vad import SileroVAD
+
+            vad = SileroVAD(args.vad_model)
+            print(f"Local speech detection: Silero VAD (threshold {args.vad_threshold:g}).")
         with ClientFeedback(
             args.speaker, play_wav, stop_playback, enabled=not args.no_sounds and not args.text
         ) as feedback:
@@ -418,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
                         calibration_duration=args.calibration_duration,
                         diagnostics=True,
                         feedback=feedback,
+                        **({"vad": vad, "vad_threshold": args.vad_threshold} if vad else {}),
                     )
                 except sr.WaitTimeoutError:
                     feedback.error()
@@ -452,6 +497,7 @@ def main(argv: list[str] | None = None) -> int:
                 conversation = wake_window if wake is not None else None
                 calibration = CaptureCalibration() if conversation is not None else None
                 companion_calibration = CaptureCalibration()
+                first_capture = True
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
                     if (
@@ -478,6 +524,17 @@ def main(argv: list[str] | None = None) -> int:
 
                         if args.activation == "enter" and not companion.enabled:
                             input("Press Enter to talk...")
+                        quiet = args.activation != "enter" or companion.enabled
+                        announce_ready = quiet and (
+                            first_capture
+                            or (
+                                wake is not None
+                                and not companion.enabled
+                                and conversation is not None
+                                and not conversation.active
+                            )
+                        )
+                        first_capture = False
                         try:
                             body = record_turn(
                                 args.microphone,
@@ -495,12 +552,16 @@ def main(argv: list[str] | None = None) -> int:
                                 calibration_duration=args.calibration_duration,
                                 diagnostics=args.echo_recording,
                                 feedback=feedback,
-                                announce_ready=args.activation != "enter",
+                                announce_ready=announce_ready,
+                                quiet=quiet,
+                                **(
+                                    {"vad": vad, "vad_threshold": args.vad_threshold} if vad else {}
+                                ),
                                 conversation=None if companion.enabled else conversation,
                                 calibration=companion_calibration
                                 if companion.enabled
                                 else calibration,
-                                **({"companion_timer": companion} if companion.enabled else {}),
+                                companion_timer=companion if companion.enabled else None,
                             )
                         except sr.WaitTimeoutError:
                             if companion.enabled:
@@ -511,8 +572,9 @@ def main(argv: list[str] | None = None) -> int:
                                 print("Conversation idle; returning to wake waiting.", flush=True)
                                 continue
                             else:
-                                feedback.error()
-                                print("Didn't hear speech. Try again.")
+                                if not quiet:
+                                    feedback.error()
+                                    print("Didn't hear speech. Try again.")
                                 continue
                         if conversation is not None:
                             conversation.activate()
@@ -539,7 +601,11 @@ def main(argv: list[str] | None = None) -> int:
                             companion.update(True, proactive=True)
                         if conversation is not None and conversation.active:
                             conversation.activate()
-                        if not proactive:
+                        unrecognized = (
+                            isinstance(error, httpx.HTTPStatusError)
+                            and error.response.status_code == 422
+                        )
+                        if not proactive and not (unrecognized and not args.text and quiet):
                             feedback.error()
                         status = (
                             str(error.response.status_code)

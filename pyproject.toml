@@ -22,6 +22,7 @@ dependencies = [
 
 [project.optional-dependencies]
 microphone = ["PyAudio>=0.2.14,<0.3"]
+vad = ["onnxruntime>=1.20,<2"]
 whisper = ["faster-whisper>=1.1,<2"]
 kokoro = ["kokoro-onnx>=0.4.9,<0.5", "onnxruntime>=1.20,<2"]
 wav2vec2 = ["transformers>=4.48,<5", "torch>=2.6,<3"]

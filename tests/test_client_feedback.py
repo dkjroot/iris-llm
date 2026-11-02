@@ -103,9 +103,11 @@ def test_client_feedback_follows_turn_and_stops_before_reply_and_rearming(activa
             kwargs["feedback"].ready()
         if captures == 2:
             raise KeyboardInterrupt()
-        kwargs["feedback"].listening()
+        if not kwargs.get("quiet") or args[3] is not None:
+            kwargs["feedback"].listening()
         events.append("capture")
-        kwargs["feedback"].recorded()
+        if not kwargs.get("quiet"):
+            kwargs["feedback"].recorded()
         return RECORDING
 
     def turn(*args, **kwargs):
@@ -133,14 +135,31 @@ def test_client_feedback_follows_turn_and_stops_before_reply_and_rearming(activa
         patch("iris_droid.client.DroidClient.turn", side_effect=turn),
     ):
         assert iris.main(argv) == 0
+    expected_capture = {
+        "enter": ["chirp.wav", "bleep.wav", "capture", "longbleep.wav"],
+        "continuous": ["chirp.wav", "capture"],
+        "wake": ["chirp.wav", "bleep.wav", "capture"],
+    }[activation]
     assert events == (
-        ["chirp.wav", "bleep.wav", "capture", "longbleep.wav"]
+        expected_capture
         + (["echo"] if echo else [])
-        + ["workinglongquiet.wav", "request", "stop", "reply", "chirp.wav"]
+        + ["workinglongquiet.wav", "request", "stop", "reply"]
+        + (["chirp.wav"] if activation == "enter" else [])
     )
 
 
-@pytest.mark.parametrize("failure", [httpx.ConnectError("offline"), KeyboardInterrupt()])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        httpx.ConnectError("offline"),
+        KeyboardInterrupt(),
+        httpx.HTTPStatusError(
+            "No speech recognized",
+            request=httpx.Request("POST", "http://iris/turn"),
+            response=httpx.Response(422),
+        ),
+    ],
+)
 def test_processing_failure_or_interrupt_stops_busy_sound(failure):
     events = []
     with (
@@ -152,13 +171,14 @@ def test_processing_failure_or_interrupt_stops_busy_sound(failure):
     ):
         assert iris.main(["client", "--speaker", "7", "--activation", "continuous"]) == 0
     expected = ["workinglongquiet.wav", "stop"]
-    if isinstance(failure, httpx.HTTPError):
+    if isinstance(failure, httpx.ConnectError):
         expected += ["error.wav"]
     assert events == expected
     turn.assert_called_once()
 
 
-def test_silence_signals_error_without_starting_processing():
+@pytest.mark.parametrize("activation", ["enter", "continuous"])
+def test_silence_is_quiet_in_hands_free_mode_without_starting_processing(activation):
     events = []
     with (
         patch.dict("os.environ", {"IRIS_DROID_TOKEN": "test"}),
@@ -168,9 +188,10 @@ def test_silence_signals_error_without_starting_processing():
         ),
         patch("iris_droid.client.play_wav", side_effect=player_for(events)),
         patch("iris_droid.client.DroidClient.turn") as turn,
+        patch("builtins.input", return_value=""),
     ):
-        assert iris.main(["client", "--speaker", "7", "--activation", "continuous"]) == 0
-    assert events == ["error.wav"]
+        assert iris.main(["client", "--speaker", "7", "--activation", activation]) == 0
+    assert events == (["chirp.wav", "error.wav", "chirp.wav"] if activation == "enter" else [])
     turn.assert_not_called()
 
 

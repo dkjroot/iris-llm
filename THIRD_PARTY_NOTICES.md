@@ -33,6 +33,14 @@ The default recognition option now uses faster-whisper's separately downloaded
 declares MIT. No speech or chat model weights are bundled with IRIS. The optional
 model libraries and their native runtimes must retain their own bundled notices.
 
+Optional client speech detection uses the separately downloaded
+[Silero VAD v6.2 model](https://github.com/snakers4/silero-vad/tree/be95df9152c0d7618fa1edfeb296fc3dae32376f),
+published by the Silero team under the
+[MIT licence](https://github.com/snakers4/silero-vad/blob/be95df9152c0d7618fa1edfeb296fc3dae32376f/LICENSE).
+The client adapter uses ONNX Runtime directly; it doesn't install Silero's Python
+package or PyTorch. Model weights aren't bundled in this repository or wheel.
+Preserve the upstream licence and copyright notice when redistributing the model.
+
 The Kokoro option downloads the v1.0 ONNX model and voice pack from
 [kokoro-onnx's model release](https://github.com/thewh1teagle/kokoro-onnx/releases/tag/model-files-v1.0).
 The [original Kokoro-82M model/voice documentation](https://huggingface.co/hexgrad/Kokoro-82M)

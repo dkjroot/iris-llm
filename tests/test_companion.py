@@ -334,7 +334,7 @@ def test_voice_client_silence_generates_opener_then_off_restores_activation(acti
         assert iris.main(argv) == 0
     assert turn.call_args_list[1].kwargs == {"text_only": False, "companion_idle": True}
     assert captures[1][0] is None and captures[2][0] is None
-    assert "companion_timer" not in captures[3][1]
+    assert captures[3][1]["companion_timer"] is None
     assert captures[3][0] is None  # Wake conversation stays open after mode off.
     assert console.call_count == (2 if activation == "enter" else 0)
     assert playback.call_count == 1

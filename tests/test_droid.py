@@ -685,7 +685,15 @@ def test_new_capture_options_reach_live_and_local_capture(local):
         "diagnostics": local,
         "feedback": record.call_args.kwargs["feedback"],
         **(
-            {"announce_ready": True, "conversation": None, "calibration": None} if not local else {}
+            {
+                "announce_ready": True,
+                "conversation": None,
+                "calibration": None,
+                "quiet": True,
+                "companion_timer": None,
+            }
+            if not local
+            else {}
         ),
     }
 

@@ -605,18 +605,50 @@ The client plays feedback through the device selected with `--speaker`, includin
 
 | Sound | Meaning |
 | --- | --- |
-| Subtle rising chirp | Ready for the next turn, including after a spoken reply. In Enter mode, press Enter. In wake mode, use the wake phrase to open a conversation; once it is open, the listening cue follows automatically. |
-| Brief listening bloop | Start your sentence now. In wake mode this confirms the wake phrase was accepted. |
-| Short higher chirp | Recording has finished; the microphone is closed. If recording echo is enabled, you'll hear your recording next. |
+| Subtle rising chirp | Ready to start. In Enter mode, press Enter. In continuous mode it plays once at startup; in wake mode it announces waiting for the wake phrase. |
+| Brief listening bloop | Start your sentence now. In wake mode this confirms the wake phrase was accepted. It doesn't repeat between turns in an open hands-free conversation. |
+| Short higher chirp | Recording has finished in Enter mode or the local microphone test. Hands-free turns skip this cue. |
 | Quick quadruple chirp | A command was accepted: “clear context” keeps the conversation open; “stop listening” returns to wake waiting. |
 | Repeating low working pulses | Waiting for the server to transcribe, ask the model and generate speech. These stop before the spoken reply, or if the turn fails or you stop the client. |
-| Three short low pulses | No speech was heard, or a turn/audio service failed. Check the terminal for the reason. |
+| Three short low pulses | A turn/audio service failed, or an Enter-to-talk/local test heard no speech. Ordinary hands-free listening timeouts and unrecognised recordings don't play an error cue. |
 
-In wake and continuous modes, the ready chirp follows microphone preparation. When starting a wake conversation, wait for that chirp before saying the wake phrase. During an open conversation, wait for the listening bloop before each sentence; you don't need to repeat the wake phrase. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
+When starting a wake conversation, wait for the ready chirp before saying the wake phrase, then wait for the listening bloop before your first sentence. Once the conversation is open, or companion mode is on, Iris quietly returns to listening after each reply. You don't need to wait for another cue or repeat the wake phrase. Continuous mode also listens quietly between turns. Feedback isn't played over an open microphone. Finishing a conversation with `exit` stops the client rather than announcing another turn.
 
 Feedback is on by default. Add `--no-sounds` to your client start script to disable the cues and working sound; spoken replies, `--echo-recording` and local-test playback still work. Text mode is always silent. If a feedback asset or cue playback fails, the client prints a warning and continues without feedback; a failure to play the actual reply or diagnostic echo is still an audio error.
 
 The cues are original generated WAV files, so they don't need FFmpeg, downloads or a remote sound service. See [the sound guide](iris_sounds/README.md) for the filenames, generator and replacement advice. The busy sound covers the whole server request; it doesn't report individual STT, chat or synthesis progress.
+
+#### Reject kitchen noise with local speech detection
+
+If chopping, crockery or other background noise keeps triggering recordings, try the optional [Silero speech detector](https://github.com/snakers4/silero-vad). It checks whether the audio sounds like speech, rather than relying on its volume. This runs on the client and keeps the existing PC recognition, chat model and tools. It is an option for testing on your own microphone, rather than a guarantee that every kitchen sound will be rejected.
+
+On the Pi, open the repository and use its Python environment. Install the optional runtime and explicitly download the pinned model once:
+
+```sh
+source .venv/bin/activate
+python -m pip install -e ".[microphone,vad]"
+python iris.py client --download-vad-model .cache/vad/silero-v6.2.onnx
+```
+
+This uses ONNX Runtime without installing PyTorch or the PC's speech models. The download is checked against a pinned SHA-256 checksum; ordinary startup only loads the local file. With uv, use `uv sync --locked --python 3.12 --extra microphone --extra vad` instead of pip, and `uv run --no-sync python` for subsequent Python commands. Include your server extras too if both halves share this environment.
+
+Add this option to your existing client command or `run_client.sh`, keeping your server address, wake settings and audio devices:
+
+```sh
+--vad-model .cache/vad/silero-v6.2.onnx
+```
+
+Then restart the user service with `systemctl --user restart iris-client.service`, or test in a terminal after stopping the service. You can check capture locally first, replacing the example device indices:
+
+```sh
+python iris.py client --test-microphone --microphone 2 --speaker 7 --vad-model .cache/vad/silero-v6.2.onnx
+```
+
+The detector keeps your microphone's native capture rate and buffer settings, converts audio continuously to 16 kHz, and checks short windows for speech. A short buffer before confirmed speech protects the start of words. Loud sounds classified as non-speech don't prolong your sentence. `--pause-threshold` still controls the gap after speech that ends a turn (default 1.2 seconds); try `--pause-threshold 0.8` if you want a shorter gap, or increase it if thinking pauses cut you off. This detects pauses in speech, rather than deciding whether you've finished your thought.
+
+`--vad-threshold` controls how confidently speech must be detected to start a turn (default `0.5`, greater than 0 and less than 1). Higher values reject more sounds but can miss quiet speech; lower values admit more sounds. Energy calibration, `--energy-threshold` and `--calibration-duration` aren't used with VAD. Remove `--vad-model` to return to energy-based capture; the quieter hands-free feedback still applies.
+
+While waiting, rejected sounds don't start working feedback or restart the companion timer. Sounds the detector mistakes for speech can still reach the server, but an unrecognised recording doesn't play an error cue in hands-free mode. Actual speech from a television or another person is still speech: this isn't speaker identification or a check that you're addressing Iris. Try speaking while doing kitchen tasks as well as making noise without speaking, and check for lost words and delayed endings. Pi performance and real microphone accuracy need testing on the Pi.
 
 #### Spoken formatting and missing opening words
 
@@ -703,7 +735,7 @@ If the echo contains only the first part of your sentence, the recording was cut
 
 #### Recordings that stop halfway through a sentence
 
-The client briefly calibrates to background noise before the listening cue, then keeps that threshold fixed for the turn. In wake mode, it reuses the threshold throughout the open conversation, saving another calibration and microphone setup between replies. It calibrates again when it returns to waiting for the wake phrase. If the room noise changes during a conversation, say “stop listening” and wake Iris again to refresh it. Enter and continuous modes still calibrate each turn. Keep quiet during calibration and speak after `Speak now...`. The threshold doesn't keep rising with your voice while you're talking.
+Without `--vad-model`, the client briefly calibrates to background noise before capture, then keeps that threshold fixed for the turn. In wake mode, it reuses the threshold throughout the open conversation, saving another calibration and microphone setup between replies. It calibrates again when it returns to waiting for the wake phrase. If the room noise changes during a conversation, say “stop listening” and wake Iris again to refresh it. Enter and continuous modes still calibrate each turn. Keep quiet during calibration and speak after `Speak now...`. The threshold doesn't keep rising with your voice while you're talking.
 
 By default, 1.2 seconds of audio below the calibrated threshold ends the recording. If you pause to think while speaking, add `--pause-threshold 2` to your existing client command to allow a longer gap. This option works with Enter, continuous and wake activation, on all platforms. Keep `--echo-recording` enabled while checking that your whole sentence is captured.
 
@@ -777,7 +809,7 @@ python iris.py client --server http://192.168.1.10:8765 --activation wake --wake
 
 Update both the server and client before using the conversation controls. Start the client with the same `--activation wake` command as above; no extra flag is needed to enable the conversation window.
 
-Say “hey iris”, wait for the listening bloop, then give your message. After Iris replies, you'll hear the subtle ready chirp and listening cue, and can give your next message without saying her name again. She still finishes speaking before opening the microphone; this isn't simultaneous listening or interruption support.
+Say “hey iris”, wait for the listening bloop, then give your message. After Iris replies, she quietly returns to listening, and you can give your next message without saying her name again. She still finishes speaking before opening the microphone; this isn't simultaneous listening or interruption support.
 
 Say **“stop listening”** as a complete utterance to close the conversation window. The client stays running and returns to waiting locally for “hey iris”. The PC recognises the stop phrase, handles it before the chat model and returns a control acknowledgement without generating speech. It doesn't add that phrase to chat history. Text mode, Enter mode and continuous mode don't treat it as a wake control.
 
@@ -785,7 +817,7 @@ Five minutes without a new detected utterance also returns the client to wake wa
 
 Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to clear the session and stop the client, or use Ctrl-C to stop it. Starting a fresh client creates a fresh session.
 
-Say **“clear context”** as a complete utterance to start afresh without stopping the client. The server discards this client's conversation history, keeping Iris's configured personality and instructions. It prints a confirmation without calling the chat model or generating a spoken reply. In wake mode, the conversation stays open, so wait for the next listening cue and carry on without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
+Say **“clear context”** as a complete utterance to start afresh without stopping the client. The server discards this client's conversation history, keeping Iris's configured personality and instructions. It prints a confirmation without calling the chat model or generating a spoken reply. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 
