@@ -23,6 +23,8 @@ class ChatEngine:
         self.backend = backend if backend is not None else make_backend(settings, client)
         self.tools = ToolRegistry(settings, client)
         self.history: list[Message] = []
+        self.memory_revision: tuple[str, str | None] | None = None
+        self.last_tool_names: tuple[str, ...] = ()
         self.companion_mode = False
         self.last_companion_seed: str | None = None
 
@@ -78,6 +80,7 @@ class ChatEngine:
             raise ChatError("The server returned an invalid companion opener")
         text = self._decode(reply.content)
         self._remember([*self.history, event, Message(role="assistant", content=text)])
+        self.last_tool_names = ()
         self.last_companion_seed = seed
         return text
 
@@ -97,6 +100,7 @@ class ChatEngine:
         ]
         turn_start = len(messages) - 1
         call_ids: set[str] = set()
+        tool_names: set[str] = set()
         for round_number in range(5):
             reply = self.backend.complete(messages, self.tools.definitions())
             if reply.role != "assistant":
@@ -109,6 +113,7 @@ class ChatEngine:
                 text = self._decode(text)
                 messages.append(Message(role="assistant", content=text))
                 self._remember([*self.history, *messages[turn_start:]])
+                self.last_tool_names = tuple(sorted(tool_names))
                 return text
             if not self.tools.skills:
                 raise ChatError("The model requested a tool, but tools are disabled")
@@ -121,6 +126,7 @@ class ChatEngine:
                 if call.id in call_ids:
                     raise ChatError("The model returned duplicate tool-call IDs")
                 call_ids.add(call.id)
+                tool_names.add(call.function.name)
                 messages.append(
                     Message(
                         role="tool",

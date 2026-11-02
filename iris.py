@@ -81,8 +81,12 @@ def check_setup(settings: Settings, client: httpx.Client) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] in {"server", "client", "configure"}:
+    if arguments and arguments[0] in {"server", "client", "configure", "memory"}:
         command, *remaining = arguments
+        if command == "memory":
+            from iris_memory.cli import main as memory_main
+
+            return memory_main(remaining)
         if command == "server":
             from iris_droid.server import main as server_main
 
@@ -99,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         return configure.main()
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=["server", "client", "configure"])
+    parser.add_argument("command", nargs="?", choices=["server", "client", "configure", "memory"])
     parser.add_argument("--config", type=Path, help="PC server configuration file")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--check", action="store_true", help="Check the PC's model endpoint")

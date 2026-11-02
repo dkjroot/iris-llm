@@ -150,7 +150,8 @@ python iris.py --check
 ```
 
 The configuration script asks for the model address and name, the recogniser,
-the voice and speaking speed, and optional time and weather skills. If you don't know the model name yet, the
+the voice and speaking speed, optional time and weather skills, and whether to save
+conversation memory locally. If you don't know the model name yet, the
 check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
@@ -251,7 +252,9 @@ Tools are optional (`tool_choice` is `auto`), and a normal answer still needs
 only one model request. A skill needs another model request to turn the result
 into a reply. Iris allows up to four tool rounds and eight calls per user turn.
 She keeps complete tool exchanges in history and removes whole turns when the
-history limit is reached. “Clear context” removes those exchanges too. Set
+history limit is reached. “Clear context” removes those exchanges from the active
+context too. With memory enabled, the archive keeps only the final text and tool
+names; restored history never runs old tools or restores their raw results. Set
 `"tools_enabled": false` to return to plain chat requests with no tool definitions
 if your model server doesn't support them.
 
@@ -815,9 +818,9 @@ Say **“stop listening”** as a complete utterance to close the conversation w
 
 Five minutes without a new detected utterance also returns the client to wake waiting, without sending that silence to the server or playing an error cue. Server processing and reply playback don't use up the idle interval; the timer starts afresh after each reply. Change the idle period with `--conversation-timeout SECONDS` on the client (default `300`, greater than 0, up to `3600`). `--listen-timeout` still applies to ordinary Enter/continuous turns; an open wake conversation waits for the remaining conversation interval instead.
 
-Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to clear the session and stop the client, or use Ctrl-C to stop it. Starting a fresh client creates a fresh session.
+Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to stop the client, or use Ctrl-C. With memory off, either gives you a fresh conversation on the next client run. With [conversation memory](#conversation-memory) enabled, the next run resumes the saved conversation.
 
-Say **“clear context”** as a complete utterance to start afresh without stopping the client. The server discards this client's conversation history, keeping Iris's configured personality and instructions. It prints a confirmation without calling the chat model or generating a spoken reply. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
+Say **“clear context”** as a complete utterance to start afresh without stopping the client. With memory off, the server discards this client's conversation history, keeping Iris's configured personality and instructions. With memory enabled, it starts a new shared conversation for your configured owner. The earlier conversation stays in the archive, but isn't included in the new context. It prints a confirmation without calling the chat model or generating a spoken reply. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 
@@ -884,7 +887,7 @@ systemctl --user restart iris-client.service
 systemctl --user stop iris-client.service
 ```
 
-To stop it and remove automatic startup, run `systemctl --user disable --now iris-client.service`. A restart creates a fresh client session, so companion mode and conversation history don't carry across client restarts.
+To stop it and remove automatic startup, run `systemctl --user disable --now iris-client.service`. A restart creates a fresh client session, so companion mode stays off until you enable it again. Conversation history resumes only if you've enabled conversation memory on the server.
 
 ## If something doesn't work
 
@@ -895,8 +898,9 @@ To stop it and remove automatic startup, run `systemctl --user disable --now iri
 - An HTTP `422` means the server didn't recognise speech. Try again after the cue.
 - An HTTP `502` means Iris couldn't get a model reply. Check its address, model
   name and authentication, then try `python iris.py --check` on the PC.
-- An HTTP `503` means the server's speech service failed. Check its console,
-  installed extras and cached model files.
+- An HTTP `503` means speech or conversation storage failed. Check the returned
+  error and the PC console. For speech, check installed extras and cached model
+  files; for memory, check the database path, available disk space and access.
 - If the microphone doesn't work, check permissions and the selected device.
   A Bluetooth speaker doesn't necessarily provide a working microphone too.
 - If a model is missing, run `python iris.py --download-models` on the PC while
@@ -904,15 +908,102 @@ To stop it and remove automatic startup, run `systemctl --user disable --now iri
 
 Iris doesn't automatically resend a failed network turn. The PC might have
 finished it before the connection dropped, so resending could repeat a reply.
-Restart the client for a fresh conversation if things seem out of step.
+Say “clear context” for a fresh conversation if things seem out of step.
 
 ## Configuration, privacy and the code
 
-Conversation history stays in the PC's memory, with the configured number of
-turns and up to 16 recent client sessions. A fresh client run starts a fresh
-session; saying `exit` clears that session. Restarting the server clears them
-all. This code doesn't save recordings or chat history to disk. The server's
-`trace` setting can print conversation text to its terminal if you enable it.
+Conversation memory is off by default. With it off, history stays in the PC's
+RAM, with the configured number of turns and up to 16 recent client sessions.
+A fresh client run starts a fresh conversation; saying `exit` clears that session,
+and restarting the server clears them all. Turning memory on saves conversation
+text in a local database, as described below. Iris never saves microphone recordings.
+The server's `trace` setting can print conversation text to its terminal if you enable it.
+
+### Conversation memory
+
+If we've spent an evening talking, I'd quite like Iris to remember it when I turn
+her back on. Run `python iris.py configure` on the PC and answer yes to saving
+conversation memory. You can choose the database file and an owner name there,
+or set these fields in `local-config.json`:
+
+```json
+{
+    "memory_enabled": true,
+    "memory_database": null,
+    "memory_owner": "default",
+    "memory_context_chars": 24000
+}
+```
+
+These are additions to your existing configuration. A null database path uses
+`%LOCALAPPDATA%/iris-llm/memory.sqlite3` on Windows,
+`~/Library/Application Support/iris-llm/memory.sqlite3` on macOS, and
+`$XDG_DATA_HOME/iris-llm/memory.sqlite3` on Linux (or
+`~/.local/share/iris-llm/memory.sqlite3` if that variable isn't set). A custom path
+can be absolute or relative to the server's working directory. Environment overrides
+are `IRIS_MEMORY_ENABLED`, `IRIS_MEMORY_DATABASE`, `IRIS_MEMORY_OWNER` and
+`IRIS_MEMORY_CONTEXT_CHARS`. Restart the server after changing these settings.
+
+This first version resumes one active conversation per owner. The Pi and laptop
+share that conversation, regardless of their temporary connection IDs. This is a
+single-user setup: an owner name selects local data on the server; it isn't a login
+or a way to give different people private accounts. If you're running several
+servers, give each its own database. Don't open the same archive from two running
+servers at once.
+
+Iris saves each completed exchange after the reply and any speech have passed
+validation. Stopping the client, restarting either machine, or evicting an old
+RAM session doesn't remove the archive. “Stop listening” and companion mode off
+keep the conversation available. A new client still starts with companion mode
+off. “Clear context” starts a new conversation for all your clients; it doesn't
+erase the old one. Just changing the subject continues the current conversation.
+There isn't a temporary private-conversation command yet. For a session that
+neither reads nor writes memory, turn `memory_enabled` off and restart the server.
+
+On a restart, Iris loads the most recent complete exchanges, up to `history_turns`
+and `memory_context_chars` characters in total. She leaves out an exchange that
+won't fit rather than cutting it in half. `history_turns: 0` disables recent
+context but still archives new exchanges if memory is enabled. The archive can
+grow beyond that context window. Searching older conversations, summaries and
+recalling a topic from a vague reference are still to come; this version gives us
+basic continuity after a restart.
+
+The archive contains recognised or typed input, final replies, UTC timestamps,
+source IDs and the names of any tools used. Automatic companion openers are marked
+as automatic events, rather than something you said. It doesn't contain audio,
+model reasoning, configured API keys, or raw tool arguments and results. Anything
+you actually say or type can still appear in the transcript, including personal
+details. The database is an ordinary local file, without application encryption.
+Treat it and its exports like your other personal documents. Restored tool-based
+answers describe an earlier exchange; they aren't fresh time or weather readings.
+
+If saving fails, the server reports an error and rolls back the working turn.
+It doesn't quietly continue while pretending the exchange was saved. A dropped
+connection can still happen after a successful save, and Iris doesn't automatically
+retry requests. Storage IDs prevent the same exchange object being inserted twice;
+they don't deduplicate network requests or guarantee tools run only once.
+
+To inspect or remove an archive, run these on the PC with the server stopped:
+
+```sh
+python iris.py memory list
+python iris.py memory export > iris-memory-export.json
+python iris.py memory delete --conversation CONVERSATION_ID
+python iris.py memory delete --all
+```
+
+Use the ID from `list` in the selected deletion command. `--all` removes every
+conversation for the configured owner, which is handy for clearing a test archive.
+For a different configuration file, put `--config PATH` after `memory` and before
+`list`, `export` or `delete`. Inspection also works with memory disabled and never
+creates a missing archive. Deletion removes source exchanges from the live database;
+independent exports and backups keep their own copies. Start the server again after
+maintenance so it can't retain deleted material in RAM.
+
+There is no automatic expiry. To back up the archive, stop the server and copy the
+database file somewhere safe. Restore that copy to the configured path with the
+server stopped. Keep backups out of your source checkout, and delete test exports
+when you're finished with them.
 
 The local setup keeps model traffic on the PC and sends recordings and replies
 between the client and PC. There is no automatic fallback to a hosted service.

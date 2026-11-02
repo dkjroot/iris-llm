@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: int = Field(default=250, gt=0, le=32768)
     history_turns: int = Field(default=12, ge=0, le=100)
+    memory_enabled: bool = False
+    memory_database: Path | None = None
+    memory_owner: str = Field(default="default", min_length=1, max_length=100, pattern=r"^\S+$")
+    memory_context_chars: int = Field(default=24000, ge=0, le=200000)
     timeout: float = Field(default=120, gt=0, le=600)
     trace: bool = False
     reply_encoding: Literal["text", "html", "double-html"] = "text"

@@ -7,11 +7,12 @@ import base64
 import hmac
 import logging
 import os
+import sqlite3
 from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import numpy as np
@@ -29,6 +30,7 @@ from iris_droid.protocol import (
     validate_token,
     write_wav,
 )
+from iris_memory import AUTOMATIC_EVENT, Exchange, make_memory
 from iris_settings import Settings, load_settings
 from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
@@ -49,6 +51,35 @@ class Brain:
         self.stt = stt
         self.tts = tts
         self.sessions: OrderedDict[str, ChatEngine] = OrderedDict()
+        self.memory = make_memory(settings)
+
+    def _restore(self, chat: ChatEngine) -> str | None:
+        if self.memory is None:
+            return None
+        conversation = self.memory.active_conversation(self.settings.memory_owner)
+        revision = (conversation, self.memory.revision(self.settings.memory_owner, conversation))
+        if chat.memory_revision == revision:
+            return conversation
+        exchanges = self.memory.recent(
+            self.settings.memory_owner,
+            conversation,
+            self.settings.history_turns,
+            self.settings.memory_context_chars,
+        )
+        # Restore only final text pairs. Historical tool calls are never dispatched,
+        # and reasoning/arguments/results never leave the live session.
+        from iris_chat_engines.messages import Message
+
+        chat.history = [
+            message
+            for exchange in exchanges
+            for message in (
+                Message(role="user", content=exchange.user_text),
+                Message(role="assistant", content=exchange.assistant_text),
+            )
+        ]
+        chat.memory_revision = revision
+        return conversation
 
     def turn(
         self,
@@ -76,6 +107,8 @@ class Brain:
         if not heard and not companion_idle:
             raise sr.UnknownValueError()
         if is_clear_context(heard):
+            if self.memory is not None:
+                self.memory.start_conversation(self.settings.memory_owner)
             existing = self.sessions.get(session)
             companion = existing is not None and existing.companion_mode
             if companion:
@@ -87,7 +120,11 @@ class Brain:
                 self.sessions.pop(session, None)
             return TurnReply(
                 heard=heard,
-                text="Context cleared. Ready for a fresh conversation.",
+                text=(
+                    "Context cleared. Earlier conversations are still saved."
+                    if self.memory is not None
+                    else "Context cleared. Ready for a fresh conversation."
+                ),
                 companion_mode=companion,
             )
         existing = self.sessions.get(session)
@@ -109,9 +146,13 @@ class Brain:
             self.sessions[session] = ChatEngine(self.settings, self.client)
         self.sessions.move_to_end(session)
         chat = self.sessions[session]
+        # All clients for an owner deliberately share one active conversation.
+        # Refresh each turn so another client's clear/append cannot leave stale context.
+        conversation = self._restore(chat)
         previous = chat.history.copy()
         previous_mode = chat.companion_mode
         previous_seed = chat.last_companion_seed
+        previous_tools = chat.last_tool_names
         try:
             command = companion_command(heard)
             if command is not None:
@@ -135,10 +176,26 @@ class Brain:
             )
             if len(result.model_dump_json().encode()) > MAX_BODY:
                 raise ValueError("Synthesized reply exceeds the transport size limit")
+            if (
+                self.memory is not None
+                and conversation is not None
+                and command is None
+                and not finished
+            ):
+                exchange = Exchange(
+                    str(uuid4()),
+                    "automatic" if companion_idle else "human",
+                    AUTOMATIC_EVENT if companion_idle else heard,
+                    text,
+                    chat.last_tool_names,
+                )
+                self.memory.append(self.settings.memory_owner, conversation, exchange)
+                chat.memory_revision = (conversation, exchange.id)
         except Exception:
             chat.history = previous
             chat.companion_mode = previous_mode
             chat.last_companion_seed = previous_seed
+            chat.last_tool_names = previous_tools
             raise
         if finished:
             del self.sessions[session]
@@ -200,6 +257,12 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
             except sr.UnknownValueError:
                 self.respond(422, b'{"error":"No speech recognized; please try again"}')
                 return
+            except sqlite3.Error as error:
+                LOGGER.error("Conversation memory failed (%s)", type(error).__name__)
+                self.respond(
+                    503, b'{"error":"Conversation memory unavailable; check the PC archive"}'
+                )
+                return
             except ChatError as error:
                 LOGGER.warning("Chat failed: %s", error)
                 self.respond(502, b'{"error":"Chat failed; check the PC model server"}')
@@ -236,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         return 0
-    except (ValueError, OSError, ImportError) as error:
+    except (ValueError, OSError, ImportError, sqlite3.Error) as error:
         print(f"Droid server setup: {error}")
         return 1
 

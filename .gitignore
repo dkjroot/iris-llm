@@ -180,3 +180,8 @@ agent_docs/
 /.cache/
 # Local client launcher (may contain the connection key and device settings)
 /run_client.sh
+
+# Local conversation archives and SQLite sidecars
+*.sqlite3
+*.sqlite3-*
+/iris-memory-export*.json

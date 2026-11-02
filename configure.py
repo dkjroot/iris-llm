@@ -118,6 +118,28 @@ def main() -> int:
                     input(f"Weather country code [{previous.weather_country}]: ").strip()
                     or previous.weather_country
                 )
+        print(
+            "Iris can save conversation text locally on this PC and resume after restarts. "
+            "Recordings are never saved. All clients for one owner share a conversation."
+        )
+        data["memory_enabled"] = (
+            choose(
+                "Save conversation memory locally",
+                ["yes", "no"],
+                "yes" if previous.memory_enabled else "no",
+            )
+            == "yes"
+        )
+        if data["memory_enabled"]:
+            from iris_memory import database_path
+
+            default_path = str(database_path(previous))
+            data["memory_database"] = (
+                input(f"Memory database [{default_path}]: ").strip() or default_path
+            )
+            data["memory_owner"] = (
+                input(f"Memory owner [{previous.memory_owner}]: ").strip() or previous.memory_owner
+            )
         settings = Settings.model_validate(data)
         path.write_text(
             json.dumps(settings.model_dump(mode="json"), indent=4) + "\n",
