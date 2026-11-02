@@ -53,6 +53,13 @@ def main() -> int:
             input(f"Chat base URL [{previous.base_url}]: ").strip() or previous.base_url
         )
         data["model"] = input(f"Model name [{previous.model}]: ").strip() or previous.model
+        data["model_context_tokens"] = int(
+            input(
+                "Model context window in tokens (match your host) "
+                f"[{previous.model_context_tokens}]: "
+            ).strip()
+            or previous.model_context_tokens
+        )
         data["stt_engine"] = choose(
             "Speech recognition on the PC (whisper is the usual local choice)",
             ["whisper", "wav2vec2", "google"],

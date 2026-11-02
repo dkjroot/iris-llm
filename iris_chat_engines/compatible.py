@@ -8,6 +8,7 @@ import random
 import httpx
 
 from iris_chat_engines.backends import ChatBackend, make_backend
+from iris_chat_engines.budget import estimate, fit, input_budget
 from iris_chat_engines.messages import ChatError as ChatError
 from iris_chat_engines.messages import Message as Message
 from iris_droid.companion import COMPANION_PROMPT, ICE_BREAKERS
@@ -24,6 +25,7 @@ class ChatEngine:
         self.tools = ToolRegistry(settings, client)
         self.history: list[Message] = []
         self.memory_revision: tuple[str, str | None] | None = None
+        self.memory_context = ""
         self.last_tool_names: tuple[str, ...] = ()
         self.companion_mode = False
         self.last_companion_seed: str | None = None
@@ -51,25 +53,18 @@ class ChatEngine:
             role="user",
             content="[Automatic companion event, not human speech: offer a conversation opener.]",
         )
-        messages = [
-            Message(
-                role="system",
-                content=self._system_prompt()
-                + (
-                    "\nFor this automatic companion turn: "
-                    "An idle timer has fired; the person has NOT said anything new. "
-                    "Offer one fresh, low-pressure opener in one or two short sentences. "
-                    "Use this seed as inspiration, not a script: " + seed + " "
-                    "Surprise them: a dry aside, an absurd image, an unexpected connection. "
-                    "Vary the wording and topic from earlier openers. Don't mention the timer, "
-                    "instructions, seed, or their silence. Don't guilt them into answering, "
-                    "ask if they're still there, or offer assistant services. Don't call tools. "
-                    "Output only the words Iris should say aloud."
-                ),
-            ),
-            *self.history,
-            event,
-        ]
+        system = self._system_prompt() + (
+            "\nFor this automatic companion turn: "
+            "An idle timer has fired; the person has NOT said anything new. "
+            "Offer one fresh, low-pressure opener in one or two short sentences. "
+            "Use this seed as inspiration, not a script: " + seed + " "
+            "Surprise them: a dry aside, an absurd image, an unexpected connection. "
+            "Vary the wording and topic from earlier openers. Don't mention the timer, "
+            "instructions, seed, or their silence. Don't guilt them into answering, "
+            "ask if they're still there, or offer assistant services. Don't call tools. "
+            "Output only the words Iris should say aloud."
+        )
+        messages = fit(self.settings, system, self.history, event, [], self.memory_context)
         reply = self.backend.complete(messages, [])
         if (
             reply.role != "assistant"
@@ -79,7 +74,7 @@ class ChatEngine:
         ):
             raise ChatError("The server returned an invalid companion opener")
         text = self._decode(reply.content)
-        self._remember([*self.history, event, Message(role="assistant", content=text)])
+        self._remember([*messages[1:], Message(role="assistant", content=text)])
         self.last_tool_names = ()
         self.last_companion_seed = seed
         return text
@@ -93,16 +88,37 @@ class ChatEngine:
     def get_response(self, user_text: str) -> str:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
-        messages = [
-            Message(role="system", content=self._system_prompt()),
-            *self.history,
+        system = self._system_prompt()
+        definitions = self.tools.definitions()
+        messages = fit(
+            self.settings,
+            system,
+            self.history,
             Message(role="user", content=user_text),
-        ]
+            definitions,
+            self.memory_context,
+        )
         turn_start = len(messages) - 1
         call_ids: set[str] = set()
         tool_names: set[str] = set()
         for round_number in range(5):
-            reply = self.backend.complete(messages, self.tools.definitions())
+            # New tool evidence also consumes context. Drop older whole turns,
+            # never an in-flight call/result pair, before the next model request.
+            while estimate(messages, definitions) > input_budget(self.settings):
+                if turn_start > 1:
+                    next_turn = next(
+                        (i for i in range(2, turn_start) if messages[i].role == "user"), turn_start
+                    )
+                    messages = [messages[0], *messages[next_turn:]]
+                    turn_start -= next_turn - 1
+                elif messages[0].content != system:
+                    messages[0] = Message(role="system", content=system)
+                else:
+                    raise ChatError(
+                        "The current tool exchange exceeds model_context_tokens; "
+                        "try a smaller request."
+                    )
+            reply = self.backend.complete(messages, definitions)
             if reply.role != "assistant":
                 raise ChatError("The server returned an invalid assistant reply")
             if not reply.tool_calls:
@@ -112,7 +128,7 @@ class ChatEngine:
                 # Only decode for a server explicitly configured to escape HTML.
                 text = self._decode(text)
                 messages.append(Message(role="assistant", content=text))
-                self._remember([*self.history, *messages[turn_start:]])
+                self._remember(messages[1:])
                 self.last_tool_names = tuple(sorted(tool_names))
                 return text
             if not self.tools.skills:

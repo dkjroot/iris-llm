@@ -149,9 +149,9 @@ python iris.py configure
 python iris.py --check
 ```
 
-The configuration script asks for the model address and name, the recogniser,
-the voice and speaking speed, optional time and weather skills, and whether to save
-conversation memory locally. If you don't know the model name yet, the
+The configuration script asks for the model address and name, the model host's
+context window, the recogniser, the voice and speaking speed, optional time and
+weather skills, and whether to save conversation memory locally. If you don't know the model name yet, the
 check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
@@ -708,7 +708,7 @@ These options apply to the local microphone test and to normal voice turns, incl
 | `--microphone-buffer FRAMES` | `8192` | Increase for input overflow; reduce for finer capture timing if the device remains reliable. Allowed range: 256–65,536 frames. |
 | `--pause-threshold SECONDS` | `1.2` | Increase if a thinking pause ends your sentence. Allowed range: 0.5–10 seconds. |
 | `--listen-timeout SECONDS` | `10` | Allow more time for speech to begin after the cue. Allowed range: greater than 0, up to 300 seconds. |
-| `--phrase-time-limit SECONDS` | `30` | Allow longer messages. Allowed range: greater than 0, up to 300 seconds; the server's `phrase_time_limit` must allow the same length. |
+| `--phrase-time-limit SECONDS` | `60` | Allow longer messages. Allowed range: greater than 0, up to 300 seconds; the server's `phrase_time_limit` must allow the same length. |
 | `--calibration-duration SECONDS` | `0.6`, extended if needed to read at least one input buffer | Sample background noise for longer before the cue. Stay quiet during calibration. Allowed range: 0.1–10 seconds; actual calibration is rounded to audio buffers. |
 | `--energy-threshold LEVEL` | Calibrated from background noise; reused within an open wake conversation | Set speech sensitivity manually when automatic calibration doesn't suit the room. A value greater than 0, up to 32,768, skips calibration. Lower values detect quieter speech but can also detect noise; higher values require louder speech. This isn't a microphone gain or volume control. |
 
@@ -791,7 +791,7 @@ If the converted file is clean too, live Python capture is the remaining differe
 
 On Windows or macOS, the shared local test and echo controls above work the same way. You can also compare with a recording from the operating system's recorder; when comparing playback applications, use the same saved file in both. Actual audio quality still needs checking on the device you're using; automated capture tests don't establish microphone quality or platform-wide hardware compatibility.
 
-The normal turn limit is 30 seconds. `--phrase-time-limit` changes it on the client; don't exceed the server's `phrase_time_limit` setting. The client `--listen-timeout` controls how long it waits for speech to start (10 seconds by default). Device listing and the cue test stay on the client; an actual voice turn sends the recording to your configured Iris server.
+The normal turn limit is 60 seconds. `--phrase-time-limit` changes it on the client; don't exceed the server's `phrase_time_limit` setting. If an existing PC configuration still has `"phrase_time_limit": 30`, change that to `60` in `local-config.json` and restart the server. An explicit `--phrase-time-limit 30` in an existing client launcher also needs updating. The client `--listen-timeout` controls how long it waits for speech to start (10 seconds by default). Device listing and the cue test stay on the client; an actual voice turn sends the recording to your configured Iris server.
 
 ### 5. Optional: local wake detection
 
@@ -931,7 +931,13 @@ or set these fields in `local-config.json`:
     "memory_enabled": true,
     "memory_database": null,
     "memory_owner": "default",
-    "memory_context_chars": 24000
+    "memory_context_chars": 24000,
+    "model_context_tokens": 8192,
+    "context_margin_tokens": 512,
+    "memory_summary_tokens": 1200,
+    "memory_summary_interval": 8,
+    "memory_summary_chars": 3000,
+    "memory_retrieval_chars": 3000
 }
 ```
 
@@ -944,7 +950,7 @@ can be absolute or relative to the server's working directory. Environment overr
 are `IRIS_MEMORY_ENABLED`, `IRIS_MEMORY_DATABASE`, `IRIS_MEMORY_OWNER` and
 `IRIS_MEMORY_CONTEXT_CHARS`. Restart the server after changing these settings.
 
-This first version resumes one active conversation per owner. The Pi and laptop
+Iris resumes one active conversation per owner. The Pi and laptop
 share that conversation, regardless of their temporary connection IDs. This is a
 single-user setup: an owner name selects local data on the server; it isn't a login
 or a way to give different people private accounts. If you're running several
@@ -960,13 +966,82 @@ erase the old one. Just changing the subject continues the current conversation.
 There isn't a temporary private-conversation command yet. For a session that
 neither reads nor writes memory, turn `memory_enabled` off and restart the server.
 
-On a restart, Iris loads the most recent complete exchanges, up to `history_turns`
-and `memory_context_chars` characters in total. She leaves out an exchange that
-won't fit rather than cutting it in half. `history_turns: 0` disables recent
-context but still archives new exchanges if memory is enabled. The archive can
-grow beyond that context window. Searching older conversations, summaries and
-recalling a topic from a vague reference are still to come; this version gives us
-basic continuity after a restart.
+On a restart, Iris loads recent complete exchanges, up to `history_turns` and
+`memory_context_chars` characters in total. She also has source-linked notes from
+the active conversation and a few matching excerpts from the archive. An ordinary
+question triggers a local keyword search using your words and recent conversation;
+you don't have to ask for a memory tool. The excerpts include their original dates
+and exchange IDs. This is keyword matching, so a distinctive name or subject helps.
+Semantic matching and reliably resolving vague references such as “that thing the
+other day” are still to come.
+
+“Clear context” also blocks automatic recall of earlier conversations. Asking
+explicitly to remember or resume a subject can search them again. That gives us a
+fresh start without silently deleting the archive. `history_turns: 0` disables
+history, summaries and retrieved excerpts in the chat prompt while still archiving
+new exchanges if memory is enabled.
+
+#### Context size and compaction
+
+Set `model_context_tokens` to the context size actually enabled on your model
+host, rather than the largest size advertised for the model. The default is 8192;
+Iris doesn't discover that limit from the server. The configuration wizard asks
+for it, and `IRIS_MODEL_CONTEXT_TOKENS` overrides it. This setting covers the whole
+request, including instructions, history, tool definitions and the reply.
+
+Iris reserves `max_tokens` for the reply and `context_margin_tokens` for template
+overhead. Until the backend can supply its own tokenizer, she estimates input
+size conservatively from UTF-8 bytes and message framing, including tool schemas,
+reasoning and tool exchanges. This deliberately compacts earlier than an exact
+token count usually would. It isn't a measurement of the model's native tokens;
+leave a margin for your host's template.
+
+As the estimated input approaches three quarters of its budget, Iris makes a
+summary checkpoint. When the combined prompt is under pressure, she compacts the
+older exchanges into notes and keeps up to two recent complete exchanges verbatim.
+The usual `history_turns` limit is another checkpoint trigger. Every model request,
+including tool follow-ups and automatic openers, gets a final size check. Whole
+older turns can be removed to fit; a current message or tool exchange that still
+won't fit produces an error rather than sending an oversized request.
+
+The full conversation stays in SQLite even after it leaves the working context.
+Summary notes distinguish topics, user statements, Iris's proposals, decisions and
+open questions, with fiction and tentative details labelled. A summary reads a
+bounded batch of original exchanges, rather than repeatedly rewriting one old
+summary. Recent notes fit within `memory_summary_chars`; older source details can
+come back through search. This extends useful continuity beyond one context window,
+though it doesn't mean every detail of an evening is always in the prompt.
+
+#### Summary checkpoints and maintenance
+
+With memory enabled, Iris normally summarises after eight unsummarised exchanges,
+or sooner under context pressure. Saying “stop listening”, switching companion
+mode off, clearing context or exiting also requests a checkpoint. There is no
+extra client notification when its local wake window times out; pending work can
+continue on the next conversation turn.
+
+Summaries use the configured chat model with no tools, a separate
+`memory_summary_tokens` output allowance, and at most twelve original exchanges
+per request. Each turn or control checkpoint processes at most one batch. The
+persistent queue holds at most 64 conversations. Summary calls run serially with
+chat, so a checkpoint adds model latency; it doesn't generate simultaneously in
+the background. Enable `trace` temporarily to see their timings, remembering that
+trace also prints conversation text.
+
+Malformed summaries leave the last valid notes intact. Failed jobs wait at least
+a minute between attempts and pause after three failures. Original exchanges remain
+available, and normal chat falls back to recent text and whatever reference data
+still works. If a single source exchange is too large, the summary gets labelled
+beginning-and-end excerpts; notes from that partial view stay tentative. The full
+source is still stored and searchable. Corrections that the summariser identifies
+supersede older notes and exclude their source excerpts from normal search. This
+is model-assisted bookkeeping, so inspect the export if a recalled detail seems
+wrong; it isn't a guarantee that the model recognises every contradiction.
+
+The database upgrades existing archives automatically when the enabled server
+starts. Back it up first. Keyword search needs SQLite FTS5; if your Python build
+lacks it, startup explains what is missing. The normal Python distributions usually
+include it. There are no embedding models to download.
 
 The archive contains recognised or typed input, final replies, UTC timestamps,
 source IDs and the names of any tools used. Automatic companion openers are marked
@@ -988,15 +1063,27 @@ To inspect or remove an archive, run these on the PC with the server stopped:
 ```sh
 python iris.py memory list
 python iris.py memory export > iris-memory-export.json
+python iris.py memory retry
+python iris.py memory rebuild
 python iris.py memory delete --conversation CONVERSATION_ID
 python iris.py memory delete --all
 ```
 
+The export includes versioned summaries, current note statuses and pending jobs
+alongside the source exchanges. `retry` resets failed summary jobs after you've
+fixed the model or configuration. `rebuild` discards derived summaries and search
+chunks for this owner, rebuilds the keyword index and queues fresh summaries from
+the originals. It keeps source history and clear-context boundaries. Those new
+summaries are generated on later server turns, so recall may temporarily rely on
+raw excerpts. Run the enabled server once to upgrade a phase-one archive before
+using the new maintenance commands.
+
 Use the ID from `list` in the selected deletion command. `--all` removes every
 conversation for the configured owner, which is handy for clearing a test archive.
 For a different configuration file, put `--config PATH` after `memory` and before
-`list`, `export` or `delete`. Inspection also works with memory disabled and never
-creates a missing archive. Deletion removes source exchanges from the live database;
+`list`, `export`, `retry`, `rebuild` or `delete`. Inspection also works with memory
+disabled and never creates a missing archive. Deletion removes source exchanges
+and their summaries, notes, search chunks and queued jobs from the live database;
 independent exports and backups keep their own copies. Start the server again after
 maintenance so it can't retain deleted material in RAM.
 

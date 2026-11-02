@@ -19,6 +19,7 @@ import numpy as np
 import numpy.typing as npt
 import speech_recognition as sr
 
+from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.protocol import (
     MAX_BODY,
@@ -31,6 +32,8 @@ from iris_droid.protocol import (
     write_wav,
 )
 from iris_memory import AUTOMATIC_EVENT, Exchange, make_memory
+from iris_memory.context import MemoryContext
+from iris_memory.index import MemoryIndex
 from iris_settings import Settings, load_settings
 from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
@@ -52,6 +55,21 @@ class Brain:
         self.tts = tts
         self.sessions: OrderedDict[str, ChatEngine] = OrderedDict()
         self.memory = make_memory(settings)
+        self.memory_context: MemoryContext | None = None
+        if self.memory is not None:
+            summary_settings = settings.model_copy(
+                update={"max_tokens": settings.memory_summary_tokens, "temperature": 0.1}
+            )
+            self.memory_context = MemoryContext(
+                settings, MemoryIndex(self.memory), make_backend(summary_settings, client)
+            )
+
+    def _checkpoint(self, conversation: str | None) -> None:
+        if self.memory_context is not None and conversation is not None:
+            try:
+                self.memory_context.checkpoint(self.settings.memory_owner, conversation, force=True)
+            except sqlite3.Error as error:
+                LOGGER.warning("Memory checkpoint deferred (%s).", type(error).__name__)
 
     def _restore(self, chat: ChatEngine) -> str | None:
         if self.memory is None:
@@ -108,6 +126,7 @@ class Brain:
             raise sr.UnknownValueError()
         if is_clear_context(heard):
             if self.memory is not None:
+                self._checkpoint(self.memory.active_conversation(self.settings.memory_owner))
                 self.memory.start_conversation(self.settings.memory_owner)
             existing = self.sessions.get(session)
             companion = existing is not None and existing.companion_mode
@@ -133,6 +152,8 @@ class Brain:
             # A control utterance isn't a chat turn and doesn't clear history.
             if existing is not None:
                 existing.companion_mode = False
+            if self.memory is not None:
+                self._checkpoint(self.memory.active_conversation(self.settings.memory_owner))
             return TurnReply(
                 heard=heard,
                 text="Waiting for the wake phrase."
@@ -153,14 +174,34 @@ class Brain:
         previous_mode = chat.companion_mode
         previous_seed = chat.last_companion_seed
         previous_tools = chat.last_tool_names
+        previous_memory = chat.memory_context
         try:
             command = companion_command(heard)
             if command is not None:
+                if not command:
+                    self._checkpoint(conversation)
                 chat.companion_mode = command
                 text = "Companion mode on. Let's hang out." if command else "Companion mode off."
             elif companion_idle:
+                # No cross-conversation personalised opener selection until phase 5.
+                chat.memory_context = ""
                 text = chat.get_companion_opener()
             else:
+                if finished:
+                    self._checkpoint(conversation)
+                elif self.memory_context is not None and conversation is not None:
+                    try:
+                        chat.memory_context = self.memory_context.prepare(
+                            self.settings.memory_owner,
+                            conversation,
+                            heard,
+                            chat.history,
+                            chat._system_prompt(),
+                            chat.tools.definitions(),
+                        )
+                    except sqlite3.Error as error:
+                        LOGGER.warning("Derived memory unavailable (%s).", type(error).__name__)
+                        chat.memory_context = ""
                 text = "Shutting down" if finished else chat.get_response(heard)
             audio = ""
             if not text_only:
@@ -196,6 +237,7 @@ class Brain:
             chat.companion_mode = previous_mode
             chat.last_companion_seed = previous_seed
             chat.last_tool_names = previous_tools
+            chat.memory_context = previous_memory
             raise
         if finished:
             del self.sessions[session]

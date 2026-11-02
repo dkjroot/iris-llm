@@ -82,7 +82,21 @@ class SQLiteMemory:
                     "PRAGMA user_version=1",
                 ):
                     db.execute(statement)
-            elif version != 1:
+                version = 1
+            if version == 1 and create:
+                from iris_memory.index import migrate
+
+                migrate(db)
+                version = 2
+            if version == 2 and create:
+                try:
+                    db.execute("SELECT rowid FROM chunks_fts LIMIT 0")
+                except sqlite3.OperationalError as error:
+                    raise ValueError(
+                        "Conversation memory needs a working SQLite FTS5 index. "
+                        "Check your Python installation and archive."
+                    ) from error
+            if version not in {1, 2}:
                 raise ValueError("Unsupported Iris memory schema version")
 
     @contextmanager
@@ -125,6 +139,12 @@ class SQLiteMemory:
     def start_conversation(self, owner: str) -> str:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            if db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+                db.execute(
+                    "INSERT OR IGNORE INTO recall_blocks SELECT owner,id "
+                    "FROM conversations WHERE owner=?",
+                    (owner,),
+                )
             return self._new_conversation(db, owner)
 
     def recent(self, owner: str, conversation: str, limit: int, chars: int) -> list[Exchange]:
@@ -185,6 +205,16 @@ class SQLiteMemory:
                 "assistant_text, tool_names) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (exchange.id, datetime.now(UTC).isoformat(), *values),
             )
+            if db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+                from iris_memory.index import index_exchange
+
+                row = db.execute("SELECT * FROM exchanges WHERE id=?", (exchange.id,)).fetchone()
+                index_exchange(db, row)
+                db.execute(
+                    "INSERT OR IGNORE INTO summary_jobs(conversation,owner) "
+                    "SELECT ?,? WHERE (SELECT count(*) FROM summary_jobs)<64",
+                    (conversation, owner),
+                )
 
     def conversations(self, owner: str) -> list[dict[str, object]]:
         with self.connect() as db:
@@ -219,8 +249,32 @@ class SQLiteMemory:
                 item = dict(row)
                 item["tool_names"] = json.loads(item["tool_names"])
                 exchanges.append(item)
+            version = db.execute("PRAGMA user_version").fetchone()[0]
+            derived: dict[str, list[dict[str, object]]] = {}
+            if version >= 2:
+                derived = {
+                    "summaries": [
+                        dict(r)
+                        for r in db.execute(
+                            "SELECT * FROM summaries WHERE owner=? ORDER BY through_sequence",
+                            (owner,),
+                        )
+                    ],
+                    "notes": [
+                        dict(r) for r in db.execute("SELECT * FROM notes WHERE owner=?", (owner,))
+                    ],
+                    "summary_jobs": [
+                        dict(r)
+                        for r in db.execute("SELECT * FROM summary_jobs WHERE owner=?", (owner,))
+                    ],
+                }
+                for row in derived["summaries"]:
+                    row["payload"] = json.loads(str(row["payload"]))
+                for row in derived["notes"]:
+                    row["sources"] = json.loads(str(row["sources"]))
             return {
-                "schema_version": 1,
+                **derived,
+                "schema_version": version,
                 "owner": owner,
                 "conversations": conversations,
                 "exchanges": exchanges,
@@ -239,5 +293,5 @@ class SQLiteMemory:
                     raise ValueError("No matching conversation for this owner")
 
 
-def make_memory(settings: Settings) -> MemoryStore | None:
+def make_memory(settings: Settings) -> SQLiteMemory | None:
     return SQLiteMemory(database_path(settings)) if settings.memory_enabled else None

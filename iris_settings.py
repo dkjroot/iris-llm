@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     system_prompt: str = "You are Iris, a friendly assistant. Keep spoken replies fairly short."
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: int = Field(default=250, gt=0, le=32768)
+    model_context_tokens: int = Field(default=8192, ge=2048, le=2000000)
+    context_margin_tokens: int = Field(default=512, ge=128, le=32768)
+    memory_summary_tokens: int = Field(default=1200, ge=256, le=8192)
+    memory_summary_interval: int = Field(default=8, ge=1, le=100)
+    memory_summary_chars: int = Field(default=3000, ge=0, le=16000)
+    memory_retrieval_chars: int = Field(default=3000, ge=0, le=16000)
     history_turns: int = Field(default=12, ge=0, le=100)
     memory_enabled: bool = False
     memory_database: Path | None = None
@@ -113,7 +119,7 @@ class Settings(BaseSettings):
     kokoro_voice: str = Field(default="af_heart", pattern=r"^[ab][fm]_[a-z]+$")
     kokoro_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     kokoro_model_dir: Path | None = None
-    phrase_time_limit: float = Field(default=30, gt=0, le=300)
+    phrase_time_limit: float = Field(default=60, gt=0, le=300)
 
     @field_validator("base_url")
     @classmethod
@@ -141,6 +147,15 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def check_privacy(self) -> Settings:
+        output_tokens = (
+            max(self.max_tokens, self.memory_summary_tokens)
+            if self.memory_enabled
+            else self.max_tokens
+        )
+        if output_tokens + self.context_margin_tokens + 1024 >= self.model_context_tokens:
+            raise ValueError(
+                "model_context_tokens must leave room for prompts, replies and summaries"
+            )
         host = urlsplit(self.base_url).hostname
         if not self.allow_remote and (
             host not in {"localhost", "127.0.0.1", "::1"} or self.stt_engine == "google"

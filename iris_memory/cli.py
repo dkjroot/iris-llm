@@ -16,6 +16,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("local-config.json"))
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("list", help="List conversation IDs, dates and exchange counts")
+    commands.add_parser(
+        "rebuild", help="Rebuild search and queue fresh summaries from source history"
+    )
+    commands.add_parser("retry", help="Reset failed summary jobs for this owner")
     commands.add_parser("export", help="Write the owner's archive as JSON to standard output")
     delete = commands.add_parser(
         "delete", help="Delete this owner's selected conversation or archive"
@@ -35,6 +39,15 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(memory.conversations(settings.memory_owner), indent=2))
         elif args.action == "export":
             print(json.dumps(memory.export(settings.memory_owner), indent=2, ensure_ascii=False))
+        elif args.action in {"retry", "rebuild"}:
+            from iris_memory.index import MemoryIndex
+
+            index = MemoryIndex(memory)
+            if args.action == "rebuild":
+                index.rebuild(settings.memory_owner)
+            else:
+                index.retry(settings.memory_owner)
+            print("Summary jobs can retry when the server next handles a conversation turn.")
         else:
             memory.delete(settings.memory_owner, args.conversation)
             print("Deleted the selected conversation history. Independent backups are unchanged.")

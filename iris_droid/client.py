@@ -373,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_MICROPHONE_BUFFER,
         help="Capture buffer in frames (256–65536; default: 8192). Increase for input overflow.",
     )
-    parser.add_argument("--phrase-time-limit", type=float, default=30)
+    parser.add_argument("--phrase-time-limit", type=float, default=60)
     parser.add_argument("--listen-timeout", type=float, default=10)
     parser.add_argument(
         "--companion-idle-min",

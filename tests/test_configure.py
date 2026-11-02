@@ -29,7 +29,7 @@ def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: 
     assert settings.tts_engine == "kokoro"
     assert not settings.allow_remote
     assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
-    assert len(prompts) == 10
+    assert len(prompts) == 11
     assert not any("Start listening" in prompt or "Feedback sounds" in prompt for prompt in prompts)
 
 
@@ -47,7 +47,7 @@ def test_kokoro_wizard_offers_named_voices_and_saves_selection(
 ) -> None:
     with (
         patch.object(configure, "ROOT", tmp_path),
-        patch("builtins.input", side_effect=["", "", "", "bf_emma", "1.3", "", "", "", "", ""]),
+        patch("builtins.input", side_effect=["", "", "", "", "bf_emma", "1.3", "", "", "", "", ""]),
     ):
         assert configure.main() == 0
     settings = load_settings(tmp_path / "local-config.json")

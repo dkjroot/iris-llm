@@ -88,7 +88,7 @@ def test_schema_idempotency_order_ownership_and_deletion(settings):
         memory.delete("other", conversation)
     assert memory.conversations("dave")[0]["turns"] == 2
     with memory.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 2
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     memory.delete("dave", conversation)
     assert memory.export("dave")["exchanges"] == []

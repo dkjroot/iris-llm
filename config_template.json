@@ -5,6 +5,12 @@
     "system_prompt": "You are Iris, a friendly assistant. Keep spoken replies fairly short.",
     "temperature": 0.7,
     "max_tokens": 250,
+    "model_context_tokens": 8192,
+    "context_margin_tokens": 512,
+    "memory_summary_tokens": 1200,
+    "memory_summary_interval": 8,
+    "memory_summary_chars": 3000,
+    "memory_retrieval_chars": 3000,
     "history_turns": 12,
     "memory_enabled": false,
     "memory_database": null,
@@ -31,5 +37,5 @@
     "kokoro_voice": "af_heart",
     "kokoro_speed": 1.0,
     "kokoro_model_dir": null,
-    "phrase_time_limit": 30.0
+    "phrase_time_limit": 60.0
 }
