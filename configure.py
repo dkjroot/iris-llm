@@ -4,10 +4,102 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
+
+from pydantic import TypeAdapter
 
 from iris_settings import Settings, load_settings
 
 ROOT = Path(__file__).resolve().parent
+
+# Everything else in Settings is offered in the advanced section automatically.
+# New server settings must not silently become JSON-only knobs.
+BASIC_SETTINGS = frozenset(
+    {
+        "base_url",
+        "model",
+        "model_context_tokens",
+        "stt_engine",
+        "tts_engine",
+        "kokoro_voice",
+        "kokoro_speed",
+        "allow_remote",
+        "tools_enabled",
+        "local_timezone",
+        "weather_enabled",
+        "weather_location",
+        "weather_country",
+        "memory_enabled",
+        "memory_database",
+        "memory_owner",
+        "memory_semantic_enabled",
+        "memory_companion_followups",
+        "memory_search_tool",
+    }
+)
+ENVIRONMENT_SETTINGS = {
+    "api_key": "Set IRIS_API_KEY in the server environment; it isn't saved here."
+}
+
+ADVANCED_HELP = {
+    "system_prompt": "Iris's instructions and personality",
+    "temperature": "Reply randomness, from 0 to 2",
+    "max_tokens": "Maximum tokens in a reply",
+    "context_margin_tokens": "Context space reserved for the host's formatting",
+    "memory_summary_tokens": "Maximum tokens in a memory summary",
+    "memory_summary_interval": "Unsummarised exchanges before a checkpoint",
+    "memory_summary_chars": "Maximum summary characters in chat context",
+    "memory_retrieval_chars": "Maximum retrieved source characters in chat context",
+    "history_turns": "Recent whole turns retained in context; 0 disables prompt history",
+    "memory_embedding_model_dir": "Prepared semantic model directory; null uses the default",
+    "memory_semantic_min_score": "Minimum semantic similarity, from 0 to 1",
+    "memory_context_chars": "Maximum restored conversation characters",
+    "timeout": "Model request timeout in seconds",
+    "trace": "Print model/tool diagnostics, including conversation text",
+    "reply_encoding": "Reply text encoding: text, html or double-html",
+    "chat_template_kwargs": "Host template options as a JSON object",
+    "chat_request_options": "Additional model request options as a JSON object",
+    "whisper_model": "Whisper model name or local path",
+    "device": "Speech recognition device: cpu, cuda or auto",
+    "compute_type": "Whisper compute type, such as int8 or float16",
+    "language": "Recognition language code; null enables automatic detection",
+    "tokenizer_model": "Wav2vec2 tokenizer model name or path",
+    "ctc_model": "Wav2vec2 speech model name or path",
+    "kokoro_model_dir": "Kokoro model directory; null uses the default",
+    "phrase_time_limit": "Maximum accepted recording length in seconds; match the client too",
+}
+
+
+def configure_advanced(data: dict[str, Any]) -> None:
+    print(
+        "Advanced settings cover chat, memory budgets, recognition and speech models. "
+        "Press Enter to keep a value. Use JSON for numbers, booleans and objects; "
+        "use null to reset an optional value. Strings and paths don't need quotes."
+    )
+    for name, field in Settings.model_fields.items():
+        if name in BASIC_SETTINGS or name in ENVIRONMENT_SETTINGS:
+            continue
+        adapter: TypeAdapter[Any] = TypeAdapter(field.rebuild_annotation())
+        schema = adapter.json_schema()
+        alternatives = schema.get("anyOf", [schema])
+        text_value = any(option.get("type") == "string" for option in alternatives)
+        while True:
+            default = json.dumps(data[name], ensure_ascii=False)
+            help_text = ADVANCED_HELP.get(name, name.replace("_", " "))
+            answer = input(f"{name} — {help_text} [{default}]: ").strip()
+            if not answer:
+                break
+            try:
+                value = answer if text_value and answer != "null" else json.loads(answer)
+                # JSON-quoted strings are accepted too, without quoting paths twice.
+                if text_value and answer.startswith('"'):
+                    value = json.loads(answer)
+                parsed = adapter.validate_python(value)
+            except ValueError:
+                print("That value doesn't match the setting's type or limits. Please try again.")
+            else:
+                data[name] = parsed
+                break
 
 
 def choose(prompt: str, choices: list[str], default: str) -> str:
@@ -99,11 +191,11 @@ def main() -> int:
             )
             == "yes"
         )
+        data["local_timezone"] = (
+            input(f"Local timezone (IANA name) [{previous.local_timezone}]: ").strip()
+            or previous.local_timezone
+        )
         if data["tools_enabled"]:
-            data["local_timezone"] = (
-                input(f"Local timezone (IANA name) [{previous.local_timezone}]: ").strip()
-                or previous.local_timezone
-            )
             print(
                 "The clock skill runs locally. Weather uses Open-Meteo online; "
                 "it receives the configured town/coordinates, not your conversation or audio."
@@ -158,8 +250,33 @@ def main() -> int:
                 )
                 == "yes"
             )
+            print(
+                "Companion follow-ups can occasionally revisit an unfinished saved topic. "
+                "They have cooldowns and a spoken opt-out; "
+                "sensitive-topic filtering can make mistakes."
+            )
+            data["memory_companion_followups"] = (
+                choose(
+                    "Enable memory-based companion follow-ups",
+                    ["yes", "no"],
+                    "yes" if previous.memory_companion_followups else "no",
+                )
+                == "yes"
+            )
+            if data["tools_enabled"]:
+                data["memory_search_tool"] = (
+                    choose(
+                        "Let the model search saved conversations with a read-only skill",
+                        ["yes", "no"],
+                        "yes" if previous.memory_search_tool else "no",
+                    )
+                    == "yes"
+                )
         else:
             data["memory_semantic_enabled"] = False
+            data["memory_companion_followups"] = False
+        if choose("Configure advanced server settings", ["yes", "no"], "no") == "yes":
+            configure_advanced(data)
         settings = Settings.model_validate(data)
         path.write_text(
             json.dumps(settings.model_dump(mode="json"), indent=4) + "\n",
@@ -167,6 +284,8 @@ def main() -> int:
             newline="\n",
         )
         print("Saved", path)
+        for explanation in ENVIRONMENT_SETTINGS.values():
+            print(explanation)
         if settings.memory_semantic_enabled:
             print(
                 "Semantic recall also needs the [memory] extra and: "

@@ -151,7 +151,14 @@ python iris.py --check
 
 The configuration script asks for the model address and name, the model host's
 context window, the recogniser, the voice and speaking speed, optional time and
-weather skills, and whether to save conversation memory locally. If you don't know the model name yet, the
+weather skills, and whether to save conversation memory locally. With memory enabled,
+it also offers semantic recall, companion follow-ups and the read-only memory search
+skill. The optional advanced section covers the other server JSON settings, including
+reply/context budgets, speech model paths, recognition language, recording length
+and diagnostics. Press Enter to keep each current value. API credentials stay in
+`IRIS_API_KEY`; the server's listening address and port remain launch options
+(`--host` and `--port`), and its client connection key stays in `IRIS_DROID_TOKEN`.
+If you don't know the model name yet, the
 check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
@@ -1137,8 +1144,8 @@ companion openers never receive tool definitions.
 #### Optional companion follow-ups
 
 Iris can occasionally pick up an unfinished creative or practical topic in companion
-mode. Set **`memory_companion_followups: true` on the server** to enable this; the
-default is off. It needs saved memory and the usual companion mode. The client
+mode. Enable **memory-based companion follow-ups** in `python iris.py configure`,
+or set **`memory_companion_followups: true` on the server**. The default is off. It needs saved memory and the usual companion mode. The client
 needs no extra configuration, and its listening timers and unanswered-opener backoff
 work as before.
 
