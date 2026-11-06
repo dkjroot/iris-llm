@@ -215,6 +215,10 @@ def test_migration_indexes_phase_one_sources_atomically(tmp_path):
     # Strip derived tables to recreate the phase-one schema around its source data.
     with archive.connect() as db:
         for table in (
+            "detail_supersessions",
+            "memory_attention",
+            "memory_topics",
+            "memory_facts",
             "conversation_uses",
             "detail_uses",
             "memory_details",
@@ -235,7 +239,7 @@ def test_migration_indexes_phase_one_sources_atomically(tmp_path):
     assert MemoryIndex(migrated).search("default", conversation, "Sapphire", "")
     assert len(migrated.export("default")["exchanges"]) == 1
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
     assert len(MemoryIndex(SQLiteMemory(path)).search("default", conversation, "Sapphire", "")) == 1
 
 
@@ -372,7 +376,7 @@ def test_retry_cli_and_export_include_derived_data(setup, tmp_path, capsys):
     capsys.readouterr()
     assert iris.main(["memory", "--config", str(config), "export"]) == 0
     exported = json.loads(capsys.readouterr().out)
-    assert exported["summaries"] and exported["notes"] and exported["schema_version"] == 5
+    assert exported["summaries"] and exported["notes"] and exported["schema_version"] == 6
 
 
 def test_budget_settings_and_environment_validation(monkeypatch):
@@ -452,7 +456,10 @@ def test_server_summaries_survive_restart_and_ground_a_fresh_prompt(setup):
     def complete(request):
         payload = json.loads(request.content)
         requests.append(payload)
-        if payload["messages"][0]["content"].startswith("Summarise these original"):
+        if payload["messages"][0]["content"].startswith("Extract memory metadata"):
+            assert payload["max_tokens"] == settings.memory_summary_tokens
+            message = {"role": "assistant", "content": '{"facts": [], "topics": []}'}
+        elif payload["messages"][0]["content"].startswith("Summarise these original"):
             data = json.loads(payload["messages"][-1]["content"])
             result = Summary(notes=[note(data["original_exchanges"][0]["id"])])
             assert payload["max_tokens"] == settings.memory_summary_tokens
@@ -507,6 +514,10 @@ def test_second_migration_failure_keeps_phase_one_archive(setup):
     append(archive, conversation, 1)
     with archive.connect() as db:
         for table in (
+            "detail_supersessions",
+            "memory_attention",
+            "memory_topics",
+            "memory_facts",
             "conversation_uses",
             "detail_uses",
             "memory_details",

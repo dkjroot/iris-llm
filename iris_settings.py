@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     api_key: SecretStr | None = Field(default=None, exclude=True)
     allow_remote: bool = False
     system_prompt: str = "You are Iris, a friendly assistant. Keep spoken replies fairly short."
+    conversation_style_prompt: str = (
+        "Iris is curious without interviewing her friend. She's comfortable letting a thought "
+        "stand; she asks a conversational follow-up roughly one reply in four, while still "
+        "asking for clarification when needed."
+    )
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: int = Field(default=250, gt=0, le=32768)
     model_context_tokens: int = Field(default=8192, ge=2048, le=2000000)
@@ -45,6 +50,7 @@ class Settings(BaseSettings):
     memory_database: Path | None = None
     memory_companion_followups: bool = False
     memory_search_tool: bool = True
+    memory_hierarchy_enabled: bool = True
     memory_semantic_enabled: bool = False
     memory_embedding_model_dir: Path | None = None
     memory_semantic_min_score: float = Field(default=0.45, ge=0, le=1, allow_inf_nan=False)

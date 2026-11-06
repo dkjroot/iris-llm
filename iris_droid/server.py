@@ -106,13 +106,11 @@ class Brain:
                 update={
                     "system_prompt": settings.system_prompt
                     + "\nCompleted conversations are archived. "
-                    "Explicit remembered details are separate: "
-                    "the human must say 'remember LABEL as VALUE', 'correct LABEL to VALUE', or "
-                    "'forget the detail about LABEL', then confirm Iris's spoken memory control. "
-                    "Only those server controls change details. Never claim to have saved, "
-                    "corrected "
-                    "or deleted an explicit detail through an ordinary reply or tool. Explain the "
-                    "control when asked to do so in other words. Search results are read-only."
+                    "Labelled detail commands use 'remember LABEL as VALUE', "
+                    "'correct LABEL to VALUE', "
+                    "or 'forget the detail about LABEL', followed by confirmation. Natural human "
+                    "corrections can update source-backed facts without erasing old conversations. "
+                    "A model reply or read-only search alone cannot change or delete memory."
                 }
             )
         chat = ChatEngine(settings, self.client)
@@ -414,7 +412,9 @@ class Brain:
                 apply = True
         elif command.action in {"list", "show"}:
             rows = self.details.items(
-                self.settings.memory_owner, command.label if command.action == "show" else None
+                self.settings.memory_owner,
+                command.label if command.action == "show" else None,
+                limit=9,
             )
             text = (
                 " ".join(f"{r['label']}: {r['text']}." for r in rows[:8])
@@ -439,11 +439,6 @@ class Brain:
                     "I couldn't find that exact detail label. "
                     "Say 'list remembered details' to check."
                 )
-            elif (
-                command.action == "remember"
-                and len(self.details.items(self.settings.memory_owner)) >= 32
-            ):
-                text = "There is room for 32 explicit details. Please forget one first."
             else:
                 pending = self.details.snapshot(
                     self.settings.memory_owner, command, datetime.now(UTC) + timedelta(minutes=2)
@@ -636,6 +631,7 @@ class Brain:
         chat.memory_search_calls = 0
         detail_labels: tuple[str, ...] = ()
         followup_conversation: str | None = None
+        hierarchy_plan = None
         try:
             command = companion_command(heard)
             if command is not None:
@@ -692,6 +688,56 @@ class Brain:
                             "I can't search my saved conversations right now. "
                             "Please try again in a moment."
                         )
+                core_context = ""
+                if (
+                    not finished
+                    and conversation is not None
+                    and self.memory_context is not None
+                    and self.settings.history_turns
+                ):
+                    hierarchy = self.memory_context.hierarchy
+                    if hierarchy is not None and recall_reply is None:
+                        try:
+                            selected_topic = ""
+                            pending = chat.pending_recall
+                            if pending is not None and pending.selected is not None:
+                                selected_topic = pending.candidates[pending.selected].label
+                            hierarchy_plan = hierarchy.prepare(
+                                self.settings.memory_owner, conversation, heard, selected_topic
+                            )
+                            core_context, fact_sources = hierarchy.context(
+                                self.settings.memory_owner,
+                                hierarchy.query(heard, hierarchy_plan),
+                                hierarchy_plan,
+                                limit=800,
+                            )
+                            chat.memory_sources.update(fact_sources)
+                            if hierarchy_plan is not None:
+                                chat.memory_sources.update(hierarchy_plan.source_conversations)
+                        except sqlite3.Error as error:
+                            LOGGER.warning(
+                                "Memory hierarchy unavailable (%s).", type(error).__name__
+                            )
+                    excluded = (
+                        tuple(
+                            f["detail_label"]
+                            for f in (hierarchy_plan.facts if hierarchy_plan else ())
+                            if f.get("detail_label")
+                            and any(
+                                change.supersedes == f["id"]
+                                for change in hierarchy_plan.interpretation.facts
+                            )
+                        )
+                        if hierarchy_plan is not None
+                        else ()
+                    )
+                    if self.details is not None:
+                        detail_context, detail_labels = self.details.context(
+                            self.settings.memory_owner, heard, limit=800, excluded=excluded
+                        )
+                        # Prospective overrides still count as use of their explicit labels.
+                        detail_labels = tuple(dict.fromkeys((*detail_labels, *excluded)))
+                        core_context = detail_context + core_context
                 if (
                     not finished
                     and recall_reply is None
@@ -707,6 +753,10 @@ class Brain:
                             chat._system_prompt(),
                             chat.tools.definitions(),
                             recalled,
+                            core_context,
+                            self.memory_context.hierarchy.query(heard, hierarchy_plan)
+                            if self.memory_context.hierarchy is not None
+                            else None,
                         )
                         if recalled:
                             chat.memory_sources.update(r["conversation"] for r in recalled)
@@ -726,16 +776,6 @@ class Brain:
                                 "but can't load its details right now. "
                                 "Please try again in a moment."
                             )
-                if (
-                    not finished
-                    and self.details is not None
-                    and conversation is not None
-                    and self.settings.history_turns
-                ):
-                    detail_context, detail_labels = self.details.context(
-                        self.settings.memory_owner, heard
-                    )
-                    chat.memory_context += detail_context
                 if recall_reply is not None:
                     text = recall_reply
                     chat.remember_reply(heard, text)
@@ -765,6 +805,7 @@ class Brain:
                     detail_labels=detail_labels,
                     source_conversations=tuple(chat.memory_sources),
                     followup_conversation=followup_conversation,
+                    hierarchy=hierarchy_plan,
                 )
                 if followup_conversation is not None:
                     chat.last_followup = followup_conversation

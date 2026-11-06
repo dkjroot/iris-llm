@@ -25,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     commands.add_parser("retry", help="Reset failed summary jobs for this owner")
     commands.add_parser("export", help="Write the owner's archive as JSON to standard output")
+    inspect = commands.add_parser(
+        "inspect", help="Inspect bounded hierarchy facts and topic attention"
+    )
+    inspect.add_argument("--query", default="", help="Topic for inspecting candidate selection")
     delete = commands.add_parser(
         "delete", help="Delete this owner's selected conversation or archive"
     )
@@ -97,6 +101,19 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Semantic index ready; processed {total} chunks for this model version.")
         elif args.action == "list":
             print(json.dumps(memory.conversations(settings.memory_owner), indent=2))
+        elif args.action == "inspect":
+            from iris_memory.hierarchy import Hierarchy
+
+            with memory.connect() as db:
+                if db.execute("PRAGMA user_version").fetchone()[0] < 6:
+                    raise ValueError("Start the updated server to upgrade the memory archive first")
+            print(
+                json.dumps(
+                    Hierarchy(memory, settings, None).inspect(settings.memory_owner, args.query),
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
         elif args.action == "export":
             print(json.dumps(memory.export(settings.memory_owner), indent=2, ensure_ascii=False))
         elif args.action in {"retry", "rebuild"}:

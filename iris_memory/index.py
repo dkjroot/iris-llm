@@ -16,6 +16,7 @@ from iris_memory.models import Summary
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
+    from iris_memory.hierarchy import Hierarchy
     from iris_memory.semantic import SemanticMemory
 
 
@@ -113,6 +114,7 @@ class MemoryIndex:
     def __init__(self, archive: SQLiteMemory) -> None:
         self.archive = archive
         self.semantic: SemanticMemory | None = None
+        self.hierarchy: Hierarchy | None = None
 
     def enqueue(self, owner: str, conversation: str) -> None:
         with self.archive.connect() as db:
@@ -322,7 +324,7 @@ class MemoryIndex:
                 if row["exchange"] not in seen:
                     seen.add(row["exchange"])
                     result.append(dict(row))
-                    if len(result) >= limit:
+                    if len(result) >= (limit * 4 if self.hierarchy is not None else limit):
                         break
         if self.semantic is not None:
             try:
@@ -350,6 +352,8 @@ class MemoryIndex:
                 LOGGER.warning(
                     "Semantic search unavailable (%s); using keyword matches.", type(error).__name__
                 )
+        if self.hierarchy is not None:
+            result = self.hierarchy.rank_sources(owner, utterance, result)
         return result[:limit]
 
     def recall_sources(
@@ -439,7 +443,14 @@ class MemoryIndex:
                 LOGGER.warning(
                     "Semantic recall unavailable (%s); using keyword matches.", type(error).__name__
                 )
-        return list(result.values())[:42]
+        candidates = list(result.values())[:42]
+        if self.hierarchy is not None:
+            activity = self.hierarchy.activity_scores(owner, " ".join(terms), candidates)
+            for row in candidates:
+                # Attention only breaks close ordering ties; it never supplies lexical
+                # confidence or bypasses date/source/ambiguity checks.
+                row["hierarchy_activity"] = min(0.5, activity.get(row["exchange"], 0) / 10)
+        return candidates
 
     def recall_evidence(
         self, owner: str, conversation: str, sources: tuple[str, ...], terms: tuple[str, ...] = ()

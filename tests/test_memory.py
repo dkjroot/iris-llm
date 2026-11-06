@@ -88,7 +88,7 @@ def test_schema_idempotency_order_ownership_and_deletion(settings):
         memory.delete("other", conversation)
     assert memory.conversations("dave")[0]["turns"] == 2
     with memory.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     memory.delete("dave", conversation)
     assert memory.export("dave")["exchanges"] == []
@@ -107,6 +107,8 @@ def test_whole_exchange_character_and_count_limits(settings):
 
 
 def test_restart_client_server_exit_eviction_and_shared_owner(settings):
+    # Test full RAM restoration independently of context-pressure compaction.
+    settings = settings.model_copy(update={"model_context_tokens": 16384})
     requests = []
     brain, client = make_brain(settings, requests)
     with client:
@@ -188,7 +190,9 @@ def test_failed_turns_never_commit_and_roll_back(settings, failure):
 
 def test_tools_live_history_and_safe_restoration(settings):
     requests = []
-    settings = Settings(**settings.model_dump(), api_key="archive-secret")
+    settings = Settings(
+        **{**settings.model_dump(), "memory_hierarchy_enabled": False}, api_key="archive-secret"
+    )
     brain, client = make_brain(settings, requests, tool=True)
     with client:
         brain.turn("pi", b"What time is it?", text_only=True)

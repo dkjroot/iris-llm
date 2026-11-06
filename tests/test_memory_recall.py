@@ -471,4 +471,8 @@ def test_selected_recall_does_not_ask_model_to_guess_after_context_failure(archi
     ):
         reply = brain.turn("pi", b"Remember the garden project yesterday?", text_only=True)
         assert "can't load its details" in reply.text
-        assert not requests
+        assert not [
+            r
+            for r in requests
+            if not r["messages"][0]["content"].startswith("Extract memory metadata")
+        ]

@@ -422,6 +422,15 @@ def test_real_model_server_text_recall_smoke(setup):
 
     def respond(request):
         payload = json.loads(request.content)
+        if payload["messages"][0]["content"].startswith("Extract memory metadata"):
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"message": {"role": "assistant", "content": '{"facts": [], "topics": []}'}}
+                    ]
+                },
+            )
         if payload["messages"][0]["content"].startswith("Summarise these original"):
             return httpx.Response(
                 200,

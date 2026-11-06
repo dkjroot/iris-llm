@@ -53,6 +53,23 @@ class CompanionMemory:
                 if not payload["notes"][number].get("follow_up_safe", False):
                     continue
                 sources = json.loads(row["sources"])
+                if db.execute("PRAGMA user_version").fetchone()[0] >= 6:
+                    from iris_memory.hierarchy import terms
+
+                    closed = db.execute(
+                        "SELECT t.label,(SELECT a.status FROM memory_attention a "
+                        "JOIN exchanges x ON x.id=a.source WHERE a.topic=t.id "
+                        "AND a.status!='unchanged' ORDER BY x.sequence DESC LIMIT 1) AS status "
+                        "FROM memory_topics t JOIN exchanges e ON e.id=t.source "
+                        "WHERE t.owner=? AND e.conversation=? LIMIT 32",
+                        (owner, row["conversation"]),
+                    )
+                    if any(
+                        t["status"] in {"closed", "deferred"}
+                        and terms(t["label"]) & terms(row["text"])
+                        for t in closed
+                    ):
+                        continue
                 evidence = [
                     dict(r)
                     for r in db.execute(

@@ -102,6 +102,7 @@ class Candidate:
     score: int
     semantic_similarity: float = 0.0
     semantic_only: bool = False
+    hierarchy_activity: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -301,10 +302,15 @@ class RecallResolver:
                     score,
                     max((item.get("semantic_similarity", 0.0) for item in items), default=0.0),
                     all(item.get("semantic_only", False) for item in items),
+                    max((item.get("hierarchy_activity", 0.0) for item in items), default=0.0),
                 )
             )
         result.sort(
-            key=lambda item: (item.score + 2 * item.semantic_similarity, item.day), reverse=True
+            key=lambda item: (
+                item.score + 2 * item.semantic_similarity + item.hierarchy_activity,
+                item.day,
+            ),
+            reverse=True,
         )
         return result[:3]
 

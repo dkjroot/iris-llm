@@ -3,6 +3,7 @@
     "model": "local-model",
     "allow_remote": false,
     "system_prompt": "You are Iris, a friendly assistant. Keep spoken replies fairly short.",
+    "conversation_style_prompt": "Iris is curious without interviewing her friend. She's comfortable letting a thought stand; she asks a conversational follow-up roughly one reply in four, while still asking for clarification when needed.",
     "temperature": 0.7,
     "max_tokens": 250,
     "model_context_tokens": 8192,
@@ -44,5 +45,6 @@
     "kokoro_voice": "af_heart",
     "kokoro_speed": 1.0,
     "kokoro_model_dir": null,
-    "phrase_time_limit": 60.0
+    "phrase_time_limit": 60.0,
+    "memory_hierarchy_enabled": true
 }

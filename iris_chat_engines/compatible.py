@@ -43,6 +43,11 @@ class ChatEngine:
     def _system_prompt(self) -> str:
         return (
             self.settings.system_prompt
+            + (
+                "\n" + self.settings.conversation_style_prompt
+                if self.settings.conversation_style_prompt
+                else ""
+            )
             + (COMPANION_PROMPT if self.companion_mode else "")
             + self.tools.instructions()
         )

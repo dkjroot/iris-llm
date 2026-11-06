@@ -49,9 +49,12 @@ ENVIRONMENT_SETTINGS = {
 
 ADVANCED_HELP = {
     "system_prompt": "Iris's instructions and personality",
+    "conversation_style_prompt": 'Character\'s conversation style; enter "" to remove the nudge',
     "temperature": "Reply randomness, from 0 to 2",
     "max_tokens": "Maximum tokens in a reply",
     "context_margin_tokens": "Context space reserved for the host's formatting",
+    "memory_hierarchy_enabled": "Interpret facts, corrections and topic attention "
+    "with a bounded metadata model pass",
     "memory_summary_tokens": "Maximum tokens in a memory summary",
     "memory_summary_interval": "Unsummarised exchanges before a checkpoint",
     "memory_summary_chars": "Maximum summary characters in chat context",

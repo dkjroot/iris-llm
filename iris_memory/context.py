@@ -11,6 +11,7 @@ from typing import Any
 from iris_chat_engines.backends import ChatBackend
 from iris_chat_engines.budget import estimate, input_budget
 from iris_chat_engines.messages import ChatError, Message
+from iris_memory.hierarchy import Hierarchy
 from iris_memory.index import MemoryIndex
 from iris_memory.models import Summary
 from iris_settings import Settings
@@ -52,6 +53,12 @@ class MemoryContext:
         self.index = index
         self.backend = backend
         self.source_conversations: set[str] = set()
+        self.hierarchy = (
+            Hierarchy(index.archive, settings, backend)
+            if settings.memory_hierarchy_enabled
+            else None
+        )
+        index.hierarchy = self.hierarchy
 
     def checkpoint(self, owner: str, conversation: str, *, force: bool = False) -> bool:
         """Do at most one bounded job, serially. No model calls hold a DB transaction."""
@@ -184,6 +191,8 @@ class MemoryContext:
         system: str,
         tools: list[dict[str, object]],
         recalled: tuple[dict[str, Any], ...] | None = None,
+        core_context: str = "",
+        search_query: str | None = None,
     ) -> str:
         self.source_conversations = set()
         if not self.settings.history_turns:
@@ -214,6 +223,8 @@ class MemoryContext:
         # Explicit recall is grounded in the chosen discussion. Today's summary
         # can refer to a different topic or a later version of the same story.
         notes = self.index.notes(owner, conversation) if recalled is None else []
+        if self.hierarchy is not None:
+            notes = self.hierarchy.select_notes(owner, search_query or utterance, notes)
         compact: list[dict[str, Any]] = []
         for note in notes:
             item = {
@@ -227,11 +238,15 @@ class MemoryContext:
                 break
             compact.append(item)
         recent = " ".join(m.content or "" for m in history if m.role == "user")[-1500:]
+        from iris_memory.hierarchy import attention_text
+
+        if attention_text(utterance) != utterance:
+            recent = ""
         try:
             matches = (
                 list(recalled)
                 if recalled is not None
-                else self.index.search(owner, conversation, utterance, recent)
+                else self.index.search(owner, conversation, search_query or utterance, recent)
             )
         except sqlite3.Error as error:
             LOGGER.warning("Memory search unavailable (%s).", type(error).__name__)
@@ -245,7 +260,7 @@ class MemoryContext:
             ):
                 break
             excerpts.append(item)
-        if not compact and not excerpts:
+        if not compact and not excerpts and not core_context:
             return ""
         starts = [i for i, m in enumerate(history) if m.role == "user"]
         tail = history[starts[-min(2, len(starts))] :] if starts and recalled is None else []
@@ -261,10 +276,14 @@ class MemoryContext:
                 input_budget(self.settings) - estimate(baseline, tools) - 256,
             ),
         )
-        while compact or excerpts:
-            memory = REFERENCE_RULES + json.dumps(
-                {"active_conversation_notes": compact, "source_excerpts": excerpts},
-                ensure_ascii=False,
+        while compact or excerpts or core_context:
+            memory = (
+                REFERENCE_RULES
+                + core_context
+                + json.dumps(
+                    {"active_conversation_notes": compact, "source_excerpts": excerpts},
+                    ensure_ascii=False,
+                )
             )
             if len(memory.encode("utf-8")) <= allowance:
                 self.source_conversations = {e["conversation"] for e in excerpts}
@@ -273,6 +292,8 @@ class MemoryContext:
                 return memory
             if excerpts:
                 excerpts.pop()
-            else:
+            elif compact:
                 compact.pop()
+            else:
+                core_context = ""
         return ""

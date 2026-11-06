@@ -83,16 +83,48 @@ class Details:
     def __init__(self, archive: SQLiteMemory) -> None:
         self.archive = archive
 
-    def items(self, owner: str, label: str | None = None) -> list[dict[str, Any]]:
+    def items(
+        self,
+        owner: str,
+        label: str | None = None,
+        *,
+        limit: int | None = None,
+        core_first: bool = False,
+    ) -> list[dict[str, Any]]:
         with self.archive.connect() as db:
-            return [
+            rows = [
                 dict(r)
                 for r in db.execute(
-                    "SELECT label,text,updated_at FROM memory_details WHERE owner=? "
-                    "AND (? IS NULL OR label=?) ORDER BY updated_at DESC LIMIT 33",
-                    (owner, label, label),
+                    "SELECT label,text,updated_at,available FROM "
+                    + self._current_view(db)
+                    + " WHERE owner=? "
+                    "AND (? IS NULL OR label=?) ORDER BY "
+                    "(? AND label IN ('name','my name','preferred name',"
+                    "'my preferred name')) DESC, "
+                    "updated_at DESC,label LIMIT ?",
+                    (owner, label, label, core_first, limit if limit is not None else -1),
                 )
             ]
+            return rows
+
+    @staticmethod
+    def _current_view(db: sqlite3.Connection) -> str:
+        if db.execute("PRAGMA user_version").fetchone()[0] < 6:
+            return "(SELECT *,1 AS available FROM memory_details)"
+        # A derived correction changes the current view, not the original curated
+        # record. Resolve before ranking/limiting so old corrected labels stay findable.
+        return (
+            "(SELECT d.owner,d.label,CASE WHEN f.id IS NOT NULL THEN f.value "
+            "WHEN NOT EXISTS(SELECT 1 FROM detail_supersessions s WHERE s.owner=d.owner "
+            "AND s.label=d.label) THEN d.text ELSE "
+            "'No current value; its correction was forgotten.' "
+            "END AS text,(f.id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM detail_supersessions s "
+            "WHERE s.owner=d.owner AND s.label=d.label)) AS available, "
+            "COALESCE(e.created_at,d.updated_at) AS updated_at FROM memory_details d "
+            "LEFT JOIN memory_facts f ON f.id=(SELECT id FROM memory_facts "
+            "WHERE owner=d.owner AND detail_label=d.label AND status IN ('confirmed','closed') "
+            "ORDER BY rowid DESC LIMIT 1) LEFT JOIN exchanges e ON e.id=f.source)"
+        )
 
     @staticmethod
     def uses(db: sqlite3.Connection, owner: str, label: str) -> tuple[tuple[str, str | None], ...]:
@@ -133,14 +165,6 @@ class Details:
                 command.action != "remember" and not exists
             ):
                 raise MemoryPolicyError("The remembered detail changed; request the change again")
-            if (
-                command.action == "remember"
-                and db.execute(
-                    "SELECT count(*) FROM memory_details WHERE owner=?", (owner,)
-                ).fetchone()[0]
-                >= 32
-            ):
-                raise ValueError("There is room for 32 explicit details; remove one first")
             # Whole conversations are the deletion unit: no partial source/summary can
             # later reintroduce an old value, including answers that quoted it.
             for conversation, _ in pending.conversations:
@@ -158,17 +182,35 @@ class Details:
                     "DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at",
                     (owner, command.label, command.text, datetime.now(UTC).isoformat()),
                 )
+            if db.execute("PRAGMA user_version").fetchone()[0] >= 6:
+                db.execute(
+                    "DELETE FROM detail_supersessions WHERE owner=? AND label=?",
+                    (owner, command.label),
+                )
             self.archive._bump_policy(db, owner)
 
-    def context(self, owner: str, query: str, *, limit: int = 1200) -> tuple[str, tuple[str, ...]]:
-        # At most 32 intentionally saved details, never an inferred user profile.
-        rows = self.items(owner)
-        words = set(re.findall(r"\w{3,}", query.casefold()))
-        rows.sort(
-            key=lambda r: -len(words & set(re.findall(r"\w{3,}", r["label"] + " " + r["text"])))
-        )
+    def context(
+        self, owner: str, query: str, *, limit: int = 1200, excluded: tuple[str, ...] = ()
+    ) -> tuple[str, tuple[str, ...]]:
+        # Retention is unlimited; inference reads only a bounded candidate set.
+        # Rank in SQLite so an older relevant detail remains discoverable without
+        # loading every saved value into Python or the model prompt.
+        words = list(dict.fromkeys(re.findall(r"\w{3,40}", query.casefold())))[:16]
+        score = " + ".join("(instr(lower(label || ' ' || text), ?) > 0)" for _ in words) or "0.0"
+        with self.archive.connect() as db:
+            rows = db.execute(
+                "SELECT label,text,updated_at,available FROM "
+                + self._current_view(db)
+                + " WHERE owner=? "
+                "ORDER BY (label IN ('name','my name','preferred name','my preferred name')) DESC, "
+                "(" + score + ") DESC,updated_at DESC,label LIMIT 96",
+                (owner, *words),
+            ).fetchall()
+            resolved = [dict(row) for row in rows]
         selected: list[dict[str, Any]] = []
-        for row in rows:
+        for row in resolved:
+            if row["label"] in excluded or not row["available"]:
+                continue
             candidate = [*selected, row]
             if len(json.dumps(candidate, ensure_ascii=False).encode()) <= limit:
                 selected = candidate

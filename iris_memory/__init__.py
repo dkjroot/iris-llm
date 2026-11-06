@@ -11,7 +11,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from iris_memory.hierarchy import Prepared
 from uuid import uuid4
 
 from iris_memory.controls import MemoryPolicyError
@@ -109,6 +112,12 @@ class SQLiteMemory:
                 for statement in DETAILS_SCHEMA:
                     db.execute(statement)
                 version = 5
+            if version == 5 and create:
+                from iris_memory.hierarchy import SCHEMA as HIERARCHY_SCHEMA
+
+                for statement in HIERARCHY_SCHEMA:
+                    db.execute(statement)
+                version = 6
             if version >= 2 and create:
                 try:
                     db.execute("SELECT rowid FROM chunks_fts LIMIT 0")
@@ -117,7 +126,7 @@ class SQLiteMemory:
                         "Conversation memory needs a working SQLite FTS5 index. "
                         "Check your Python installation and archive."
                     ) from error
-            if version not in {1, 2, 3, 4, 5}:
+            if version not in {1, 2, 3, 4, 5, 6}:
                 raise ValueError("Unsupported Iris memory schema version")
 
     @contextmanager
@@ -211,6 +220,7 @@ class SQLiteMemory:
         detail_labels: tuple[str, ...] = (),
         source_conversations: tuple[str, ...] = (),
         followup_conversation: str | None = None,
+        hierarchy: Prepared | None = None,
     ) -> None:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -239,6 +249,13 @@ class SQLiteMemory:
                 "assistant_text, tool_names) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (exchange.id, datetime.now(UTC).isoformat(), *values),
             )
+            if hierarchy is not None:
+                from iris_memory.hierarchy import Hierarchy
+
+                Hierarchy.commit(db, owner, exchange.id, hierarchy)
+                source_conversations = tuple(
+                    dict.fromkeys((*source_conversations, *hierarchy.source_conversations))
+                )
             if db.execute("PRAGMA user_version").fetchone()[0] >= 5:
                 for label in detail_labels:
                     db.execute(
@@ -368,6 +385,27 @@ class SQLiteMemory:
                     for row in db.execute(
                         "SELECT conversation,blocked,offered_at FROM companion_topics "
                         "WHERE owner=?",
+                        (owner,),
+                    )
+                ]
+            if version >= 6:
+                for table in ("memory_facts", "memory_topics"):
+                    derived[table] = [
+                        dict(row)
+                        for row in db.execute(f"SELECT * FROM {table} WHERE owner=?", (owner,))
+                    ]
+                derived["detail_supersessions"] = [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT label FROM detail_supersessions WHERE owner=?", (owner,)
+                    )
+                ]
+                derived["memory_attention"] = [
+                    dict(row)
+                    for row in db.execute(
+                        "SELECT a.*,e.created_at AS source_date FROM memory_attention a "
+                        "JOIN memory_topics t ON t.id=a.topic JOIN exchanges e ON e.id=a.source "
+                        "WHERE t.owner=?",
                         (owner,),
                     )
                 ]

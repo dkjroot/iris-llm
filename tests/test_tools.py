@@ -95,7 +95,7 @@ def test_ordinary_conversation_finishes_without_tools_and_disabling_restores_pla
         return httpx.Response(200, json=response("Tell me more."))
 
     with httpx.Client(transport=httpx.MockTransport(handle)) as client:
-        chat = ChatEngine(Settings(tools_enabled=enabled), client)
+        chat = ChatEngine(Settings(tools_enabled=enabled, conversation_style_prompt=""), client)
         assert chat.get_response("I've had a lovely day") == "Tell me more."
     assert len(requests) == 1
     assert ("tools" in requests[0]) is enabled

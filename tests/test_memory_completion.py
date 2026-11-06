@@ -212,15 +212,24 @@ def test_private_details_no_reads_writes_or_memory_tool(setup):
     assert len(brain.details.items("default")) == 1
 
 
-def test_detail_limit_and_exact_labels(setup):
-    brain, _, _ = setup
-    for number in range(32):
+def test_detail_retention_exceeds_old_cap_while_prompt_and_listing_stay_bounded(setup):
+    brain, client, _ = setup
+    remember(brain, "sapphire captain", "fictional Violet")
+    for number in range(110):
         remember(brain, f"label {number}", f"value {number}")
-    assert "32" in turn(brain, "remember overflow as no").text
     assert "exact detail label" in turn(brain, "correct label to no").text
-    assert len(brain.details.items("default")) == 32
-    context, labels = brain.details.context("default", "value 31", limit=400)
-    assert len(context) < 800 and len(labels) < 32
+    assert len(brain.details.items("default")) == 111
+    context, labels = brain.details.context("default", "sapphire captain", limit=400)
+    assert "fictional Violet" in context  # Older than the most recent 96 candidates.
+    assert "sapphire captain" in labels
+    assert len(context) < 800 and len(labels) < 8
+    assert len(brain.details.items("default", limit=9)) == 9
+    assert "There are more" in turn(brain, "list remembered details").text
+    assert "fictional Violet" in turn(brain, "show the detail sapphire captain").text
+    restarted = Brain(brain.settings, client, brain.stt, brain.tts)
+    assert len(restarted.details.items("default")) == 111
+    assert len(restarted.memory.export("default")["remembered_details"]) == 111
+    assert not restarted.details.items("other")
 
 
 def test_readonly_tool_has_bound_owner_dates_sources_and_call_limit(setup):
@@ -415,7 +424,16 @@ def test_schema_four_upgrade_preserves_archive_and_policy(tmp_path):
     add(archive, conversation)
     archive.set_private("default", True)
     with archive.connect() as db:
-        for table in ("conversation_uses", "detail_uses", "memory_details", "companion_topics"):
+        for table in (
+            "detail_supersessions",
+            "memory_attention",
+            "memory_topics",
+            "memory_facts",
+            "conversation_uses",
+            "detail_uses",
+            "memory_details",
+            "companion_topics",
+        ):
             db.execute(f"DROP TABLE {table}")
         db.execute("PRAGMA user_version=4")
     upgraded = SQLiteMemory(path)
@@ -571,3 +589,35 @@ def test_repeated_companion_optout_does_not_target_an_older_topic(setup):
     with brain.memory.connect() as db:
         blocked = dict(db.execute("SELECT conversation,blocked FROM companion_topics"))
     assert blocked == {older: 0, newer: 1}
+
+
+def test_detail_context_without_search_terms_keeps_recent_values(setup):
+    brain, _, _ = setup
+    remember(brain)
+    for query in ("", "hi", "?!"):
+        context, labels = brain.details.context("default", query)
+        assert "Violet" in context and labels == ("story captain",)
+
+
+def test_full_source_archive_survives_context_limits_summaries_rebuild_and_restart(setup):
+    brain, _, _ = setup
+    archive = brain.memory
+    conversation = archive.active_conversation("default")
+    original = "Start of the old story. " + "Original source detail. " * 300 + "The ending: café."
+    first = add(archive, conversation, original)
+    with archive.connect() as db:
+        db.execute(
+            "UPDATE exchanges SET created_at='2000-01-01T00:00:00+00:00' WHERE id=?", (first.id,)
+        )
+    for number in range(130):
+        add(archive, conversation, f"Later discussion {number}")
+    before = archive.export("default")["exchanges"]
+    assert len(before) == 131 and before[0]["user_text"] == original
+    assert len(archive.recent("default", conversation, 2, 200)) < len(before)
+    assert brain.memory_context.checkpoint("default", conversation, force=True)
+    assert archive.export("default")["exchanges"] == before
+    brain.memory_context.index.rebuild("default")
+    assert archive.export("default")["exchanges"] == before
+    restarted = SQLiteMemory(archive.path)
+    assert restarted.export("default")["exchanges"] == before
+    assert restarted.export("other")["exchanges"] == []

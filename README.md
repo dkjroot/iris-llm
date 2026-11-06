@@ -60,6 +60,9 @@ things on the list are:
 - Control automatic roller blinds.
 - Monitor temperature and humidity around the house.
 
+I'd like a choice of personalities too, so I can try different characters and
+conversation styles without rewriting Iris's prompt each time.
+
 I'd also like her to help with things that need regular attention, especially in
 the kitchen. If I put something on the hob or in the oven, I want to be able to
 say, “Iris, don't let me leave this unattended for more than 40 minutes.” She'd
@@ -188,6 +191,12 @@ If you don't know the model name yet, the
 check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
+
+The advanced `conversation_style_prompt` describes Iris as curious without
+interviewing her friend: she can let a thought stand, with a conversational
+follow-up roughly one reply in four. This is a light character nudge, not an
+enforced quota; she can still ask for clarification. You can edit it in advanced
+configuration, or enter `""` to remove it. Restart the server after changing it.
 
 These are the normal choices for a local setup:
 
@@ -1237,9 +1246,10 @@ read back the proposed change and wait for **“confirm memory change”**. Imme
 after showing or saving one detail, **“forget that detail”** and **“correct that detail
 to …”** can use the selected label. An ordinary chat turn clears that selection.
 
-There is room for 32 explicit details, with labels up to 80 characters and values
-up to 500. Iris fits a bounded selection into her context; this isn't an unlimited
-profile or a promise that every reply will mention every saved detail. Include
+There is no fixed limit on how many explicit details you can save. Each labelled
+entry can have a label up to 80 characters and a value up to 500. Iris searches a
+bounded selection and fits only a small amount into her context; saving more doesn't
+mean every reply will include every detail. Include
 “fictional” in the value when it describes a character rather than you. Private
 mode can't read or change these details. No client options are needed.
 
@@ -1255,6 +1265,66 @@ their own copies.
 
 Use these controls when you want a durable change. An ordinary model reply saying
 “I'll remember” or “I've forgotten” cannot make that change on its own.
+
+#### Which memories come to mind
+
+With conversation memory enabled, `memory_hierarchy_enabled` defaults to `true`.
+Iris makes a small, separate metadata request before an ordinary chat reply, using
+the configured model. It looks for clear human assertions, corrections and the
+topics you're actually engaging with. The reply model receives compact reference
+data, rather than a set of rules about scoring memories.
+
+Confirmed lasting identity facts, such as your name, get priority in a small part
+of the context, along with high-importance lasting preferences. Ongoing projects
+and dated events are selected for relevance. An old bus journey stays in the archive
+but doesn't occupy that core space simply because it was once discussed. Explicitly
+saved name labels are also prioritised. This isn't unlimited context: candidate
+searches and the final prompt remain bounded, even as the archive grows.
+
+A natural correction such as “Actually, my name is David, not Dave” can supersede
+the old interpretation immediately. The original exchanges and the older fact
+version remain available for historical questions; they aren't rewritten or deleted.
+If it clearly corrects a labelled detail, its current displayed value follows the
+correction too. This is different from the explicit **“correct LABEL to VALUE”**
+control above, which still reads back and confirms its broader deletion scope.
+An uncertain or unresolved correction leaves the confirmed value alone. Nothing
+about a model's own reply or a search result can correct a fact by itself.
+
+Topic recency follows your attention. Returning to a story or developing it further
+refreshes its activity. Iris merely mentioning it, offering an unanswered opener,
+or retrieving it doesn't. “I finished that story ages ago, let's talk about The
+Terminator” closes the known story without refreshing its engagement, then directs
+attention towards the film. Discussing a completed project doesn't automatically
+make it unfinished again. Original source timestamps stay separate from the last
+engagement timestamp; “ages ago” doesn't acquire an invented completion date.
+
+The interpretation is model-assisted and can make mistakes, including mistaking
+fiction or a bad transcription for a real assertion. Source checks, uncertainty
+labels and correction controls help, but don't make extraction infallible. Existing
+archives remain searchable; startup doesn't reprocess your entire history. New
+annotations build up as you talk. Private turns, automatic openers and failed turns
+don't add these facts or engagement signals. Confirmed forgetting removes the
+associated derived records and recorded dependencies too.
+
+This adds one serial model request to ordinary human chat turns, so it can add
+noticeable latency on a slower host. It uses `memory_summary_tokens` as its output
+allowance. You can switch it off in advanced `python iris.py configure`, or set
+`memory_hierarchy_enabled` to `false` and restart. That stops new interpretation and
+hierarchy prompt selection without deleting the stored annotations or undoing
+accepted corrections to labelled details. Normal conversation memory and explicit detail controls still work. No client settings
+or additional model download are needed.
+
+To inspect the current bounded candidates, their source evidence, validity and
+last engagement, run on the server:
+
+```sh
+python iris.py memory inspect --query "Sapphire story"
+```
+
+The preview shows selected current facts; it isn't a transcript of the exact last
+model prompt. `memory export` includes all stored fact versions, topics and attention
+records alongside the original conversations. As with other maintenance commands,
+stop the server first when inspecting a consistent snapshot of its archive.
 
 #### Asking about an earlier discussion
 
@@ -1508,7 +1578,8 @@ python iris.py memory delete --all
 
 The export includes versioned summaries, current note statuses, embedding model
 identifiers/indexed-chunk counts, the owner's private-mode flag/change counter,
-explicit remembered details, their conversation-use links, companion exclusions
+explicit remembered details, versioned hierarchy facts and topic attention,
+their conversation-use links, companion exclusions
 and cooldowns, and pending summary jobs alongside the source exchanges. `retry` resets failed summary jobs after you've
 fixed the model or configuration. `rebuild` discards derived summaries and search
 chunks for this owner, rebuilds the keyword index and queues fresh summaries from
@@ -1524,13 +1595,20 @@ conversations, the CLI stops and explains the extra scope; review the export and
 conversation and explicit remembered detail for the configured owner, which is handy
 for clearing a test archive. It leaves the private-mode flag as it was.
 For a different configuration file, put `--config PATH` after `memory` and before
-`list`, `export`, `retry`, `rebuild` or `delete`. Inspection also works with memory
+`list`, `export`, `inspect`, `retry`, `rebuild` or `delete`. Inspection also works with memory
 disabled and never creates a missing archive. Deletion removes source exchanges
 and their summaries, notes, search chunks and queued jobs from the live database;
 independent exports and backups keep their own copies. Start the server again after
 maintenance so it can't retain deleted material in RAM.
 
-There is no automatic expiry. To back up the archive, stop the server and copy the
+The full conversation archive has no automatic expiry or maximum turn count.
+Context limits control how much Iris reads for a reply, not how much history she
+keeps. Summaries and search indexes help her find things; they don't replace or
+trim the original completed exchanges. That leaves the source history available
+for better retrieval and models in future. Private conversations still aren't
+saved, and confirmed forgetting still deletes its stated scope.
+
+To back up the archive, stop the server and copy the
 database file somewhere safe. Restore that copy to the configured path with the
 server stopped. Keep backups out of your source checkout, and delete test exports
 when you're finished with them.
