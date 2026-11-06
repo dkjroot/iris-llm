@@ -49,6 +49,32 @@ listening again. In wake mode, “hey iris” opens a conversation: after each r
 you can speak again without repeating her name. Say “stop listening”, or leave
 five minutes of silence, to return to waiting for the wake phrase.
 
+## Things I want Iris to do next
+
+Alongside building her a body, I want Iris to help look after the house. A few
+things on the list are:
+
+- Send push notifications to my mobile phone, so she can let me know about alerts,
+  alarms and the status of things around the house.
+- Monitor the front door lock, so I can ask her whether it's locked.
+- Control automatic roller blinds.
+- Monitor temperature and humidity around the house.
+
+I'd also like her to help with things that need regular attention, especially in
+the kitchen. If I put something on the hob or in the oven, I want to be able to
+say, “Iris, don't let me leave this unattended for more than 40 minutes.” She'd
+watch for me coming back to tend to it, and start that interval again when I do.
+If she hasn't seen me tend to it within the time I've set, she'd alert me by
+voice, push notification, or whichever alerting features I've enabled. The idea
+could be useful for older people, but also for people like me who are easily
+distracted. Filling a bath is another situation where that extra nudge could help.
+
+Further down the line, I'd like to explore controlling things like the cooker
+and filling the bath automatically, taking the home automation side of Iris much
+further.
+
+These are goals for future work; she can't do them yet.
+
 ## Choose where each half runs
 
 Follow [How to set up the server](#how-to-set-up-the-server) on the PC that handles the models, then [How to set up the client](#how-to-set-up-the-client) on the laptop or Pi with the microphone and speaker. Each guide includes its own installation, connection key and startup steps.
@@ -183,8 +209,9 @@ speech to another machine or an online service. It doesn't need to be enabled
 for a laptop or Pi to connect to Iris. With a local model, Whisper and Kokoro,
 leave it off.
 
-Online weather has its own `weather_enabled` switch, described below. You can
-enable it while keeping your chat model and speech processing local.
+Online weather and phone notifications have their own `weather_enabled` and
+`notifications_enabled` switches, described below. You can enable either while
+keeping your chat model and speech processing local.
 
 Configuration goes into `local-config.json`, which stays out of Git. The full
 server defaults are in `config_template.json`; environment values named
@@ -193,7 +220,7 @@ configuration files have their desktop-only fields removed when loaded, and
 old system/Google voice choices are switched to Kokoro. Run configuration again
 to save the cleaned-up file.
 
-#### Optional skills: the clock and local weather
+#### Optional skills: the clock, local weather and phone notifications
 
 Iris can let the model choose when to use a skill during a conversation. There
 are no special phrases to memorise: try “What day is it?”, “Will I need a coat
@@ -234,6 +261,81 @@ is reused for that conversation; each weather call fetches a fresh forecast.
 The weather result is then sent to your configured chat model so Iris can put it
 into words. If the service fails, the model receives an error and is told to say
 it couldn't check, rather than make up a forecast.
+
+##### Push notifications with Pushover
+
+Iris can send a push notification to your iPhone when you ask her to. For example,
+try “Send a notification to my phone saying the washing is ready”. This uses
+[Pushover](https://pushover.net/), which currently advertises a one-time US$4.99
+purchase for iPhone/iPad, a 30-day trial and no subscription for individual use.
+The included allowance is 10,000 messages a month across your Pushover account.
+Check [Pushover's pricing](https://pushover.net/pricing) for the current details
+and the price shown in your local App Store.
+
+You can test the sender from a MacBook without running the Iris server, speech
+models or a client at home:
+
+1. Install the Pushover app on your iPhone, sign in and allow notifications.
+2. Sign in to [Pushover's dashboard](https://pushover.net/). Copy your user key,
+   then create an application/API token called Iris. These are two different keys.
+3. From your Iris checkout, with its Python environment active, run:
+
+   ```sh
+   python -m iris_tools.notify
+   ```
+
+The command asks for both keys with hidden input and sends one test notification.
+It doesn't save them or change your Iris configuration. If you haven't installed
+Iris in that environment yet, run `python -m pip install -e .` first. Neither the
+phone nor the MacBook needs to be on your home network; both need internet access.
+You can choose the text or target a registered device by name:
+
+```sh
+python -m iris_tools.notify --device iphone --message "Hello from the MacBook"
+```
+
+Use the device name shown in Pushover, which may differ from your iPhone's usual
+name. Leaving it out sends to all your registered Pushover devices, unless you've
+set `IRIS_PUSHOVER_DEVICE`. A result of `accepted` means Pushover queued the message;
+check the iPhone to confirm it appeared. The command exits with an error if it
+can't confirm acceptance. It doesn't retry automatically, because a connection
+failure can happen after the message has already been accepted.
+
+When you're ready to use it through Iris, run `python iris.py configure` on the
+server and enable Pushover notifications. Set `IRIS_PUSHOVER_API_TOKEN` and
+`IRIS_PUSHOVER_USER_KEY` in the environment of the process that starts Iris, then
+restart the server. The standalone test command also accepts these environment
+variables instead of prompting. Keep the keys out of chat and source files.
+They are excluded from the JSON that the configuration wizard saves.
+
+These are the relevant non-secret settings to merge into `local-config.json`:
+
+```json
+{
+    "tools_enabled": true,
+    "notifications_enabled": true,
+    "pushover_device": "iphone"
+}
+```
+
+Use an empty `pushover_device` to send to all devices. Notifications start off,
+and the `send_notification` skill is available only when both switches are on.
+The model chooses the message and optional title; your server configuration fixes
+the recipient. Messages use normal priority and respect Pushover quiet hours.
+Pushover receives the notification text, title and recipient details. The API
+keys aren't included in model prompts or tool results. As with any model-chosen
+skill, the wording and decision to call it depend on your model following Iris's
+instructions to send only when asked.
+
+The reusable sender lives in `iris_tools.notifications`: construct a
+`NotificationSender(settings, client)` and call `send(NotificationArguments(...))`.
+It also works without model tools enabled, so a future sensor rule can call it
+directly. Each sender serialises requests and allows at most one attempt every
+five seconds, including failed attempts. That cooldown is in memory and resets
+when the sender is recreated; it isn't a persistent alert deduplication system.
+Sensor monitoring, conditions, delayed reminders and repeated-alert policies
+still need to be added before Iris can automatically warn about a door lock or
+a kitchen attention sensor. Sending a notification now doesn't set up a monitor.
 
 For **Gemma 4 with KoboldCPP**, use a recent KoboldCPP build with **Use Jinja**
 enabled (or add `--jinja` to its launch command), and use a model chat template

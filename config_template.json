@@ -25,6 +25,8 @@
     "trace": false,
     "reply_encoding": "text",
     "tools_enabled": true,
+    "notifications_enabled": false,
+    "pushover_device": "",
     "chat_template_kwargs": {},
     "chat_request_options": {},
     "local_timezone": "Europe/London",

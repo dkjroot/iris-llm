@@ -123,3 +123,27 @@ def test_skill_settings_can_be_overridden_from_environment(monkeypatch):
     assert settings.local_timezone == "Asia/Tokyo"
     assert settings.weather_location == "Tokyo" and settings.weather_country == "JP"
     assert settings.weather_enabled and not settings.allow_remote
+
+
+def test_notification_credentials_are_private_and_environment_overrides_file(tmp_path, monkeypatch):
+    path = tmp_path / "config.json"
+    path.write_text('{"pushover_api_token":"file-token","pushover_user_key":"file-user"}')
+    monkeypatch.setenv("IRIS_PUSHOVER_API_TOKEN", "environment-token")
+    monkeypatch.setenv("IRIS_PUSHOVER_USER_KEY", "environment-user")
+    monkeypatch.setenv("IRIS_NOTIFICATIONS_ENABLED", "true")
+    monkeypatch.setenv("IRIS_PUSHOVER_DEVICE", "iphone")
+    settings = load_settings(path)
+    assert settings.pushover_api_token.get_secret_value() == "environment-token"
+    assert settings.pushover_user_key.get_secret_value() == "environment-user"
+    assert settings.notifications_enabled and not settings.allow_remote
+    assert settings.pushover_device == "iphone"
+    assert "pushover_api_token" not in settings.model_dump()
+    assert "pushover_user_key" not in settings.model_dump()
+    assert "environment-token" not in str(settings) + settings.model_dump_json()
+    assert "environment-user" not in str(settings) + settings.model_dump_json()
+
+
+@pytest.mark.parametrize("device", ["iphone,other", "x" * 26, "phone with spaces"])
+def test_pushover_device_must_be_a_single_registered_name(device):
+    with pytest.raises(ValidationError):
+        Settings(pushover_device=device)

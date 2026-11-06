@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     weather_enabled: bool = False
     weather_location: str = "Stroud"
     weather_country: str = "GB"
+    notifications_enabled: bool = False
+    pushover_api_token: SecretStr | None = Field(default=None, exclude=True)
+    pushover_user_key: SecretStr | None = Field(default=None, exclude=True)
+    pushover_device: str = Field(default="", max_length=25, pattern=r"^[A-Za-z0-9_-]*$")
 
     @field_validator("chat_request_options")
     @classmethod

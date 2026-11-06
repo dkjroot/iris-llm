@@ -29,6 +29,8 @@ BASIC_SETTINGS = frozenset(
         "weather_enabled",
         "weather_location",
         "weather_country",
+        "notifications_enabled",
+        "pushover_device",
         "memory_enabled",
         "memory_database",
         "memory_owner",
@@ -38,7 +40,11 @@ BASIC_SETTINGS = frozenset(
     }
 )
 ENVIRONMENT_SETTINGS = {
-    "api_key": "Set IRIS_API_KEY in the server environment; it isn't saved here."
+    "api_key": "Set IRIS_API_KEY in the server environment; it isn't saved here.",
+    "pushover_api_token": "Set IRIS_PUSHOVER_API_TOKEN in the server environment; "
+    "it isn't saved here.",
+    "pushover_user_key": "Set IRIS_PUSHOVER_USER_KEY in the server environment; "
+    "it isn't saved here.",
 }
 
 ADVANCED_HELP = {
@@ -217,6 +223,25 @@ def main() -> int:
                     input(f"Weather country code [{previous.weather_country}]: ").strip()
                     or previous.weather_country
                 )
+        print("Pushover can send notification text to your phone through its online service.")
+        data["notifications_enabled"] = (
+            choose(
+                "Enable Pushover notifications",
+                ["yes", "no"],
+                "yes" if previous.notifications_enabled else "no",
+            )
+            == "yes"
+        )
+        if data["notifications_enabled"]:
+            data["pushover_device"] = (
+                input(
+                    "Pushover device name (blank means all devices; use - to reset) "
+                    f"[{previous.pushover_device}]: "
+                ).strip()
+                or previous.pushover_device
+            )
+            if data["pushover_device"] == "-":
+                data["pushover_device"] = ""
         print(
             "Iris can save conversation text locally on this PC and resume after restarts. "
             "Recordings are never saved. All clients for one owner share a conversation."

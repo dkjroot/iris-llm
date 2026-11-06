@@ -29,7 +29,7 @@ def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: 
     assert settings.tts_engine == "kokoro"
     assert not settings.allow_remote
     assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
-    assert len(prompts) == 12
+    assert len(prompts) == 13
     assert not any("Start listening" in prompt or "Feedback sounds" in prompt for prompt in prompts)
 
 
@@ -48,7 +48,8 @@ def test_kokoro_wizard_offers_named_voices_and_saves_selection(
     with (
         patch.object(configure, "ROOT", tmp_path),
         patch(
-            "builtins.input", side_effect=["", "", "", "", "bf_emma", "1.3", "", "", "", "", "", ""]
+            "builtins.input",
+            side_effect=["", "", "", "", "bf_emma", "1.3", "", "", "", "", "", "", ""],
         ),
     ):
         assert configure.main() == 0
@@ -112,6 +113,28 @@ def test_wizard_configures_optional_online_weather_without_enabling_remote_chat(
     assert settings.tools_enabled and settings.weather_enabled
     assert settings.weather_location == "Edinburgh" and settings.weather_country == "GB"
     assert settings.local_timezone == "Europe/London" and not settings.allow_remote
+
+
+def test_wizard_configures_notifications_without_saving_keys(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("IRIS_PUSHOVER_API_TOKEN", "private-app-token")
+    monkeypatch.setenv("IRIS_PUSHOVER_USER_KEY", "private-user-key")
+
+    def answer(prompt):
+        if prompt.startswith("Enable Pushover"):
+            return "yes"
+        if prompt.startswith("Pushover device"):
+            return "iphone"
+        return ""
+
+    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main() == 0
+    path = tmp_path / "local-config.json"
+    settings = load_settings(path)
+    assert settings.notifications_enabled and settings.pushover_device == "iphone"
+    assert not settings.allow_remote
+    assert "private-" not in path.read_text() + capsys.readouterr().out
+    assert "pushover_api_token" not in json.loads(path.read_text())
+    assert "pushover_user_key" not in json.loads(path.read_text())
 
 
 @pytest.mark.parametrize("enabled", [False, True])
