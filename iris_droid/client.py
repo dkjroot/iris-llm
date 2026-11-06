@@ -33,6 +33,7 @@ from iris_droid.protocol import (
     validate_token,
     write_wav,
 )
+from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
 from iris_droid.wake import WakeDetector
 
 if TYPE_CHECKING:
@@ -43,7 +44,13 @@ if TYPE_CHECKING:
 
 class DroidClient:
     def __init__(
-        self, url: str, token: str, client: httpx.Client, *, wake_conversation: bool = False
+        self,
+        url: str,
+        token: str,
+        client: httpx.Client,
+        *,
+        wake_conversation: bool = False,
+        volume_backend: VolumeBackend | None = None,
     ) -> None:
         parts = urlsplit(url)
         _ = parts.port
@@ -63,7 +70,9 @@ class DroidClient:
         self.private_mode = False
         self.url = url.rstrip("/")
         self.client = client
+        self.volume_backend = volume_backend
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
+        self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
             self.headers["X-Iris-Wake-Conversation"] = "1"
 
@@ -79,6 +88,30 @@ class DroidClient:
         if companion_idle:
             headers["X-Iris-Companion-Idle"] = "1"
         route = "text" if text_only else "voice"
+        reply = self._request(route, body, headers)
+        if reply.volume is not None:
+            if companion_idle or reply.volume != volume_command(reply.heard):
+                raise ValueError("Unexpected speaker volume action")
+            result = execute_volume(self.volume_backend, reply.volume)
+            # Report the actual read-back, never an assumed success. This second
+            # request only synthesizes a fixed acknowledgement; it cannot act.
+            heard = reply.heard
+            print(result.description(), flush=True)
+            reply = self._request(
+                "volume-result",
+                result.model_dump_json().encode(),
+                {
+                    **self.headers,
+                    "Content-Type": "application/json",
+                    "X-Iris-Text-Only": "1" if text_only else "0",
+                },
+            )
+            if reply.volume is not None:
+                raise ValueError("Unexpected action in volume acknowledgement")
+            reply.heard = heard
+        return reply
+
+    def _request(self, route: str, body: bytes, headers: dict[str, str]) -> TurnReply:
         with self.client.stream(
             "POST", f"{self.url}/v1/{route}", content=body, headers=headers
         ) as response:
@@ -297,6 +330,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list-microphones", action="store_true", help="List microphone indices")
     parser.add_argument("--text", action="store_true", help="Test transport without any audio")
     parser.add_argument(
+        "--volume-backend",
+        choices=["none", "alsa"],
+        default="none",
+        help="Client speaker mixer backend (default: disabled)",
+    )
+    parser.add_argument("--alsa-card", help="ALSA card number or ID; separate from --speaker")
+    parser.add_argument("--alsa-control", default="Master", help="ALSA playback mixer control")
+    parser.add_argument(
         "--no-sounds",
         action="store_true",
         help="Disable feedback cues and busy sound (spoken replies and recording echo still play)",
@@ -496,6 +537,9 @@ def main(argv: list[str] | None = None) -> int:
                     os.environ.get("IRIS_DROID_TOKEN", ""),
                     transport,
                     wake_conversation=args.activation == "wake" and not args.text,
+                    volume_backend=make_volume_backend(
+                        args.volume_backend, card=args.alsa_card, control=args.alsa_control
+                    ),
                 )
                 wake = None
                 if not args.text and args.activation == "wake":

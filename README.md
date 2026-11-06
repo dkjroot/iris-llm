@@ -560,6 +560,60 @@ python iris.py client --server http://192.168.1.10:8765 --microphone 2 --speaker
 
 Replace the address and both indices with yours. These numbers are examples, not defaults. `--speaker` selects the output for both the listening cue and Iris's spoken reply. Without these options, the libraries use their default input and output devices. Device choices are command-line options; they aren't saved by the server's configuration script. Include them each time you launch the client, including with continuous or wake activation.
 
+#### Control the speaker volume by voice
+
+On the Pi, you can say “set volume to 50 percent”, “volume up”, “volume down”,
+“what's the volume?”, “mute the speaker” or “unmute”. Up and down change the
+volume by ten percentage points. You can also say “turn the volume down by
+five percent”. Numbers work as words too, so “set volume to fifty percent”
+does the same thing.
+
+Enable this on the client with `--volume-backend alsa`. Install `alsa-utils`
+if `amixer` isn't already available (`sudo apt install alsa-utils` on Raspberry
+Pi OS). Choose the card and playback control that drive your speaker:
+
+```sh
+aplay -l
+amixer -c 3 scontrols
+amixer -M -c 3 sget 'PCM'
+python iris.py client --server http://192.168.1.10:8765 --speaker 7 --volume-backend alsa --alsa-card 3 --alsa-control 'PCM'
+```
+
+Those card, speaker and control values are examples: use yours. The mixer
+control might be called `Master`, `PCM`, `Speaker` or something else; use the
+name shown by `amixer`. Without overrides, Iris uses the default ALSA card and
+the `Master` control. `--alsa-card` also accepts an ALSA card ID. It is separate
+from the sounddevice index used by `--speaker`, so make sure they refer to the
+same output. Put these options in your client launcher if you run it as a
+service. They belong on the Pi, rather than in the PC's server configuration.
+
+The recording goes to the server for recognition as usual. Iris recognises
+these whole commands directly, sends an instruction back to the client and
+reads back the actual mixer level for spoken confirmation. The chat model
+isn't involved, and local wake detection works as before. Both server and
+client need to be updated. Volume control is disabled by default, so other
+platforms keep working without ALSA installed.
+
+This changes the same mixer you see in `alsamixer`, including other audio
+using that control. Iris uses `amixer -M` so its percentages follow
+[ALSA's mapped scale](https://github.com/alsa-project/alsa-utils/blob/master/amixer/amixer.1),
+as `alsamixer` does. Hardware can round the requested level. Setting a level
+leaves mute unchanged; say “unmute” separately if needed. Some devices have no
+mute switch, in which case Iris reports that it couldn't make that change.
+After muting or setting zero, you won't hear confirmation until you unmute
+or raise the volume, but wake detection and the microphone still work.
+
+If the mixer fails, Iris reports the failure rather than claiming success.
+Check the `amixer` command above as the same user who runs the client. If the
+connection fails after a change, the client prints the result it read locally
+and doesn't resend the change automatically. You can ask for the current
+volume once the connection is back.
+
+Other platforms can add a backend by implementing `VolumeBackend.execute`
+in `iris_droid/volume.py` and registering it in `make_volume_backend` and the
+client's `--volume-backend` choices. The command recognition, transport and
+spoken confirmation are shared across backends.
+
 #### Raspberry Pi: ALSA card 3, device 0
 
 If `arecord -l` and `aplay -l` show **card 3, device 0**, the ALSA hardware address is `hw:3,0`. That is a different kind of number from an Iris device index: don't automatically pass `--microphone 3 --speaker 3`. Iris currently accepts integer indices for these options, rather than ALSA addresses such as `hw:3,0` or `plughw:3,0`.

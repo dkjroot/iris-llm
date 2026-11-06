@@ -33,6 +33,7 @@ from iris_droid.protocol import (
     validate_token,
     write_wav,
 )
+from iris_droid.volume import VolumeResult, volume_command
 from iris_memory import AUTOMATIC_EVENT, Exchange, make_memory
 from iris_memory.companion import CompanionMemory
 from iris_memory.context import MemoryContext
@@ -513,6 +514,7 @@ class Brain:
         text_only: bool = False,
         wake_conversation: bool = False,
         companion_idle: bool = False,
+        volume_supported: bool = False,
     ) -> TurnReply:
         self._sync_policy()
         if companion_idle:
@@ -569,6 +571,17 @@ class Brain:
         existing = self.sessions.get(session)
         if existing is not None and not companion_idle:
             existing.pending_forget = None
+        volume = volume_command(heard) if not companion_idle else None
+        if volume is not None:
+            companion = existing is not None and existing.companion_mode
+            if volume_supported:
+                return TurnReply(heard=heard, text="", volume=volume, companion_mode=companion)
+            return self._reply(
+                heard,
+                "Please update the client to use speaker volume commands.",
+                text_only=text_only,
+                companion=companion,
+            )
         if is_clear_context(heard):
             if self.memory is not None and not self.private_mode:
                 self._checkpoint(self.memory.active_conversation(self.settings.memory_owner))
@@ -796,12 +809,18 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
             ):
                 self.respond(401, b'{"error":"Authentication required"}')
                 return
-            if self.path not in {"/v1/voice", "/v1/text"}:
+            if self.path not in {"/v1/voice", "/v1/text", "/v1/volume-result"}:
                 self.respond(404, b'{"error":"Unknown route"}')
                 return
             text_only = self.path == "/v1/text"
             companion_idle = self.headers.get("X-Iris-Companion-Idle") == "1"
-            expected = "text/plain" if text_only or companion_idle else "audio/wav"
+            expected = (
+                "application/json"
+                if self.path == "/v1/volume-result"
+                else "text/plain"
+                if text_only or companion_idle
+                else "audio/wav"
+            )
             if self.headers.get_content_type() != expected:
                 self.respond(415, b'{"error":"Unexpected content type"}')
                 return
@@ -814,13 +833,25 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
                 body = self.rfile.read(length)
                 if len(body) != length:
                     raise ValueError("Incomplete request")
-                reply = brain.turn(
-                    session,
-                    body,
-                    text_only=text_only,
-                    wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
-                    companion_idle=companion_idle,
-                )
+                if self.path == "/v1/volume-result":
+                    brain._sync_policy()
+                    result = VolumeResult.model_validate_json(body)
+                    chat = brain.sessions.get(session)
+                    reply = brain._reply(
+                        "",
+                        result.description(),
+                        text_only=self.headers.get("X-Iris-Text-Only") == "1",
+                        companion=chat is not None and chat.companion_mode,
+                    )
+                else:
+                    reply = brain.turn(
+                        session,
+                        body,
+                        text_only=text_only,
+                        wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
+                        companion_idle=companion_idle,
+                        volume_supported=self.headers.get("X-Iris-Volume") == "1",
+                    )
             except (ValueError, EOFError):
                 self.respond(400, b'{"error":"Invalid session, text or WAV recording"}')
                 return
@@ -849,7 +880,9 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
                 LOGGER.error("Droid turn failed (%s)", type(error).__name__)
                 self.respond(503, b'{"error":"Speech service failed; check the PC console"}')
                 return
-            self.respond(200, reply.model_dump_json().encode(), private=brain.private_mode)
+            self.respond(
+                200, reply.model_dump_json(exclude_none=True).encode(), private=brain.private_mode
+            )
 
     return Handler
 

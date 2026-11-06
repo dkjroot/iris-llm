@@ -8,6 +8,8 @@ import wave
 
 from pydantic import BaseModel, ConfigDict
 
+from iris_droid.volume import VolumeCommand
+
 MAX_BODY = 10_000_000
 
 
@@ -49,6 +51,7 @@ class TurnReply(BaseModel):
     audio: str = ""  # Base64-encoded mono PCM WAV, at the synthesizer's sample rate.
     finished: bool = False
     companion_mode: bool = False
+    volume: VolumeCommand | None = None
 
 
 def read_wav(data: bytes, *, input_audio: bool = False) -> tuple[bytes, int]:
