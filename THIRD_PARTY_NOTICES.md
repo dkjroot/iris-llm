@@ -14,6 +14,7 @@ Each library's authors retain their copyright and license.
 | Pydantic and pydantic-settings | [Pydantic contributors](https://github.com/pydantic/pydantic) and [settings contributors](https://github.com/pydantic/pydantic-settings) | MIT |
 | faster-whisper (optional) | [SYSTRAN and contributors](https://github.com/SYSTRAN/faster-whisper) | MIT; CTranslate2, PyAV and other dependencies retain their own notices |
 | kokoro-onnx (optional) | [thewh1teagle and contributors](https://github.com/thewh1teagle/kokoro-onnx) | MIT; model/voice assets have separate Apache-2.0 terms |
+| Tokenizers (optional semantic memory) | [Hugging Face and contributors](https://github.com/huggingface/tokenizers) | [Apache-2.0](https://github.com/huggingface/tokenizers/blob/main/LICENSE) |
 | ONNX Runtime (optional) | [Microsoft and contributors](https://github.com/microsoft/onnxruntime) | MIT, plus bundled third-party notices |
 | SpeechRecognition | [Anthony Zhang (Uberi) and contributors](https://pypi.org/project/SpeechRecognition/) | BSD-3-Clause for library code; bundled FLAC executables have separate GPLv2 terms and Sphinx data have their own notices |
 | PyAudio, when used for microphones | [Hubert Pham and contributors](https://people.csail.mit.edu/hubert/pyaudio/) | MIT; PortAudio retains its own MIT-style notice |
@@ -64,3 +65,14 @@ component details in its own README and `LICENSE-FLAC.txt`; keep those notices
 visible when packaging it. Merely linking to this inventory is not a substitute
 for carrying the required notices with a binary distribution. Review transitives
 and model terms for the exact release. See [LICENSING.md](LICENSING.md).
+
+Optional semantic conversation recall uses the separately prepared, quantised
+[Xenova ONNX export of all-MiniLM-L6-v2](https://huggingface.co/Xenova/all-MiniLM-L6-v2/tree/751bff37182d3f1213fa05d7196b954e230abad9),
+from the [Sentence Transformers all-MiniLM-L6-v2 model](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
+The export and original model cards declare Apache-2.0. The code pins revision
+`751bff37182d3f1213fa05d7196b954e230abad9` and verifies the model/tokenizer SHA-256
+checksums. No embedding weights are bundled in the source tree or wheel. Preserve
+the applicable model licence and upstream notices if redistributing those assets.
+The adapter uses Tokenizers and ONNX Runtime directly, with attention-mask mean
+pooling and L2 normalisation as described by the model authors; it does not need
+PyTorch or the Sentence Transformers Python package.

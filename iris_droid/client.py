@@ -60,6 +60,7 @@ class DroidClient:
                 "Use the Iris droid server's http(s) origin, e.g. http://192.168.1.10:8765"
             )
         validate_token(token)
+        self.private_mode = False
         self.url = url.rstrip("/")
         self.client = client
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
@@ -82,12 +83,16 @@ class DroidClient:
             "POST", f"{self.url}/v1/{route}", content=body, headers=headers
         ) as response:
             response.raise_for_status()
+            private = response.headers.get("X-Iris-Private")
             data = bytearray()
             for chunk in response.iter_bytes():
                 data.extend(chunk)
                 if len(data) > MAX_BODY:
                     raise ValueError("Server response exceeds the transport size limit")
-        return TurnReply.model_validate_json(bytes(data))
+        reply = TurnReply.model_validate_json(bytes(data))
+        if private in {"0", "1"}:
+            self.private_mode = private == "1"
+        return reply
 
 
 def play_wav(
@@ -373,6 +378,11 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_MICROPHONE_BUFFER,
         help="Capture buffer in frames (256–65536; default: 8192). Increase for input overflow.",
     )
+    parser.add_argument(
+        "--show-private-text",
+        action="store_true",
+        help="Display private conversation text in this terminal (may be logged)",
+    )
     parser.add_argument("--phrase-time-limit", type=float, default=60)
     parser.add_argument("--listen-timeout", type=float, default=10)
     parser.add_argument(
@@ -617,11 +627,15 @@ def main(argv: list[str] | None = None) -> int:
                             "Check the PC; turn not resent."
                         )
                         continue
-                    print(
-                        f"Iris: {reply.text}"
-                        if proactive
-                        else f"You: {reply.heard}\nIris: {reply.text}"
-                    )
+                    private = client.private_mode is True
+                    if private and not args.show_private_text:
+                        print("Private conversation: transcript hidden.")
+                    else:
+                        print(
+                            f"Iris: {reply.text}"
+                            if proactive
+                            else f"You: {reply.heard}\nIris: {reply.text}"
+                        )
                     if not reply.audio and (
                         is_clear_context(reply.heard)
                         or (conversation is not None and is_stop_listening(reply.heard))
@@ -635,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
                     if reply.audio and not args.text:
                         reply_audio = base64.b64decode(reply.audio, validate=True)
                         read_wav(reply_audio)
-                        if args.save_reply is not None:
+                        if args.save_reply is not None and not private:
                             args.save_reply.parent.mkdir(parents=True, exist_ok=True)
                             args.save_reply.write_bytes(reply_audio)
                             print(f"Saved unmodified reply audio to {args.save_reply}", flush=True)

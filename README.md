@@ -820,7 +820,7 @@ Five minutes without a new detected utterance also returns the client to wake wa
 
 Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to stop the client, or use Ctrl-C. With memory off, either gives you a fresh conversation on the next client run. With [conversation memory](#conversation-memory) enabled, the next run resumes the saved conversation.
 
-Say **“clear context”** as a complete utterance to start afresh without stopping the client. With memory off, the server discards this client's conversation history, keeping Iris's configured personality and instructions. With memory enabled, it starts a new shared conversation for your configured owner. The earlier conversation stays in the archive, but isn't included in the new context. It prints a confirmation without calling the chat model or generating a spoken reply. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
+Say **“clear context”** as a complete utterance to start afresh without stopping the client. With memory off, the server discards this client's conversation history, keeping Iris's configured personality and instructions. With memory enabled, it starts a new shared conversation for your configured owner. The earlier conversation stays in the archive, but isn't included in the new context. It returns a text confirmation without generating a chat reply or speech; a pending memory summary checkpoint may still run. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 
@@ -963,8 +963,9 @@ RAM session doesn't remove the archive. “Stop listening” and companion mode 
 keep the conversation available. A new client still starts with companion mode
 off. “Clear context” starts a new conversation for all your clients; it doesn't
 erase the old one. Just changing the subject continues the current conversation.
-There isn't a temporary private-conversation command yet. For a session that
-neither reads nor writes memory, turn `memory_enabled` off and restart the server.
+You can temporarily stop reading and saving conversation memory with the spoken
+private-mode controls below. Setting `memory_enabled` off and restarting the
+server still disables persistence altogether.
 
 On a restart, Iris loads recent complete exchanges, up to `history_turns` and
 `memory_context_chars` characters in total. She also has source-linked notes from
@@ -972,14 +973,286 @@ the active conversation and a few matching excerpts from the archive. An ordinar
 question triggers a local keyword search using your words and recent conversation;
 you don't have to ask for a memory tool. The excerpts include their original dates
 and exchange IDs. This is keyword matching, so a distinctive name or subject helps.
-Semantic matching and reliably resolving vague references such as “that thing the
-other day” are still to come.
+Source-linked summary notes can help find a discussion even when their wording
+differs from the original exchange. Optional semantic recall can also find
+paraphrases with few shared words; its setup is below.
 
 “Clear context” also blocks automatic recall of earlier conversations. Asking
 explicitly to remember or resume a subject can search them again. That gives us a
 fresh start without silently deleting the archive. `history_turns: 0` disables
 history, summaries and retrieved excerpts in the chat prompt while still archiving
 new exchanges if memory is enabled.
+
+#### Private conversations and forgetting
+
+Sometimes I want a chat without adding it to Iris's saved history. Say **“private
+mode on”** or **“start a private conversation”** as a complete utterance. Iris speaks
+a confirmation. Switching into private mode clears the working context on every
+client for your configured owner and starts with fresh RAM history. While private, she neither reads saved
+conversations nor saves the new exchanges, summaries or embeddings. She can still
+chat and use the enabled live skills.
+
+Say **“private mode off”** or **“end the private conversation”** to leave it. Iris
+discards private working history across those clients and resumes the saved
+conversation from before private mode. Private exchanges aren't copied back into
+it. **“Memory status”** tells you whether private mode and conversation saving are
+on. These controls work by voice or typed through the text client; capitalisation
+and surrounding punctuation don't matter.
+
+Private mode applies to all clients sharing the configured owner. With persistence
+enabled, the mode flag survives client and server restarts, `exit`, and eviction of
+a RAM session, until you turn it off. The database stores that flag and a change
+counter, without private conversation text. Private RAM history itself is bounded
+by the usual history/context limits and is lost on clear, restart or eviction.
+“Stop listening” and companion mode off keep the private flag on. “Clear context”
+while private discards that client's private RAM context and leaves saved records
+alone. If persistence is disabled in configuration, no database is created; the
+private diagnostic settings then last only for the running server process.
+
+Update both server and client code to use this feature. The server disables Iris's
+request/tool tracing during private chat. An updated client receives the private
+state on each successful response, hides the transcript from normal terminal and
+service-log output, and skips `--save-reply` files while private. The reply still
+plays aloud. Older clients can connect, but don't know to hide private transcripts.
+No new client configuration is needed for the default behaviour.
+
+For an interactive text conversation where you deliberately want private replies
+visible, launch the client with `--text --show-private-text`. That opts into terminal
+output, which your terminal or service may retain; it still doesn't enable reply
+WAV saving. Typed text can also remain visible in your terminal's input display.
+Private mode controls Iris's own memory and these diagnostics. The configured chat
+and speech services still receive the live requests, so their own logging settings
+matter too. Existing terminal logs, exports, recordings made outside Iris and
+backups aren't erased by entering private mode.
+
+To delete the **current saved conversation**, say **“forget this conversation”**.
+Iris tells you how many exchanges it contains, then waits for **“confirm forget
+this conversation”**. Say **“cancel forgetting”** to cancel. A bare yes doesn't
+delete anything. The request expires after two minutes and is cancelled by another
+recognised utterance, a context/mode change or restart. If another client adds an
+exchange before you confirm, ask again so you can confirm the updated scope.
+
+Confirmed deletion removes that conversation's source exchanges, summaries, notes,
+search chunks, embeddings and queued summary work, then starts a fresh saved
+conversation if the active one was removed. It also clears cached context and recall
+choices across your clients, so old RAM state can't silently save it again. When a
+later conversation used a retrieved source, Iris records that connection. Forgetting
+the source also removes those dependent conversations, including their other topics;
+the confirmation tells you how many before you agree. Independent conversations stay
+in the archive. These links start with this version: older, untracked paraphrases
+aren't automatically found and erased. Explicitly remembered details are separate
+and stay until you forget them. Independent backups, exports and old terminal/service logs keep their
+own copies. “Clear context” continues to start afresh while retaining the archive;
+it doesn't mean forgetting.
+
+If you've just recalled an older discussion, Iris distinguishes it from the
+current saved conversation before accepting a deletion request. **“Forget the
+current conversation”** makes that scope explicit and still needs the confirmation.
+After selecting an older discussion, **“forget that conversation”** or **“forget the
+recalled conversation”** targets its saved conversation instead. Iris identifies that
+scope and asks for the same confirmation. The deletion unit is the whole saved
+conversation, even if your recall referred to only one day's topic. You can also use
+`memory list` and `memory delete --conversation ID` on the server. **“Forget this conversation” while private**
+just discards the current client's private RAM conversation; it cannot delete the
+saved conversation from before private mode.
+
+#### Remembering and changing a detail
+
+For something I deliberately want Iris to keep, I can give it a short label. These
+are explicit, human-authored details, separate from the summaries she makes herself.
+For example, say **“remember story captain as fictional Captain Violet”**, then
+**“confirm memory change”** after she reads it back. That confirmation is useful
+when speech recognition has misheard a name. **“Cancel memory change”** cancels it;
+a bare yes doesn't confirm. Requests expire after two minutes, and another utterance,
+context change or restart cancels the pending change.
+
+**“List remembered details”** reads up to eight at a time. **“Show the detail about
+story captain”** reads that label's current value. Labels match exactly, ignoring
+capitalisation. Say **“correct story captain to fictional Captain Emerald”** to
+replace its value, or **“forget the detail about story captain”** to remove it. Both
+read back the proposed change and wait for **“confirm memory change”**. Immediately
+after showing or saving one detail, **“forget that detail”** and **“correct that detail
+to …”** can use the selected label. An ordinary chat turn clears that selection.
+
+There is room for 32 explicit details, with labels up to 80 characters and values
+up to 500. Iris fits a bounded selection into her context; this isn't an unlimited
+profile or a promise that every reply will mention every saved detail. Include
+“fictional” in the value when it describes a character rather than you. Private
+mode can't read or change these details. No client options are needed.
+
+Corrections and deletions remove the old stored value. They also remove whole saved
+conversations that received it as reference, including any other topics in those
+conversations. Iris states that count before you confirm; cancel if you'd rather
+export them first. This deliberately broad deletion keeps old answers, summaries
+and later recorded recalls from restoring the old value. The controls themselves
+aren't archived as chat exchanges. A label doesn't find every independently spoken
+copy of the same fact elsewhere: to remove an older discussion, forget its
+conversation, or use the full archive deletion below. Backups and exports keep
+their own copies.
+
+Use these controls when you want a durable change. An ordinary model reply saying
+“I'll remember” or “I've forgotten” cannot make that change on its own.
+
+#### Asking about an earlier discussion
+
+You can say “remember the Sapphire story?”, “what were we talking about yesterday?”
+or “recall the garden project last week”. Iris searches your saved summary notes
+and original exchanges, then uses a few source excerpts to continue. This all runs
+on the server and uses the existing memory settings; the client needs no new options.
+
+Spoken dates use `local_timezone`, including daylight-saving changes and days near
+midnight. “Yesterday” means the previous local calendar day. “Last night” currently
+uses that same whole-day window. “Last week” means the previous Monday-to-Sunday
+week, and “last month” means the previous calendar month. “Two days ago” and similar
+numbered dates work too. “The other day” searches the previous fourteen days rather
+than assuming a particular date.
+
+If several discussions fit, Iris offers up to three dated choices. Answer with
+“the first one”, “the second one”, or a subject such as “the story”. After a selection,
+“No, the other one” can switch between two choices. A weak match asks for confirmation;
+a bare yes only selects a single offered choice. If she finds nothing, she asks for
+another subject, name or date, and you can give that clue in your next turn.
+
+A vague “remember that thing?” can borrow the subject from your last two human
+messages. If there is no useful subject or date, Iris asks which discussion you mean.
+She groups possible discussions by saved conversation and local day; several topics
+within the same conversation on the same day may still need a more specific question.
+
+Choices stay available in that client's server session for ten minutes. A new topic,
+“never mind”, clearing context, a client/server restart, or eviction of the RAM session
+ends that clarification. If you restart while choosing, repeat the recall request.
+The original records are checked again when you choose, so deleting or superseding a
+source makes an old choice unavailable. Selecting an older discussion supplies
+reference excerpts to the current conversation; it doesn't move the archive's active
+conversation back to the old one.
+
+If a reply needs more evidence than the automatic excerpts provide, Iris can also
+use a small, read-only `search_memory` skill. It searches within the configured owner,
+returns dated source excerpts, and can't change memory. It allows two searches per
+reply within the usual overall tool limits. Multiple matches still need a discussion
+choice. Set `memory_search_tool` to `false` to disable it; `tools_enabled: false`,
+private mode, or disabling prompt history/retrieval also removes it. Automatic
+companion openers never receive tool definitions.
+
+#### Optional companion follow-ups
+
+Iris can occasionally pick up an unfinished creative or practical topic in companion
+mode. Set **`memory_companion_followups: true` on the server** to enable this; the
+default is off. It needs saved memory and the usual companion mode. The client
+needs no extra configuration, and its listening timers and unanswered-opener backoff
+work as before.
+
+On each idle opener, there is a one-in-four chance to look for an eligible topic;
+otherwise she uses the playful random seeds. The topic must have a current,
+source-linked summary marked suitable for a follow-up, with human evidence from
+the last fourteen days. Closed, superseded, cleared and uncertain topics aren't
+eligible. Personal or sensitive subjects are excluded through both the summary
+instructions and a conservative source-text filter. That classification can still
+make mistakes, so leave the option off if unsolicited recollection isn't welcome.
+She is instructed to invite a return to the topic without assuming you've made
+progress since last time.
+
+After a successful follow-up, the server waits at least six hours before another
+memory follow-up, and at least a day before using the same conversation. Those
+cooldowns survive restarts. Say **“don't bring that up again”** to exclude the last
+memory follow-up's whole saved conversation from future companion choices. It
+still exists for explicit recall. The last offered topic remains selectable for
+that opt-out for a day after a restart. If memory search or derived data fails,
+she falls back to a generic opener.
+
+#### Optional semantic recall
+
+The keyword search is useful when I remember a name, but sometimes all I remember
+is the idea. “Water collection arrangement” ought to find the discussion about a
+rainwater tank. You can enable a small local embedding model to help with that.
+It runs on the PC server alongside Iris and leaves the chat model as it is.
+
+With the server stopped, install the extra in its Python environment:
+
+```sh
+python -m pip install -e ".[memory]"
+```
+
+Run `python iris.py configure` and enable local semantic recall, or add these fields
+to your existing PC configuration:
+
+```json
+{
+    "memory_enabled": true,
+    "memory_semantic_enabled": true,
+    "memory_embedding_model_dir": null,
+    "memory_semantic_min_score": 0.45
+}
+```
+
+Then explicitly prepare the model while online:
+
+```sh
+python iris.py memory download-model
+```
+
+This downloads the pinned, quantised
+[all-MiniLM-L6-v2 ONNX export](https://huggingface.co/Xenova/all-MiniLM-L6-v2/tree/751bff37182d3f1213fa05d7196b954e230abad9)
+and tokenizer from Hugging Face, about 24 MB in total, and verifies both checksums.
+The model and tokenizer go in `models/all-MiniLM-L6-v2` next to your database when
+the directory setting is null. You can choose another server directory with
+`memory_embedding_model_dir`; `download-model --directory PATH` overrides it for
+that preparation command. Ordinary startup and inference only use the verified
+local files. Missing files or extras produce a setup error; startup never fetches
+the model for you. The client needs no extra package or configuration.
+
+If you already have an archive, build its vectors before restarting the server:
+
+```sh
+python iris.py memory index
+```
+
+This resumes from chunks that haven't been indexed for this exact model version.
+If this is your first use of memory, you can skip that command: there is no old
+archive to index yet. While the server runs, searches index at most eight pending
+chunks per turn, then search the vectors available so far. The first few searches
+can therefore miss material in a large backlog until indexing catches up. For a
+large existing archive, running `index` with the server stopped is the quicker way
+to get it ready. Ctrl-C during offline indexing preserves finished batches, so the
+same command can resume later. `memory index --reset` rebuilds the current owner's
+vectors for the selected model while keeping source history and summaries.
+
+The local model encodes short passages into 384-number vectors, using the
+[authors' mean pooling and normalisation method](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2).
+It uses two CPU inference threads and at most 256 word-piece tokens per passage.
+Vectors are stored in SQLite with their model revision and encoding version,
+roughly 1.5 KB per chunk before database overhead. Different model versions aren't
+mixed. Deleting source conversations or rebuilding their derived chunks also
+removes their vectors. Index writes recheck the source after inference, so stale
+work cannot bring back a deleted exchange.
+
+Retrieval combines word overlap, semantic similarity and recency. Explicit date
+filters and the clear-context boundary still apply before choosing sources. A
+match found only through semantic similarity in an explicit recall request asks
+for confirmation, even if there is only one candidate. `memory_semantic_min_score`
+filters weak similarities; it isn't a confidence percentage, and a matching score doesn't prove two discussions
+are the same. English paraphrases are the intended use. Names, unusual wording
+and long passages can still need another clue. If inference fails during a search,
+Iris logs the failure type and keeps the keyword matches available.
+
+To compare both methods on the bundled synthetic evaluation set, run:
+
+```sh
+python iris.py memory evaluate --corpus tests/fixtures/semantic_recall_cases.json
+```
+
+It creates a temporary test archive and reports model load, indexing and query
+timings plus the retrieved evidence for each case. It doesn't read or modify your
+real conversations. The fixture includes paraphrases, ambiguity, unrelated queries
+and an example this model still misses. It is a small regression check, rather
+than a promise of accuracy on every conversation. Evaluation uses prepared local
+files, and accepts `--directory PATH` if you keep the model somewhere else.
+
+Environment overrides are `IRIS_MEMORY_SEMANTIC_ENABLED`,
+`IRIS_MEMORY_EMBEDDING_MODEL_DIR` and `IRIS_MEMORY_SEMANTIC_MIN_SCORE`. Turn semantic
+recall off and restart the server to return to keyword/summary retrieval; the
+source archive remains available. Back up the database before its automatic schema
+upgrade, and stop the server before offline indexing or maintenance.
 
 #### Context size and compaction
 
@@ -1041,7 +1314,8 @@ wrong; it isn't a guarantee that the model recognises every contradiction.
 The database upgrades existing archives automatically when the enabled server
 starts. Back it up first. Keyword search needs SQLite FTS5; if your Python build
 lacks it, startup explains what is missing. The normal Python distributions usually
-include it. There are no embedding models to download.
+include it. The optional semantic model has its own explicit preparation command,
+described above.
 
 The archive contains recognised or typed input, final replies, UTC timestamps,
 source IDs and the names of any tools used. Automatic companion openers are marked
@@ -1069,17 +1343,23 @@ python iris.py memory delete --conversation CONVERSATION_ID
 python iris.py memory delete --all
 ```
 
-The export includes versioned summaries, current note statuses and pending jobs
-alongside the source exchanges. `retry` resets failed summary jobs after you've
+The export includes versioned summaries, current note statuses, embedding model
+identifiers/indexed-chunk counts, the owner's private-mode flag/change counter,
+explicit remembered details, their conversation-use links, companion exclusions
+and cooldowns, and pending summary jobs alongside the source exchanges. `retry` resets failed summary jobs after you've
 fixed the model or configuration. `rebuild` discards derived summaries and search
 chunks for this owner, rebuilds the keyword index and queues fresh summaries from
-the originals. It keeps source history and clear-context boundaries. Those new
+the originals. Any semantic vectors for those chunks are removed too; they can be
+rebuilt with `memory index` or gradually during later searches. It keeps source history and clear-context boundaries. Those new
 summaries are generated on later server turns, so recall may temporarily rely on
 raw excerpts. Run the enabled server once to upgrade a phase-one archive before
 using the new maintenance commands.
 
-Use the ID from `list` in the selected deletion command. `--all` removes every
-conversation for the configured owner, which is handy for clearing a test archive.
+Use the ID from `list` in the selected deletion command. If it has recorded dependent
+conversations, the CLI stops and explains the extra scope; review the export and add
+`--include-dependent` to delete those whole conversations too. `--all` removes every
+conversation and explicit remembered detail for the configured owner, which is handy
+for clearing a test archive. It leaves the private-mode flag as it was.
 For a different configuration file, put `--config PATH` after `memory` and before
 `list`, `export`, `retry`, `rebuild` or `delete`. Inspection also works with memory
 disabled and never creates a missing archive. Deletion removes source exchanges

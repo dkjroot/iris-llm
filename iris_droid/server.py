@@ -9,6 +9,7 @@ import logging
 import os
 import sqlite3
 from collections import OrderedDict
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Protocol
@@ -18,6 +19,7 @@ import httpx
 import numpy as np
 import numpy.typing as npt
 import speech_recognition as sr
+from pydantic import BaseModel
 
 from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
@@ -32,11 +34,19 @@ from iris_droid.protocol import (
     write_wav,
 )
 from iris_memory import AUTOMATIC_EVENT, Exchange, make_memory
+from iris_memory.companion import CompanionMemory
 from iris_memory.context import MemoryContext
+from iris_memory.controls import MemoryAction, MemoryPolicyError, PendingForget, memory_command
+from iris_memory.details import DetailCommand, Details, detail_command
+from iris_memory.embeddings import EmbeddingError, MiniLMEncoder, model_directory
 from iris_memory.index import MemoryIndex
+from iris_memory.recall import RecallResolver
+from iris_memory.search import SearchArguments, search_memory
+from iris_memory.semantic import SemanticMemory
 from iris_settings import Settings, load_settings
 from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
+from iris_tools import Skill
 
 LOGGER = logging.getLogger(__name__)
 
@@ -55,24 +65,420 @@ class Brain:
         self.tts = tts
         self.sessions: OrderedDict[str, ChatEngine] = OrderedDict()
         self.memory = make_memory(settings)
+        self.private_mode = False
+        self.policy_epoch = 0
+        if self.memory is not None:
+            self.private_mode, self.policy_epoch = self.memory.policy(settings.memory_owner)
         self.memory_context: MemoryContext | None = None
+        self.recall: RecallResolver | None = None
+        self.details = Details(self.memory) if self.memory is not None else None
+        self.companion_memory = CompanionMemory(self.memory) if self.memory is not None else None
         if self.memory is not None:
             summary_settings = settings.model_copy(
                 update={"max_tokens": settings.memory_summary_tokens, "temperature": 0.1}
             )
+            index = MemoryIndex(self.memory)
+            if settings.memory_semantic_enabled:
+                index.semantic = SemanticMemory(
+                    self.memory,
+                    MiniLMEncoder(model_directory(settings)),
+                    settings.memory_semantic_min_score,
+                )
             self.memory_context = MemoryContext(
-                settings, MemoryIndex(self.memory), make_backend(summary_settings, client)
+                settings, index, make_backend(summary_settings, client)
             )
+            self.recall = RecallResolver(index, settings.local_timezone)
+
+    def _new_chat(self) -> ChatEngine:
+        settings = self.settings
+        if self.private_mode:
+            settings = settings.model_copy(
+                update={
+                    "trace": False,
+                    "system_prompt": settings.system_prompt
+                    + "\nThis is a private conversation. Use only its working context. "
+                    "Saved memory is unavailable; do not claim to archive or recall it.",
+                }
+            )
+        elif self.memory is not None:
+            settings = settings.model_copy(
+                update={
+                    "system_prompt": settings.system_prompt
+                    + "\nCompleted conversations are archived. "
+                    "Explicit remembered details are separate: "
+                    "the human must say 'remember LABEL as VALUE', 'correct LABEL to VALUE', or "
+                    "'forget the detail about LABEL', then confirm Iris's spoken memory control. "
+                    "Only those server controls change details. Never claim to have saved, "
+                    "corrected "
+                    "or deleted an explicit detail through an ordinary reply or tool. Explain the "
+                    "control when asked to do so in other words. Search results are read-only."
+                }
+            )
+        chat = ChatEngine(settings, self.client)
+        if (
+            not self.private_mode
+            and self.memory_context is not None
+            and settings.memory_search_tool
+            and settings.tools_enabled
+            and settings.history_turns
+            and settings.memory_retrieval_chars
+        ):
+            epoch = self.policy_epoch
+            index = self.memory_context.index
+
+            def run_search(args: BaseModel) -> dict[str, object]:
+                chat.memory_search_calls += 1
+                if chat.memory_search_calls > 2:
+                    return {"error": "Memory search limit reached for this reply."}
+                return search_memory(
+                    index,
+                    settings.memory_owner,
+                    settings.local_timezone,
+                    epoch,
+                    chat.memory_sources.add,
+                    args,
+                )
+
+            chat.tools.skills["search_memory"] = Skill(
+                "search_memory",
+                "Search saved conversation evidence for a specific topic or date when the "
+                "provided memory is insufficient. Read-only; never claim a memory change. "
+                "Results can be ambiguous: ask which discussion. Use at most twice per reply.",
+                SearchArguments,
+                run_search,
+            )
+        return chat
+
+    def _session(self, session: str) -> ChatEngine:
+        if session not in self.sessions:
+            if len(self.sessions) >= 16:
+                self.sessions.popitem(last=False)
+            self.sessions[session] = self._new_chat()
+        self.sessions.move_to_end(session)
+        return self.sessions[session]
+
+    def _reset_sessions(self) -> None:
+        for session, old in list(self.sessions.items()):
+            fresh = self._new_chat()
+            fresh.companion_mode = old.companion_mode
+            self.sessions[session] = fresh
+
+    def _sync_policy(self) -> None:
+        if self.memory is not None:
+            private, epoch = self.memory.policy(self.settings.memory_owner)
+            if (private, epoch) != (self.private_mode, self.policy_epoch):
+                self.private_mode, self.policy_epoch = private, epoch
+                self._reset_sessions()
+
+    def _set_private(self, enabled: bool) -> None:
+        if self.memory is not None:
+            self.memory.set_private(self.settings.memory_owner, enabled)
+            self._sync_policy()
+        elif self.private_mode != enabled:
+            self.private_mode = enabled
+            self.policy_epoch += 1
+            self._reset_sessions()
+
+    def _reply(
+        self, heard: str, text: str, *, text_only: bool, companion: bool, finished: bool = False
+    ) -> TurnReply:
+        audio = ""
+        if not text_only:
+            samples, rate = self.tts.synthesize(text)
+            pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
+            audio = base64.b64encode(write_wav(pcm, rate)).decode("ascii")
+        result = TurnReply(
+            heard=heard,
+            text=text,
+            audio=audio,
+            finished=finished,
+            companion_mode=companion and not finished,
+        )
+        if len(result.model_dump_json().encode()) > MAX_BODY:
+            raise ValueError("Synthesized reply exceeds the transport size limit")
+        return result
+
+    def _memory_control(
+        self, session: str, heard: str, action: MemoryAction, *, text_only: bool
+    ) -> TurnReply:
+        chat = self._session(session)
+        companion = chat.companion_mode
+        if action in {"private_on", "private_off"}:
+            enabled = action == "private_on"
+            text = (
+                "Private mode on. This conversation won't read or save conversation memory."
+                if enabled
+                else "Private mode off. Private context discarded; saved memory is available again."
+                if self.memory is not None
+                else "Private mode off. Conversation saving is disabled in configuration."
+            )
+            result = self._reply(heard, text, text_only=text_only, companion=companion)
+            self._set_private(enabled)
+            self.sessions[session].pending_forget = None
+            return result
+        if action == "status":
+            text = (
+                "Private mode is on. This conversation isn't using or saving conversation memory."
+                if self.private_mode
+                else "Private mode is off. Conversation saving is "
+                + ("enabled." if self.memory is not None else "disabled in configuration.")
+            )
+            result = self._reply(heard, text, text_only=text_only, companion=companion)
+            chat.pending_forget = None
+            return result
+        if action == "cancel_forget":
+            result = self._reply(
+                heard,
+                "Forgetting cancelled. No saved conversation was deleted.",
+                text_only=text_only,
+                companion=companion,
+            )
+            chat.pending_forget = None
+            return result
+        if self.private_mode or self.memory is None:
+            text = (
+                "Private conversation discarded. It wasn't saved."
+                if self.private_mode
+                else "Working conversation discarded. Conversation saving is disabled."
+            )
+            if action in {"confirm_forget", "forget_recalled"}:
+                text = (
+                    "There is no pending saved-conversation deletion. No saved history was changed."
+                )
+            result = self._reply(heard, text, text_only=text_only, companion=companion)
+            if action == "forget":
+                fresh = self._new_chat()
+                fresh.companion_mode = companion
+                self.sessions[session] = fresh
+            else:
+                chat.pending_forget = None
+            return result
+        if action in {"forget", "forget_recalled"}:
+            target = self.memory.forget_target(self.settings.memory_owner)
+            recalled = chat.pending_recall
+            if action == "forget_recalled":
+                if (
+                    recalled is None
+                    or recalled.selected is None
+                    or recalled.expires_at <= datetime.now(UTC)
+                ):
+                    return self._reply(
+                        heard,
+                        "Recall and select a saved discussion first.",
+                        text_only=text_only,
+                        companion=companion,
+                    )
+                selected = recalled.candidates[recalled.selected].conversation
+                target = self.memory.forget_target(self.settings.memory_owner, selected)
+            if target is None or target[2] == 0:
+                result = self._reply(
+                    heard,
+                    "There are no saved exchanges in the current conversation to delete.",
+                    text_only=text_only,
+                    companion=companion,
+                )
+                chat.pending_forget = None
+                return result
+            conversation, revision, count = target
+            recalled = chat.pending_recall
+            phrase = " ".join(heard.casefold().split()).strip(" .!?,")
+            if (
+                recalled is not None
+                and recalled.expires_at > datetime.now(UTC)
+                and recalled.selected is not None
+                and recalled.candidates[recalled.selected].conversation != conversation
+                and phrase != "forget the current conversation"
+                and action != "forget_recalled"
+            ):
+                result = self._reply(
+                    heard,
+                    "The discussion we recalled is in an older saved conversation. "
+                    "This control deletes the current saved conversation. "
+                    "Say 'forget the current conversation' if that is what you mean.",
+                    text_only=text_only,
+                    companion=companion,
+                )
+                chat.pending_forget = None
+                return result
+            noun = "exchange" if count == 1 else "exchanges"
+            scope = self.memory.deletion_scope(self.settings.memory_owner, conversation)
+            description = "selected" if action == "forget_recalled" else "current"
+            text = (
+                f"The {description} saved conversation has {count} {noun}. "
+                + (
+                    f"Deleting it also deletes {len(scope) - 1} saved conversations that used it, "
+                    "including their other topics. "
+                    if len(scope) > 1
+                    else ""
+                )
+                + "Say 'confirm forget this conversation' to delete it, or 'cancel forgetting'."
+            )
+            result = self._reply(heard, text, text_only=text_only, companion=companion)
+            chat.pending_forget = PendingForget(
+                conversation,
+                revision,
+                count,
+                datetime.now(UTC) + timedelta(minutes=2),
+                self.policy_epoch,
+                scope,
+                action != "forget_recalled",
+            )
+            return result
+        pending = chat.pending_forget
+        target = self.memory.forget_target(self.settings.memory_owner)
+        if pending is not None and not pending.require_active:
+            target = (
+                pending.conversation,
+                self.memory.revision(self.settings.memory_owner, pending.conversation),
+                pending.count,
+            )
+        if (
+            pending is None
+            or pending.expires_at <= datetime.now(UTC)
+            or pending.epoch != self.policy_epoch
+            or target is None
+            or self.memory.deletion_scope(self.settings.memory_owner, pending.conversation)
+            != pending.scope
+            or (target[0], target[1]) != (pending.conversation, pending.revision)
+        ):
+            result = self._reply(
+                heard,
+                "There is no current, unchanged deletion request. "
+                "Say 'forget this conversation' again to request deleting "
+                "the current saved conversation.",
+                text_only=text_only,
+                companion=companion,
+            )
+            chat.pending_forget = None
+            return result
+        result = self._reply(
+            heard,
+            "The selected saved conversation and its recorded dependent copies are deleted. "
+            "Independent backups and exports keep their own copies.",
+            text_only=text_only,
+            companion=companion,
+        )
+        self.memory.forget_current(
+            self.settings.memory_owner,
+            pending.conversation,
+            pending.revision,
+            expected_epoch=pending.epoch,
+            scope=pending.scope,
+            require_active=pending.require_active,
+        )
+        self._sync_policy()
+        return result
+
+    def _detail_control(
+        self, session: str, heard: str, command: DetailCommand, *, text_only: bool
+    ) -> TurnReply:
+        chat = self._session(session)
+        chat.pending_forget = None
+        if command.action.endswith("_selected"):
+            if chat.selected_detail is None:
+                return self._reply(
+                    heard,
+                    "Show a remembered detail by its label first.",
+                    text_only=text_only,
+                    companion=chat.companion_mode,
+                )
+            command = DetailCommand(
+                command.action.removesuffix("_selected"), chat.selected_detail, command.text
+            )
+        text = ""
+        pending = None
+        selected = chat.selected_detail
+        apply = False
+        if self.private_mode or self.details is None:
+            text = (
+                "Saved details are unavailable in private mode."
+                if self.private_mode
+                else ("Conversation memory is disabled in configuration.")
+            )
+        elif command.action == "cancel":
+            text = "Memory change cancelled."
+        elif command.action == "confirm":
+            pending = chat.pending_detail
+            if pending is None or pending.expires_at <= datetime.now(UTC):
+                text = "There is no current memory change to confirm. Please request it again."
+                pending = None
+            else:
+                text = (
+                    "Memory updated." if pending.command.action != "forget" else "Detail forgotten."
+                )
+                if pending.conversations:
+                    text += (
+                        " The saved conversations that used its previous value were deleted too."
+                    )
+                apply = True
+        elif command.action in {"list", "show"}:
+            rows = self.details.items(
+                self.settings.memory_owner, command.label if command.action == "show" else None
+            )
+            text = (
+                " ".join(f"{r['label']}: {r['text']}." for r in rows[:8])
+                if rows
+                else (
+                    "There are no matching explicitly remembered details. "
+                    "Saved conversations are separate."
+                )
+            )
+            selected = rows[0]["label"] if len(rows) == 1 else None
+            if len(rows) > 8:
+                text += " There are more; ask to show a detail by its label, or export memory."
+        else:
+            rows = self.details.items(self.settings.memory_owner, command.label)
+            if command.action == "remember" and rows:
+                text = (
+                    f"I already have a detail called {command.label}. "
+                    f"Say 'correct {command.label} to' and its new value."
+                )
+            elif command.action != "remember" and not rows:
+                text = (
+                    "I couldn't find that exact detail label. "
+                    "Say 'list remembered details' to check."
+                )
+            elif (
+                command.action == "remember"
+                and len(self.details.items(self.settings.memory_owner)) >= 32
+            ):
+                text = "There is room for 32 explicit details. Please forget one first."
+            else:
+                pending = self.details.snapshot(
+                    self.settings.memory_owner, command, datetime.now(UTC) + timedelta(minutes=2)
+                )
+                text = (
+                    f"Forget the detail called {command.label}?"
+                    if command.action == "forget"
+                    else f"Remember {command.label} as {command.text}?"
+                )
+                if pending.conversations:
+                    text += (
+                        f" This will also delete {len(pending.conversations)} whole saved "
+                        "conversations that used its old value, including their other topics."
+                    )
+                text += " Say 'confirm memory change' or 'cancel memory change'."
+        result = self._reply(heard, text, text_only=text_only, companion=chat.companion_mode)
+        if apply and pending is not None and self.details is not None:
+            self.details.apply(self.settings.memory_owner, pending)
+            self._sync_policy()
+            self.sessions[session].selected_detail = (
+                pending.command.label if pending.command.action != "forget" else None
+            )
+        else:
+            chat.pending_detail = pending
+            chat.selected_detail = selected
+        return result
 
     def _checkpoint(self, conversation: str | None) -> None:
-        if self.memory_context is not None and conversation is not None:
+        if not self.private_mode and self.memory_context is not None and conversation is not None:
             try:
                 self.memory_context.checkpoint(self.settings.memory_owner, conversation, force=True)
             except sqlite3.Error as error:
                 LOGGER.warning("Memory checkpoint deferred (%s).", type(error).__name__)
 
     def _restore(self, chat: ChatEngine) -> str | None:
-        if self.memory is None:
+        if self.memory is None or self.private_mode:
             return None
         conversation = self.memory.active_conversation(self.settings.memory_owner)
         revision = (conversation, self.memory.revision(self.settings.memory_owner, conversation))
@@ -108,6 +514,7 @@ class Brain:
         wake_conversation: bool = False,
         companion_idle: bool = False,
     ) -> TurnReply:
+        self._sync_policy()
         if companion_idle:
             chat = self.sessions.get(session)
             if chat is None or not chat.companion_mode:
@@ -124,15 +531,53 @@ class Brain:
             heard = self.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
         if not heard and not companion_idle:
             raise sr.UnknownValueError()
+        detail = detail_command(heard)
+        if detail is not None:
+            return self._detail_control(session, heard, detail, text_only=text_only)
+        if heard.casefold().strip(" .!?,") in {
+            "don't bring that up again",
+            "do not bring that up again",
+        }:
+            chat = self._session(session)
+            target = None
+            if not self.private_mode and self.companion_memory is not None:
+                target = self.companion_memory.last_offered(
+                    self.settings.memory_owner, chat.last_followup
+                )
+            text = (
+                "I don't have a recent memory follow-up to switch off."
+                if target is None
+                else "I won't use that saved conversation for companion follow-ups again."
+            )
+            result = self._reply(heard, text, text_only=text_only, companion=chat.companion_mode)
+            if target is not None and self.companion_memory is not None and not self.private_mode:
+                if not self.companion_memory.block(
+                    self.settings.memory_owner, target, self.policy_epoch
+                ):
+                    raise MemoryPolicyError("The follow-up changed; please try again")
+                chat.last_followup = None
+            chat.pending_detail = None
+            chat.pending_forget = None
+            return result
+        existing = self.sessions.get(session)
+        if existing is not None and not companion_idle:
+            existing.pending_detail = None
+            existing.selected_detail = None
+        action = memory_command(heard)
+        if action is not None:
+            return self._memory_control(session, heard, action, text_only=text_only)
+        existing = self.sessions.get(session)
+        if existing is not None and not companion_idle:
+            existing.pending_forget = None
         if is_clear_context(heard):
-            if self.memory is not None:
+            if self.memory is not None and not self.private_mode:
                 self._checkpoint(self.memory.active_conversation(self.settings.memory_owner))
                 self.memory.start_conversation(self.settings.memory_owner)
             existing = self.sessions.get(session)
             companion = existing is not None and existing.companion_mode
             if companion:
                 # Reset tool caches too, just as clearing an ordinary session does.
-                fresh = ChatEngine(self.settings, self.client)
+                fresh = self._new_chat()
                 fresh.companion_mode = True
                 self.sessions[session] = fresh
             else:
@@ -140,7 +585,9 @@ class Brain:
             return TurnReply(
                 heard=heard,
                 text=(
-                    "Context cleared. Earlier conversations are still saved."
+                    "Private context cleared. Saved conversations weren't changed."
+                    if self.private_mode
+                    else "Context cleared. Earlier conversations are still saved."
                     if self.memory is not None
                     else "Context cleared. Ready for a fresh conversation."
                 ),
@@ -152,7 +599,7 @@ class Brain:
             # A control utterance isn't a chat turn and doesn't clear history.
             if existing is not None:
                 existing.companion_mode = False
-            if self.memory is not None:
+            if self.memory is not None and not self.private_mode:
                 self._checkpoint(self.memory.active_conversation(self.settings.memory_owner))
             return TurnReply(
                 heard=heard,
@@ -161,12 +608,7 @@ class Brain:
                 else "Companion mode off.",
             )
         finished = heard.casefold().strip(" .!?") == "exit"
-        if session not in self.sessions:
-            if len(self.sessions) >= 16:
-                self.sessions.popitem(last=False)
-            self.sessions[session] = ChatEngine(self.settings, self.client)
-        self.sessions.move_to_end(session)
-        chat = self.sessions[session]
+        chat = self._session(session)
         # All clients for an owner deliberately share one active conversation.
         # Refresh each turn so another client's clear/append cannot leave stale context.
         conversation = self._restore(chat)
@@ -175,6 +617,12 @@ class Brain:
         previous_seed = chat.last_companion_seed
         previous_tools = chat.last_tool_names
         previous_memory = chat.memory_context
+        previous_recall = chat.pending_recall
+        previous_followup = chat.last_followup
+        chat.memory_sources = set()
+        chat.memory_search_calls = 0
+        detail_labels: tuple[str, ...] = ()
+        followup_conversation: str | None = None
         try:
             command = companion_command(heard)
             if command is not None:
@@ -183,13 +631,60 @@ class Brain:
                 chat.companion_mode = command
                 text = "Companion mode on. Let's hang out." if command else "Companion mode off."
             elif companion_idle:
-                # No cross-conversation personalised opener selection until phase 5.
                 chat.memory_context = ""
+                if (
+                    not self.private_mode
+                    and self.settings.memory_companion_followups
+                    and self.settings.history_turns
+                    and self.companion_memory is not None
+                ):
+                    try:
+                        followup = self.companion_memory.choose(self.settings.memory_owner)
+                        if followup is not None:
+                            followup_conversation, chat.memory_context = followup
+                            chat.memory_sources.add(followup_conversation)
+                    except (sqlite3.Error, ValueError, KeyError, IndexError) as error:
+                        LOGGER.warning("Companion memory unavailable (%s).", type(error).__name__)
                 text = chat.get_companion_opener()
             else:
+                recall_reply: str | None = None
+                recalled = None
                 if finished:
                     self._checkpoint(conversation)
-                elif self.memory_context is not None and conversation is not None:
+                elif (
+                    self.recall is not None
+                    and conversation is not None
+                    and self.settings.history_turns
+                    and self.settings.memory_retrieval_chars
+                ):
+                    try:
+                        resolved = self.recall.resolve(
+                            self.settings.memory_owner,
+                            conversation,
+                            heard,
+                            chat.history,
+                            chat.pending_recall,
+                        )
+                        chat.pending_recall = resolved.pending
+                        if resolved.pending is not None:
+                            chat.memory_sources.update(
+                                c.conversation for c in resolved.pending.candidates
+                            )
+                        recall_reply = resolved.response
+                        if resolved.handled:
+                            recalled = resolved.excerpts
+                    except sqlite3.Error as error:
+                        LOGGER.warning("Spoken recall unavailable (%s).", type(error).__name__)
+                        recall_reply = (
+                            "I can't search my saved conversations right now. "
+                            "Please try again in a moment."
+                        )
+                if (
+                    not finished
+                    and recall_reply is None
+                    and self.memory_context is not None
+                    and conversation is not None
+                ):
                     try:
                         chat.memory_context = self.memory_context.prepare(
                             self.settings.memory_owner,
@@ -198,25 +693,44 @@ class Brain:
                             chat.history,
                             chat._system_prompt(),
                             chat.tools.definitions(),
+                            recalled,
                         )
+                        if recalled:
+                            chat.memory_sources.update(r["conversation"] for r in recalled)
+                        # Automatic search can copy a detail from another conversation too.
+                        chat.memory_sources.update(self.memory_context.source_conversations)
+                        if recalled and not chat.memory_context:
+                            recall_reply = (
+                                "I found a matching discussion, but couldn't load enough detail "
+                                "to continue. Try a shorter question."
+                            )
                     except sqlite3.Error as error:
                         LOGGER.warning("Derived memory unavailable (%s).", type(error).__name__)
                         chat.memory_context = ""
-                text = "Shutting down" if finished else chat.get_response(heard)
-            audio = ""
-            if not text_only:
-                samples, rate = self.tts.synthesize(text)
-                pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
-                audio = base64.b64encode(write_wav(pcm, rate)).decode("ascii")
-            result = TurnReply(
-                heard=heard,
-                text=text,
-                audio=audio,
-                finished=finished,
-                companion_mode=chat.companion_mode and not finished,
+                        if recalled:
+                            recall_reply = (
+                                "I found a matching discussion, "
+                                "but can't load its details right now. "
+                                "Please try again in a moment."
+                            )
+                if (
+                    not finished
+                    and self.details is not None
+                    and conversation is not None
+                    and self.settings.history_turns
+                ):
+                    detail_context, detail_labels = self.details.context(
+                        self.settings.memory_owner, heard
+                    )
+                    chat.memory_context += detail_context
+                if recall_reply is not None:
+                    text = recall_reply
+                    chat.remember_reply(heard, text)
+                else:
+                    text = "Shutting down" if finished else chat.get_response(heard)
+            result = self._reply(
+                heard, text, text_only=text_only, companion=chat.companion_mode, finished=finished
             )
-            if len(result.model_dump_json().encode()) > MAX_BODY:
-                raise ValueError("Synthesized reply exceeds the transport size limit")
             if (
                 self.memory is not None
                 and conversation is not None
@@ -230,7 +744,17 @@ class Brain:
                     text,
                     chat.last_tool_names,
                 )
-                self.memory.append(self.settings.memory_owner, conversation, exchange)
+                self.memory.append(
+                    self.settings.memory_owner,
+                    conversation,
+                    exchange,
+                    expected_epoch=self.policy_epoch,
+                    detail_labels=detail_labels,
+                    source_conversations=tuple(chat.memory_sources),
+                    followup_conversation=followup_conversation,
+                )
+                if followup_conversation is not None:
+                    chat.last_followup = followup_conversation
                 chat.memory_revision = (conversation, exchange.id)
         except Exception:
             chat.history = previous
@@ -238,6 +762,8 @@ class Brain:
             chat.last_companion_seed = previous_seed
             chat.last_tool_names = previous_tools
             chat.memory_context = previous_memory
+            chat.pending_recall = previous_recall
+            chat.last_followup = previous_followup
             raise
         if finished:
             del self.sessions[session]
@@ -254,11 +780,13 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             pass  # Don't log conversation bodies, credentials or request headers.
 
-        def respond(self, status: int, body: bytes) -> None:
+        def respond(self, status: int, body: bytes, *, private: bool | None = None) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            if private is not None:
+                self.send_header("X-Iris-Private", "1" if private else "0")
             self.end_headers()
             self.wfile.write(body)
 
@@ -305,15 +833,23 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
                     503, b'{"error":"Conversation memory unavailable; check the PC archive"}'
                 )
                 return
+            except MemoryPolicyError:
+                self.respond(
+                    503, b'{"error":"Conversation memory policy changed; please try again"}'
+                )
+                return
             except ChatError as error:
-                LOGGER.warning("Chat failed: %s", error)
+                if brain.private_mode:
+                    LOGGER.warning("Private chat failed (%s)", type(error).__name__)
+                else:
+                    LOGGER.warning("Chat failed: %s", error)
                 self.respond(502, b'{"error":"Chat failed; check the PC model server"}')
                 return
             except Exception as error:
                 LOGGER.error("Droid turn failed (%s)", type(error).__name__)
                 self.respond(503, b'{"error":"Speech service failed; check the PC console"}')
                 return
-            self.respond(200, reply.model_dump_json().encode())
+            self.respond(200, reply.model_dump_json().encode(), private=brain.private_mode)
 
     return Handler
 
@@ -341,7 +877,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except KeyboardInterrupt:
         return 0
-    except (ValueError, OSError, ImportError, sqlite3.Error) as error:
+    except (ValueError, OSError, ImportError, sqlite3.Error, EmbeddingError) as error:
         print(f"Droid server setup: {error}")
         return 1
 

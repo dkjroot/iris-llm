@@ -14,6 +14,7 @@ class Note(BaseModel):
     sources: list[str] = Field(min_length=1, max_length=6)
     scope: Literal["real", "fictional", "hypothetical", "uncertain"]
     status: Literal["tentative", "confirmed", "closed"]
+    follow_up_safe: bool = False
     supersedes: list[str] = Field(default_factory=list, max_length=6)
 
 

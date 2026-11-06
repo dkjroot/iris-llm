@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     history_turns: int = Field(default=12, ge=0, le=100)
     memory_enabled: bool = False
     memory_database: Path | None = None
+    memory_companion_followups: bool = False
+    memory_search_tool: bool = True
+    memory_semantic_enabled: bool = False
+    memory_embedding_model_dir: Path | None = None
+    memory_semantic_min_score: float = Field(default=0.45, ge=0, le=1, allow_inf_nan=False)
     memory_owner: str = Field(default="default", min_length=1, max_length=100, pattern=r"^\S+$")
     memory_context_chars: int = Field(default=24000, ge=0, le=200000)
     timeout: float = Field(default=120, gt=0, le=600)
@@ -147,6 +152,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def check_privacy(self) -> Settings:
+        if self.memory_semantic_enabled and not self.memory_enabled:
+            raise ValueError("memory_semantic_enabled requires memory_enabled=true")
         output_tokens = (
             max(self.max_tokens, self.memory_summary_tokens)
             if self.memory_enabled

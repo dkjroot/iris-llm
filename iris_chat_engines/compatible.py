@@ -12,6 +12,9 @@ from iris_chat_engines.budget import estimate, fit, input_budget
 from iris_chat_engines.messages import ChatError as ChatError
 from iris_chat_engines.messages import Message as Message
 from iris_droid.companion import COMPANION_PROMPT, ICE_BREAKERS
+from iris_memory.controls import PendingForget
+from iris_memory.details import PendingDetail
+from iris_memory.recall import PendingRecall
 from iris_settings import Settings
 from iris_tools import ToolRegistry
 
@@ -26,6 +29,13 @@ class ChatEngine:
         self.history: list[Message] = []
         self.memory_revision: tuple[str, str | None] | None = None
         self.memory_context = ""
+        self.memory_sources: set[str] = set()
+        self.memory_search_calls = 0
+        self.pending_recall: PendingRecall | None = None
+        self.pending_forget: PendingForget | None = None
+        self.selected_detail: str | None = None
+        self.pending_detail: PendingDetail | None = None
+        self.last_followup: str | None = None
         self.last_tool_names: tuple[str, ...] = ()
         self.companion_mode = False
         self.last_companion_seed: str | None = None
@@ -42,6 +52,17 @@ class ChatEngine:
         starts = [i for i, message in enumerate(messages) if message.role == "user"]
         limit = self.settings.history_turns
         self.history = messages[starts[max(0, len(starts) - limit)] :] if limit and starts else []
+
+    def remember_reply(self, heard: str, text: str) -> None:
+        """Store a locally generated recall clarification as an ordinary text pair."""
+        self._remember(
+            [
+                *self.history,
+                Message(role="user", content=heard),
+                Message(role="assistant", content=text),
+            ]
+        )
+        self.last_tool_names = ()
 
     def get_companion_opener(self) -> str:
         if not self.companion_mode:

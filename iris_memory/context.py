@@ -22,7 +22,10 @@ Return only a JSON object with a notes array, at most 8 concise notes. Each note
 kind: topic|user_assertion|assistant_proposal|decision|open_question;
 text: a short sentence; sources: array of original exchange IDs;
 scope: real|fictional|hypothetical|uncertain; status: tentative|confirmed|closed;
-supersedes: array of earlier note IDs replaced or resolved by these exchanges.
+supersedes: array of earlier note IDs replaced or resolved by these exchanges;
+follow_up_safe: boolean, default false. True ONLY for an unfinished, non-sensitive creative
+or practical topic the human might welcome revisiting. Never true for personal facts,
+health, relationships, family, finances, politics, religion or closed/resolved topics.
 Topics, decisions, unanswered questions and where we stopped matter. Distinguish
 what the human asserted from Iris's suggestions. Transcripts can be wrong: prefer
 tentative/uncertain to inventing confirmed facts. Never treat fictional characters,
@@ -48,9 +51,13 @@ class MemoryContext:
         self.settings = settings
         self.index = index
         self.backend = backend
+        self.source_conversations: set[str] = set()
 
     def checkpoint(self, owner: str, conversation: str, *, force: bool = False) -> bool:
         """Do at most one bounded job, serially. No model calls hold a DB transaction."""
+        private, epoch = self.index.archive.policy(owner)
+        if private:
+            return False
         job = self.index.pending(owner, conversation)
         if job is None:
             return False
@@ -152,7 +159,13 @@ class MemoryContext:
             if revision is None:
                 return False
             return self.index.save(
-                owner, conversation, revision, job["cursor"], selected[-1]["sequence"], summary
+                owner,
+                conversation,
+                revision,
+                job["cursor"],
+                selected[-1]["sequence"],
+                summary,
+                expected_epoch=epoch,
             )
         except (ChatError, ValueError, sqlite3.Error) as error:
             # ValidationError includes model-generated text. Never log its body.
@@ -170,7 +183,9 @@ class MemoryContext:
         history: list[Message],
         system: str,
         tools: list[dict[str, object]],
+        recalled: tuple[dict[str, Any], ...] | None = None,
     ) -> str:
+        self.source_conversations = set()
         if not self.settings.history_turns:
             return ""
         upcoming = [
@@ -196,7 +211,9 @@ class MemoryContext:
             backlog = self.index.next_conversation(owner, conversation)
             if backlog is not None:
                 self.checkpoint(owner, backlog, force=True)
-        notes = self.index.notes(owner, conversation)
+        # Explicit recall is grounded in the chosen discussion. Today's summary
+        # can refer to a different topic or a later version of the same story.
+        notes = self.index.notes(owner, conversation) if recalled is None else []
         compact: list[dict[str, Any]] = []
         for note in notes:
             item = {
@@ -211,7 +228,11 @@ class MemoryContext:
             compact.append(item)
         recent = " ".join(m.content or "" for m in history if m.role == "user")[-1500:]
         try:
-            matches = self.index.search(owner, conversation, utterance, recent)
+            matches = (
+                list(recalled)
+                if recalled is not None
+                else self.index.search(owner, conversation, utterance, recent)
+            )
         except sqlite3.Error as error:
             LOGGER.warning("Memory search unavailable (%s).", type(error).__name__)
             matches = []
@@ -227,7 +248,7 @@ class MemoryContext:
         if not compact and not excerpts:
             return ""
         starts = [i for i, m in enumerate(history) if m.role == "user"]
-        tail = history[starts[-min(2, len(starts))] :] if starts else []
+        tail = history[starts[-min(2, len(starts))] :] if starts and recalled is None else []
         baseline = [
             Message(role="system", content=system),
             *tail,
@@ -246,6 +267,9 @@ class MemoryContext:
                 ensure_ascii=False,
             )
             if len(memory.encode("utf-8")) <= allowance:
+                self.source_conversations = {e["conversation"] for e in excerpts}
+                if compact:
+                    self.source_conversations.add(conversation)
                 return memory
             if excerpts:
                 excerpts.pop()

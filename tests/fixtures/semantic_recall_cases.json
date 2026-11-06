@@ -1,0 +1,141 @@
+{
+  "now": "2026-11-05T12:00:00+00:00",
+  "exchanges": [
+    {
+      "id": "story",
+      "conversation": "story",
+      "at": "2026-11-04T19:00:00+00:00",
+      "user": "The Sapphire robot story is set in a greenhouse.",
+      "assistant": "We left the ending undecided."
+    },
+    {
+      "id": "garden",
+      "conversation": "garden",
+      "at": "2026-11-04T21:00:00+00:00",
+      "user": "My garden project needs a rainwater tank.",
+      "assistant": "We still need to choose its capacity."
+    },
+    {
+      "id": "old-story",
+      "conversation": "old",
+      "at": "2026-11-02T18:00:00+00:00",
+      "user": "The Sapphire robot story used to be set on a desert planet.",
+      "assistant": "That was an earlier setting."
+    }
+  ],
+  "queries": [
+    {
+      "utterance": "Remember Sapphire yesterday?",
+      "outcome": "found",
+      "sources": [
+        "story"
+      ]
+    },
+    {
+      "utterance": "What did we discuss yesterday?",
+      "outcome": "clarify",
+      "sources": [
+        "garden",
+        "story"
+      ]
+    },
+    {
+      "utterance": "Recall the garden project yesterday.",
+      "outcome": "found",
+      "sources": [
+        "garden"
+      ]
+    },
+    {
+      "utterance": "Remember the Sapphire story three days ago?",
+      "outcome": "found",
+      "sources": [
+        "old-story"
+      ]
+    },
+    {
+      "utterance": "Remember the rainwater tank?",
+      "outcome": "found",
+      "sources": [
+        "garden"
+      ]
+    },
+    {
+      "utterance": "Remember Sapphire the other day?",
+      "outcome": "clarify",
+      "sources": [
+        "story",
+        "old-story"
+      ]
+    },
+    {
+      "utterance": "Remember that thing?",
+      "outcome": "clue",
+      "sources": []
+    },
+    {
+      "utterance": "Remember our discussion about a submarine?",
+      "outcome": "clue",
+      "sources": []
+    },
+    {
+      "utterance": "Remember our water collection arrangement?",
+      "outcome": "clue",
+      "sources": [],
+      "known_lexical_limit": true,
+      "semantic_sources": [
+        "garden"
+      ]
+    },
+    {
+      "utterance": "What's the weather today?",
+      "outcome": "ordinary",
+      "sources": []
+    },
+    {
+      "utterance": "Remember to order a tank tomorrow.",
+      "outcome": "ordinary",
+      "sources": []
+    },
+    {
+      "utterance": "Remember the watering setup planning?",
+      "outcome": "clue",
+      "sources": [],
+      "semantic_sources": [
+        "garden"
+      ]
+    },
+    {
+      "utterance": "Recall the little mechanical character and its unfinished ending.",
+      "outcome": "confirm",
+      "sources": [
+        "story"
+      ]
+    },
+    {
+      "utterance": "Remember our fictional automaton?",
+      "outcome": "clue",
+      "sources": [],
+      "semantic_sources": [
+        "story",
+        "old-story"
+      ],
+      "known_model_limit": true
+    },
+    {
+      "utterance": "Remember buying groceries?",
+      "outcome": "clue",
+      "sources": []
+    },
+    {
+      "utterance": "Remember the drinking water filter?",
+      "outcome": "clue",
+      "sources": []
+    },
+    {
+      "utterance": "Recall our trip to the seaside.",
+      "outcome": "clue",
+      "sources": []
+    }
+  ]
+}

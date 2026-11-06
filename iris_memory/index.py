@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from iris_memory.embeddings import EmbeddingError
 from iris_memory.models import Summary
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
+    from iris_memory.semantic import SemanticMemory
 
+
+LOGGER = logging.getLogger(__name__)
 
 SCHEMA = (
     "CREATE TABLE summaries (id TEXT PRIMARY KEY, owner TEXT NOT NULL, conversation TEXT NOT NULL, "
@@ -106,6 +112,7 @@ def query_terms(text: str) -> list[str]:
 class MemoryIndex:
     def __init__(self, archive: SQLiteMemory) -> None:
         self.archive = archive
+        self.semantic: SemanticMemory | None = None
 
     def enqueue(self, owner: str, conversation: str) -> None:
         with self.archive.connect() as db:
@@ -202,9 +209,14 @@ class MemoryIndex:
         cursor: int,
         through: int,
         summary: Summary,
+        *,
+        expected_epoch: int | None = None,
     ) -> bool:
         with self.archive.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            private, epoch = self.archive._policy(db, owner)
+            if private or (expected_epoch is not None and epoch != expected_epoch):
+                return False
             latest = db.execute(
                 "SELECT id FROM exchanges WHERE owner=? AND conversation=? "
                 "ORDER BY sequence DESC LIMIT 1",
@@ -312,4 +324,153 @@ class MemoryIndex:
                     result.append(dict(row))
                     if len(result) >= limit:
                         break
-            return result
+        if self.semantic is not None:
+            try:
+                self.semantic.index_batch(owner)
+                for row in self.semantic.search(
+                    owner, " ".join(terms), active=active, explicit=explicit
+                ):
+                    existing = next(
+                        (item for item in result if item["exchange"] == row["exchange"]), None
+                    )
+                    if existing is not None:
+                        existing["semantic_similarity"] = row["semantic_similarity"]
+                    else:
+                        result.append(row)
+                        seen.add(row["exchange"])
+                result.sort(
+                    key=lambda item: (
+                        len(set(terms) & set(query_terms(item["text"])))
+                        + 2 * item.get("semantic_similarity", 0),
+                        item["created_at"],
+                    ),
+                    reverse=True,
+                )
+            except (EmbeddingError, sqlite3.Error) as error:
+                LOGGER.warning(
+                    "Semantic search unavailable (%s); using keyword matches.", type(error).__name__
+                )
+        return result[:limit]
+
+    def recall_sources(
+        self,
+        owner: str,
+        terms: list[str],
+        start: datetime | None,
+        end: datetime | None,
+    ) -> list[dict[str, Any]]:
+        """Bounded explicit recall: search notes, then verify their original sources."""
+        from iris_memory.recall import is_recall_request, topical_terms
+
+        # julianday compares instants even if old/imported timestamps use another
+        # UTC offset. Both local-midnight boundaries have already been resolved.
+        dates = (start.isoformat() if start else None, end.isoformat() if end else None)
+        filters = (
+            "e.owner=? AND e.origin='human' "
+            "AND (? IS NULL OR julianday(e.created_at)>=julianday(?)) "
+            "AND (? IS NULL OR julianday(e.created_at)<julianday(?)) "
+            "AND EXISTS(SELECT 1 FROM chunks c WHERE c.exchange=e.id AND c.superseded=0)"
+        )
+        args = (owner, dates[0], dates[0], dates[1], dates[1])
+        result: dict[str, dict[str, Any]] = {}
+        with self.archive.connect() as db:
+            note_filter = " OR ".join("n.text LIKE ?" for _ in terms) or "1"
+            notes = db.execute(
+                "SELECT n.* FROM notes n JOIN summaries s ON s.id=n.summary "
+                "WHERE n.owner=? AND n.status!='superseded' AND (" + note_filter + ") "
+                "ORDER BY s.through_sequence DESC LIMIT 12",
+                (owner, *(f"%{t}%" for t in terms)),
+            )
+            for note in notes:
+                sources = json.loads(note["sources"])[:6]
+                for row in db.execute(
+                    "SELECT e.id,e.id AS exchange,e.owner,e.conversation,"
+                    "e.sequence,e.created_at,e.user_text "
+                    "FROM exchanges e WHERE "
+                    + filters
+                    + " AND e.conversation=? AND e.id IN ("
+                    + ",".join("?" for _ in sources)
+                    + ") "
+                    "ORDER BY e.sequence DESC",
+                    (*args, note["conversation"], *sources),
+                ):
+                    if not is_recall_request(row["user_text"]) and topical_terms(row["user_text"]):
+                        result[row["id"]] = {**dict(row), "topic": note["text"]}
+                if len(result) >= 24:
+                    break
+            if terms:
+                query = " OR ".join('"' + word + '"' for word in terms[:16])
+                rows = db.execute(
+                    "SELECT e.id,e.id AS exchange,e.owner,e.conversation,"
+                    "e.sequence,e.created_at,e.user_text "
+                    "FROM chunks_fts JOIN chunks c "
+                    "ON c.id=chunks_fts.rowid JOIN exchanges e ON e.id=c.exchange "
+                    "WHERE chunks_fts MATCH ? AND c.superseded=0 AND "
+                    + filters
+                    + " ORDER BY bm25(chunks_fts),e.sequence DESC LIMIT 96",
+                    (query, *args),
+                )
+            else:
+                # A date alone may identify more than one discussion. Don't pick
+                # the last writer as an implicit answer to a vague spoken request.
+                rows = db.execute(
+                    "SELECT e.id,e.id AS exchange,e.owner,e.conversation,"
+                    "e.sequence,e.created_at,e.user_text "
+                    "FROM exchanges e WHERE " + filters + " ORDER BY e.sequence DESC LIMIT 48",
+                    args,
+                )
+            for row in rows:
+                if not is_recall_request(row["user_text"]) and topical_terms(row["user_text"]):
+                    result.setdefault(row["id"], dict(row))
+                if len(result) >= 36:
+                    break
+        if self.semantic is not None and terms:
+            try:
+                self.semantic.index_batch(owner)
+                for row in self.semantic.search(
+                    owner, " ".join(terms), explicit=True, start=start, end=end
+                ):
+                    if row["exchange"] in result:
+                        result[row["exchange"]]["semantic_similarity"] = row["semantic_similarity"]
+                    else:
+                        row["semantic_only"] = True
+                        result[row["exchange"]] = row
+            except (EmbeddingError, sqlite3.Error) as error:
+                LOGGER.warning(
+                    "Semantic recall unavailable (%s); using keyword matches.", type(error).__name__
+                )
+        return list(result.values())[:42]
+
+    def recall_evidence(
+        self, owner: str, conversation: str, sources: tuple[str, ...], terms: tuple[str, ...] = ()
+    ) -> list[dict[str, Any]]:
+        def excerpt(text: str) -> str:
+            match = (
+                re.search("|".join(re.escape(term) for term in terms), text, re.I)
+                if terms
+                else None
+            )
+            start = max(0, match.start() - 150) if match else 0
+            end = min(len(text), start + 500)
+            return ("… " if start else "") + text[start:end] + (" …" if end < len(text) else "")
+
+        with self.archive.connect() as db:
+            rows = db.execute(
+                "SELECT e.* FROM exchanges e WHERE e.owner=? AND e.conversation=? "
+                "AND e.id IN (" + ",".join("?" for _ in sources[:3]) + ") "
+                "AND EXISTS(SELECT 1 FROM chunks c WHERE c.exchange=e.id AND c.superseded=0) "
+                "ORDER BY e.sequence",
+                (owner, conversation, *sources[:3]),
+            )
+            return [
+                {
+                    "exchange": row["id"],
+                    "conversation": row["conversation"],
+                    "created_at": row["created_at"],
+                    "text": "Human (recognised/typed, unverified): "
+                    + excerpt(row["user_text"])
+                    + "\nIris (historical assistant response): "
+                    + excerpt(row["assistant_text"]),
+                }
+                for row in rows
+            ]

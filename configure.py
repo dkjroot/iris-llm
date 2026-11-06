@@ -147,6 +147,19 @@ def main() -> int:
             data["memory_owner"] = (
                 input(f"Memory owner [{previous.memory_owner}]: ").strip() or previous.memory_owner
             )
+            print(
+                "Optional semantic recall uses a small local model prepared separately on this PC."
+            )
+            data["memory_semantic_enabled"] = (
+                choose(
+                    "Enable local semantic recall",
+                    ["yes", "no"],
+                    "yes" if previous.memory_semantic_enabled else "no",
+                )
+                == "yes"
+            )
+        else:
+            data["memory_semantic_enabled"] = False
         settings = Settings.model_validate(data)
         path.write_text(
             json.dumps(settings.model_dump(mode="json"), indent=4) + "\n",
@@ -154,6 +167,11 @@ def main() -> int:
             newline="\n",
         )
         print("Saved", path)
+        if settings.memory_semantic_enabled:
+            print(
+                "Semantic recall also needs the [memory] extra and: "
+                "python iris.py memory download-model"
+            )
         print("Next: python iris.py --download-models, then python iris.py --check")
         print(
             "Set IRIS_DROID_TOKEN in both terminals, then start the PC service with "
