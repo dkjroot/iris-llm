@@ -762,14 +762,14 @@ To test the chosen speaker without contacting the server, this shared command pl
 python -c "from importlib.resources import files; from iris_droid.client import play_wav; play_wav(files('iris_sounds').joinpath('bleep.wav').read_bytes(), device=7)"
 ```
 
-Then launch the voice client with both device options and your PC's address. Press Enter, wait for the cue and `Speak now...`, then say a short sentence and pause. The client stops recording after silence, sends the recording to the PC, prints the transcript and reply, and plays the reply. Enter starts a turn; it isn't a key you hold while talking. Say `exit` or press Ctrl-C to finish.
+Then launch the voice client with both device options and your PC's address. Press Enter, wait for the listening cue, then say a short sentence and pause. The client stops recording after silence, sends the recording to the PC, prints the transcript and reply, and plays the reply. Enter starts a turn; it isn't a key you hold while talking. Say `exit` or press Ctrl-C to finish.
 
 On Linux, device enumeration can print ALSA `Unknown PCM` messages and warnings that JACK isn't running before showing the list. Those messages alone don't establish that your selected device failed; check the device list and the result of the playback or capture attempt. `python -m sounddevice` only lists devices; adding an index to that command doesn't select or test one.
 
 If that doesn't work:
 
 - **No listening cue:** try the playback check above. Check the output index, speaker volume and mute controls. On Raspberry Pi OS, `alsamixer -c 3` opens the mixer for card 3, if it has mixer controls. Check that `--no-sounds` is absent and look for a feedback warning; optional cue failure disables feedback without preventing capture.
-- **Cue plays, but no speech is heard:** check the microphone index and input gain/mute, and speak after `Speak now...`. `Didn't hear speech. Try again.` means speech didn't start within the listening timeout. An HTTP `422` means the recording reached the PC but its recogniser couldn't understand it.
+- **Cue plays, but no speech is heard:** check the microphone index and input gain/mute, and speak after the listening cue. `Didn't hear speech. Try again.` means speech didn't start within the listening timeout. An HTTP `422` means the recording reached the PC but its recogniser couldn't understand it.
 - **Invalid device, channel or sample-rate errors:** recheck both device lists. To inspect your output device, run `python -c "import sounddevice as sd; print(sd.query_devices(1))"`, replacing `1` with your speaker index. `default_samplerate` is the rate the client uses if the speaker rejects the cue or reply's original rate. If this still fails, check that the selected devices support mono capture/playback and that their reported default rates work. An ALSA test using `plughw:3,0` can apply format conversion that a direct `hw:3,0` entry doesn't provide. An appropriate `default` or `sysdefault` entry may help if it routes to your device. Changing `--listen-timeout` won't fix a format error. The [ALSA configuration guide](https://www.alsa-project.org/wiki/Asoundrc) explains hardware and conversion plugins.
 - **Device busy:** stop any `arecord`, `aplay` or other audio test still using the hardware before starting Iris. Run the client as your normal user in the same environment as the successful tests, rather than trying `sudo` as an audio fix.
 - **Transcript and reply print, but no spoken reply:** repeat the playback check with the same speaker index. A text-mode run never plays speech; make sure `--text` is absent. An HTTP `503` points to the PC's speech service instead.
@@ -864,7 +864,7 @@ If speech recognition is poor, start by listening to the recording. Stop any oth
 python iris.py client --test-microphone --microphone 2 --speaker 7
 ```
 
-Replace `2` and `7` with indices from your own microphone and speaker lists. Keep quiet until the cue and `Speak now...`, then say a complete sentence with a natural pause in it. The client records one turn, prints the capture rate, buffer size, speech threshold and recorded duration, then plays it back locally. It uses the listening and recording-finished cues but no working sound because it makes no server request. It needs no server, connection key or downloaded speech model, and saves no file. This is a plain recording test: `--activation` and wake-model options don't make it wait for a wake phrase. Ctrl-C cancels it. `--text` can't be combined with this test.
+Replace `2` and `7` with indices from your own microphone and speaker lists. Keep quiet until the listening cue, then say a complete sentence with a natural pause in it. The client records one turn, prints the capture rate, buffer size, speech threshold and recorded duration, then plays it back locally. It uses the listening and recording-finished cues but no working sound because it makes no server request. It needs no server, connection key or downloaded speech model, and saves no file. This is a plain recording test: `--activation` and wake-model options don't make it wait for a wake phrase. Ctrl-C cancels it. `--text` can't be combined with this test.
 
 Check that the beginning, middle and end are all present, that the speed sounds natural, and that your voice is clear rather than very quiet or distorted. The duration includes retained silence around the sentence, so it won't be an exact measure of speaking time. If the test fails to hear speech, check the selected input, hardware gain and the sensitivity controls below.
 
@@ -910,7 +910,7 @@ If the echo contains only the first part of your sentence, the recording was cut
 
 #### Recordings that stop halfway through a sentence
 
-Without `--vad-model`, the client briefly calibrates to background noise before capture, then keeps that threshold fixed for the turn. In wake mode, it reuses the threshold throughout the open conversation, saving another calibration and microphone setup between replies. It calibrates again when it returns to waiting for the wake phrase. If the room noise changes during a conversation, say “stop listening” and wake Iris again to refresh it. Enter and continuous modes still calibrate each turn. Keep quiet during calibration and speak after `Speak now...`. The threshold doesn't keep rising with your voice while you're talking.
+Without `--vad-model`, the client briefly calibrates to background noise before capture, then keeps that threshold fixed for the turn. In wake mode, it reuses the threshold throughout the open conversation, saving another calibration and microphone setup between replies. It calibrates again when it returns to waiting for the wake phrase. If the room noise changes during a conversation, say “stop listening” and wake Iris again to refresh it. Enter and continuous modes still calibrate each turn. Keep quiet during calibration and speak after the listening cue. The threshold doesn't keep rising with your voice while you're talking.
 
 By default, 1.2 seconds of audio below the calibrated threshold ends the recording. If you pause to think while speaking, add `--pause-threshold 2` to your existing client command to allow a longer gap. This option works with Enter, continuous and wake activation, on all platforms. Keep `--echo-recording` enabled while checking that your whole sentence is captured.
 
@@ -1061,6 +1061,52 @@ systemctl --user stop iris-client.service
 
 To stop it and remove automatic startup, run `systemctl --user disable --now iris-client.service`. A restart creates a fresh client session, so companion mode stays off until you enable it again. Conversation history resumes only if you've enabled conversation memory on the server.
 
+#### If Raspberry Pi OS only shows your service logs with sudo
+
+If `journalctl --user` shows nothing, see whether the client logs are already
+in the system journal. Run this from your normal Pi login:
+
+```sh
+sudo journalctl -b -n 30 "_SYSTEMD_USER_UNIT=iris-client.service" "_UID=$(id -u)"
+```
+
+If that shows the logs, you can keep using that command. To read them directly
+with `journalctl --user`, journald needs persistent storage and separate
+journals for each user. Some Raspberry Pi OS installs set `Storage=volatile`
+in a drop-in named `40-rpi-volatile-storage.conf`. That setting keeps the logs
+in RAM and can explain an empty `/var/log/journal`. Drop-ins override the main
+config and are read in filename order, so a `10-persistent.conf` drop-in would
+also be overridden by the Pi's `40-…` file. You can see the files and settings
+in order with:
+
+```sh
+systemd-analyze cat-config systemd/journald.conf
+```
+
+To keep the logs on disk and give each user their own journal, create a
+drop-in that sorts after the Pi's file:
+
+```sh
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/90-persistent.conf >/dev/null <<'EOF'
+[Journal]
+Storage=persistent
+SplitMode=uid
+EOF
+sudo systemctl restart systemd-journald
+sudo journalctl --flush
+```
+
+This changes logging for the whole Pi. The value is `uid`, and
+`systemctl --user daemon-reload` only reloads user units, so use the journald
+restart above to apply the logging settings. To check that your account can
+read a fresh entry without restarting Iris or waiting for the updater, run:
+
+```sh
+systemd-run --user --wait --unit=iris-journal-test /bin/echo "Iris journal test"
+journalctl --user -b -u iris-journal-test.service -n 10
+```
+
 ### Optional home automation
 
 Iris can switch a Matter plug, read its meters and edit its weekly schedule.
@@ -1078,23 +1124,50 @@ leaves the checkout for you to sort out. An update restarts Iris and can
 interrupt a conversation, so use a branch you're happy to run as it changes.
 
 On the Pi, first set up `iris-client.service` as above. Then copy the updater
-units from your Iris checkout and enable the timer:
+units from your Iris checkout and open the installed service file:
 
 ```sh
 cp systemd/iris-autoupdate.{service,timer} ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now iris-autoupdate.timer
-journalctl --user -u iris-autoupdate.service -f
+nano ~/.config/systemd/user/iris-autoupdate.service
 ```
 
-If the checkout isn't at `~/iris-llm`, edit `WorkingDirectory` in the installed
-updater service before enabling the timer. You can also change the service
-name after `--service` if your Iris unit has a different name. The updater
-asks systemd to restart the voice client and the optional home service if
-they're running or failed. Run
-`systemctl --user start iris-autoupdate.service` to apply any available update
-now, or `systemctl --user disable --now iris-autoupdate.timer` to turn off the
-scheduled checks.
+Set `WorkingDirectory` to your checkout. The supplied service uses
+`/usr/bin/python3`. If you'd rather run the updater with Python from your
+virtual environment, change the first path in `ExecStart` as well. For
+example, if your checkout is at `~/git/iris-llm` and its virtual environment
+is `.venv`, these are the two lines to set under `[Service]`:
+
+```ini
+WorkingDirectory=%h/git/iris-llm
+ExecStart=%h/git/iris-llm/.venv/bin/python scripts/iris_autoupdate.py --service iris-client.service --service iris-home.service
+```
+
+`%h` stands for your home directory. Use the actual path to your Python
+executable if you named the environment differently. You can also change the
+names after `--service` if your Iris units have different names. Then enable
+the timer:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now iris-autoupdate.timer
+systemctl --user list-timers iris-autoupdate.timer
+```
+
+The timer starts the same one-shot service you can start by hand. To check
+now and see the result, run:
+
+```sh
+systemctl --user start iris-autoupdate.service
+journalctl --user -u iris-autoupdate.service -n 30
+```
+
+A manual run applies any available update just like a scheduled run. The
+updater asks systemd to restart the voice client and optional home service
+if they're running or failed. The updater service goes inactive when the
+check finishes, and the timer stays active. If the logs are empty, see
+[the Pi journal setup above](#if-raspberry-pi-os-only-shows-your-service-logs-with-sudo).
+To turn off scheduled checks, run
+`systemctl --user disable --now iris-autoupdate.timer`.
 
 On Windows, stop the server you started by hand, open PowerShell in the Iris
 checkout, and run the watcher. Give it the name of your local launcher:

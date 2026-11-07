@@ -293,7 +293,6 @@ def record_turn(
                 f"end pause: {pause_threshold:g} s.",
                 flush=True,
             )
-        print("Speak now...", flush=True)
         if companion_timer is not None and companion_timer.enabled:
             timeout = companion_timer.remaining()
             if timeout <= 0:
