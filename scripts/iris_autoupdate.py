@@ -169,12 +169,24 @@ class WindowsServer:
             stdin=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-        try:
-            code = self.process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
+        code = self.wait(timeout=2)
+        if code is None:
             log("Started the Iris server.")
             return
         raise UpdateError(f"The Iris launcher exited during startup (exit code {code}).")
+
+    def wait(self, timeout: float) -> int | None:
+        # A long Popen.wait() on Windows can defer Ctrl+C until the child exits or
+        # the timeout expires. Poll briefly so the watcher can handle Ctrl+C.
+        deadline = time.monotonic() + timeout
+        while True:
+            code = self.process.poll() if self.process is not None else None
+            if code is not None:
+                return code
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(0.25, remaining))
 
     def stop(self) -> None:
         if self.process is None or self.process.poll() is not None:
@@ -298,18 +310,17 @@ def main() -> int:
                         log(f"Iris update skipped or incomplete: {exc}")
                     if not repo.pending_path.exists() and server.process is None:
                         server.start()
-                    if server.process is None:
-                        time.sleep(300)
-                        continue
-                    try:
-                        code = server.process.wait(timeout=300)
-                    except subprocess.TimeoutExpired:
+                    code = server.wait(timeout=300)
+                    if code is None:
                         continue
                     if repo.pending_path.exists():
                         time.sleep(300)
                         continue
                     log(f"The Iris server exited (exit code {code}).")
                     return code
+            except KeyboardInterrupt:
+                log("Stopping the Iris updater and server.")
+                return 0
             finally:
                 server.stop()
     except KeyboardInterrupt:

@@ -1120,15 +1120,54 @@ changes, run the updater with `--check-access` in place of `--launcher` or
 from your checkout with
 `systemd-run --user --wait --pipe --working-directory="$PWD" /usr/bin/python3 scripts/iris_autoupdate.py --check-access`.
 
-If your launcher already handles dependencies, keep using it as usual.
-Otherwise, you can put `--install-command` at the end of the updater command
-followed by the same install or sync command you use for this checkout.
-Include all the extras you normally install and use the full executable path
-if it isn't on the updater's PATH. On the Pi, add it to `ExecStart` in the
-installed updater unit and reload systemd. On Windows the watcher stops the
-server before running this command so it can update packages in the server's
-environment. If the command or restart fails, the updater logs the failure
-and retries it on the next check.
+#### Optional Python package updates
+
+The basic updater pulls changes to the Iris code and restarts Iris. It uses
+the Python packages already installed in your environment. If a change needs
+a new package or version, you can stop Iris, run your usual install command,
+and start it again. If you'd like to automate that step too, pick one of the
+two setups below.
+
+**Run pip whenever you start Iris.** Add this block to your existing
+`run_server.ps1`, just before the line that starts Iris. This example assumes
+the script and the server's `.venv` are in the Iris checkout. `$PSScriptRoot`
+is the folder containing the script, so pip can find the checkout even if
+you start the script from another folder.
+
+```powershell
+$python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+& $python -m pip install -e "${PSScriptRoot}[whisper,kokoro]"
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+# Keep your existing command that starts Iris below this block.
+```
+
+With this setup, pip runs every time the launcher starts, whether you run it
+by hand or the watcher runs it after an update. The check after pip stops the
+script if the install fails. Keep using the short watcher command with
+`--launcher .\run_server.ps1`.
+
+**Run pip only after the watcher pulls an update.** Keep your existing
+`run_server.ps1` as it is. Put this line in the script you use to start the
+watcher, and run it from the Iris checkout:
+
+```powershell
+py -3 scripts/iris_autoupdate.py --launcher .\run_server.ps1 --install-command .\.venv\Scripts\python.exe -m pip install -e ".[whisper,kokoro]"
+```
+
+PowerShell starts the watcher. The watcher saves everything after
+`--install-command` as the command to run later, which is why that option
+goes last. After it pulls new commits, it stops Iris, runs pip, and starts
+Iris again through `run_server.ps1`. If the install or restart fails, it logs
+the failure and retries on the next check.
+
+Both examples use the server's `.venv` and the usual Whisper and Kokoro
+extras. Keep any other extras you already use, such as `memory` for semantic
+recall. If you installed with uv, use your usual `uv sync` command in place
+of pip. On the Pi, you can add `--install-command` and your install command
+at the end of `ExecStart` in the installed updater unit, then reload systemd.
+Use the full path to the executable if the updater can't find it on its PATH.
 
 ## If something doesn't work
 
