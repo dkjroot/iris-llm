@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     weather_enabled: bool = False
     weather_location: str = "Stroud"
     weather_country: str = "GB"
+    home_service_url: str | None = None
+    home_service_ca: Path | None = None
+    home_service_token: SecretStr | None = Field(default=None, exclude=True)
     notifications_enabled: bool = False
     pushover_api_token: SecretStr | None = Field(default=None, exclude=True)
     pushover_user_key: SecretStr | None = Field(default=None, exclude=True)
@@ -153,6 +156,17 @@ class Settings(BaseSettings):
             raise ValueError("Use an http(s) base URL without credentials, query, or fragment")
         return value.rstrip("/")
 
+    @field_validator("home_service_url")
+    @classmethod
+    def validate_home_service_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = cls.validate_endpoint(value)
+        endpoint = urlsplit(value)
+        if endpoint.scheme != "https" and endpoint.hostname not in {"127.0.0.1", "localhost"}:
+            raise ValueError("Use HTTPS for a home service on another machine")
+        return value
+
     @field_validator("model", "whisper_model", "tokenizer_model", "ctc_model", "compute_type")
     @classmethod
     def nonblank(cls, value: str) -> str:
@@ -173,6 +187,12 @@ class Settings(BaseSettings):
             raise ValueError(
                 "model_context_tokens must leave room for prompts, replies and summaries"
             )
+        if self.tools_enabled and self.home_service_url:
+            token = self.home_service_token.get_secret_value() if self.home_service_token else ""
+            if len(token) < 32 or not token.isascii() or not token.isalnum():
+                raise ValueError(
+                    "Set IRIS_HOME_SERVICE_TOKEN to at least 32 ASCII letters or digits"
+                )
         host = urlsplit(self.base_url).hostname
         if not self.allow_remote and (
             host not in {"localhost", "127.0.0.1", "::1"} or self.stt_engine == "google"

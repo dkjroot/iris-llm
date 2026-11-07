@@ -26,6 +26,8 @@
     "trace": false,
     "reply_encoding": "text",
     "tools_enabled": true,
+    "home_service_url": null,
+    "home_service_ca": null,
     "notifications_enabled": false,
     "pushover_device": "",
     "chat_template_kwargs": {},

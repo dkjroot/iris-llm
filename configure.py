@@ -40,6 +40,8 @@ BASIC_SETTINGS = frozenset(
     }
 )
 ENVIRONMENT_SETTINGS = {
+    "home_service_token": "Set IRIS_HOME_SERVICE_TOKEN in the server environment; "
+    "it isn't saved here.",
     "api_key": "Set IRIS_API_KEY in the server environment; it isn't saved here.",
     "pushover_api_token": "Set IRIS_PUSHOVER_API_TOKEN in the server environment; "
     "it isn't saved here.",
@@ -48,6 +50,8 @@ ENVIRONMENT_SETTINGS = {
 }
 
 ADVANCED_HELP = {
+    "home_service_url": "URL of the standalone home automation service",
+    "home_service_ca": "PEM certificate to trust for the home automation service",
     "system_prompt": "Iris's instructions and personality",
     "conversation_style_prompt": 'Character\'s conversation style; enter "" to remove the nudge',
     "temperature": "Reply randomness, from 0 to 2",

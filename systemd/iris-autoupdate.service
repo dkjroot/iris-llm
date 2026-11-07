@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for Iris updates and restart the running Iris services
+
+[Service]
+Type=oneshot
+# Change this path if the checkout is somewhere else.
+WorkingDirectory=%h/iris-llm
+ExecStart=/usr/bin/python3 scripts/iris_autoupdate.py --service iris-client.service --service iris-home.service
+TimeoutStartSec=15min

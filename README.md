@@ -1061,6 +1061,75 @@ systemctl --user stop iris-client.service
 
 To stop it and remove automatic startup, run `systemctl --user disable --now iris-client.service`. A restart creates a fresh client session, so companion mode stays off until you enable it again. Conversation history resumes only if you've enabled conversation memory on the server.
 
+### Optional home automation
+
+Iris can switch a Matter plug, read its meters and edit its weekly schedule.
+The [home automation service](docs/home-automation.md) can run on an always-on
+Pi alongside the voice client, so schedules still run when the PC goes to sleep.
+
+### Optional automatic updates
+
+If you're following development and want to keep Iris up to date, you can run a
+separate updater on the PC, the Pi, or both. You can still pull changes and
+start Iris yourself as usual. The updater checks your current branch's Git
+upstream every five minutes and applies new commits when it can fast-forward
+the checkout. If you have tracked edits or the branches have diverged, it
+leaves the checkout for you to sort out. An update restarts Iris and can
+interrupt a conversation, so use a branch you're happy to run as it changes.
+
+On the Pi, first set up `iris-client.service` as above. Then copy the updater
+units from your Iris checkout and enable the timer:
+
+```sh
+cp systemd/iris-autoupdate.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now iris-autoupdate.timer
+journalctl --user -u iris-autoupdate.service -f
+```
+
+If the checkout isn't at `~/iris-llm`, edit `WorkingDirectory` in the installed
+updater service before enabling the timer. You can also change the service
+name after `--service` if your Iris unit has a different name. The updater
+asks systemd to restart the voice client and the optional home service if
+they're running or failed. Run
+`systemctl --user start iris-autoupdate.service` to apply any available update
+now, or `systemctl --user disable --now iris-autoupdate.timer` to turn off the
+scheduled checks.
+
+On Windows, stop the server you started by hand, open PowerShell in the Iris
+checkout, and run the watcher. Give it the name of your local launcher:
+
+```powershell
+py -3 scripts/iris_autoupdate.py --launcher .\run_server.ps1
+```
+
+Use `start_server.ps1` instead if that's what you called it. The launcher
+should run the server in the foreground and set up any environment and
+arguments the server needs. Leave the watcher shell open. It starts the
+launcher, replaces the server process after updates, and stops the server
+when you press Ctrl+C. If your launcher needs PowerShell 7, add
+`--powershell pwsh.exe`. If an update changes the watcher itself, close and
+reopen the watcher to pick up its new code.
+
+Git uses your normal user credentials. Public HTTPS remotes can be fetched
+without signing in. For a private remote, Git needs credentials it can use
+without prompting. On the Pi, an SSH agent available in your terminal may
+not be available to the user service. To check Git access without applying
+changes, run the updater with `--check-access` in place of `--launcher` or
+`--service`. On the Pi, you can run that check in a transient user service
+from your checkout with
+`systemd-run --user --wait --pipe --working-directory="$PWD" /usr/bin/python3 scripts/iris_autoupdate.py --check-access`.
+
+If your launcher already handles dependencies, keep using it as usual.
+Otherwise, you can put `--install-command` at the end of the updater command
+followed by the same install or sync command you use for this checkout.
+Include all the extras you normally install and use the full executable path
+if it isn't on the updater's PATH. On the Pi, add it to `ExecStart` in the
+installed updater unit and reload systemd. On Windows the watcher stops the
+server before running this command so it can update packages in the server's
+environment. If the command or restart fails, the updater logs the failure
+and retries it on the next check.
+
 ## If something doesn't work
 
 - If the connection fails, check the PC's address, the server's listening address,

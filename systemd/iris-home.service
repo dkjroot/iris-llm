@@ -1,0 +1,17 @@
+[Unit]
+Description=Iris local home automation and schedules
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/iris-llm
+ExecStart="%h/iris-llm/.venv/bin/python" -m iris_home.service --config "%h/.config/iris/home.json"
+EnvironmentFile=%h/.config/iris/home.env
+UMask=0077
+NoNewPrivileges=true
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+
+[Install]
+WantedBy=default.target
