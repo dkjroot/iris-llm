@@ -741,6 +741,57 @@ def test_local_test_silence_reports_actionable_failure(capsys):
     transport.assert_not_called()
 
 
+@pytest.mark.parametrize("mic_index,speaker_index", [(2, 3), (3, 2)])
+def test_named_audio_devices_resolve_to_current_indices(mic_index, speaker_index):
+    microphone_devices = [{"name": "USB Audio", "maxInputChannels": 0}] * 4
+    microphone_devices[mic_index] = {"name": "USB Audio (hw:4,0)", "maxInputChannels": 1}
+    speaker_devices = [{"name": "Desk Speaker", "max_output_channels": 0}] * 4
+    speaker_devices[speaker_index] = {"name": "Desk Speaker (hw:2,0)", "max_output_channels": 2}
+    with (
+        patch.object(sr.Microphone, "get_pyaudio") as pyaudio,
+        patch("sounddevice.query_devices", return_value=speaker_devices),
+        patch("iris_droid.client.record_turn", return_value=RECORDING) as record,
+        patch("iris_droid.client.play_wav") as play,
+    ):
+        audio = pyaudio.return_value.PyAudio.return_value
+        audio.get_device_count.return_value = len(microphone_devices)
+        audio.get_device_info_by_index.side_effect = microphone_devices.__getitem__
+        assert (
+            iris.main(
+                [
+                    "client",
+                    "--test-microphone",
+                    "--no-sounds",
+                    "--microphone",
+                    "USB Audio (hw:1,0)",
+                    "--speaker",
+                    "desk speaker",
+                ]
+            )
+            == 0
+        )
+        audio.terminate.assert_called_once_with()
+    assert record.call_args.args[0] == mic_index
+    play.assert_called_once_with(RECORDING, speaker_index)
+
+
+@pytest.mark.parametrize(
+    "name,error", [("headset", "matches indices 0, 1"), ("missing", "was not found")]
+)
+def test_unresolved_speaker_reports_error_before_playback(name, error, capsys):
+    devices = [
+        {"name": "Headset A", "max_output_channels": 2},
+        {"name": "Headset B", "max_output_channels": 2},
+    ]
+    with (
+        patch("sounddevice.query_devices", return_value=devices),
+        patch("iris_droid.client.play_wav") as play,
+    ):
+        assert iris.main(["client", "--play-wav", "unused.wav", "--speaker", name]) == 1
+    assert error in capsys.readouterr().out
+    play.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "flag,keyword,value",
     [
