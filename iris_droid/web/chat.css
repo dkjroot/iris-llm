@@ -26,6 +26,9 @@ details, input, textarea, article {
 }
 summary { cursor: pointer; }
 details label { margin: .5rem 0; display: block; }
+details [hidden] { display: none; }
+#remember { width: auto; margin-right: .35rem; }
+#remember-status { margin: .5rem 0 0; color: #cbb8ff; }
 input, textarea { width: 100%; color: inherit; font: inherit; }
 textarea { resize: vertical; }
 #messages {

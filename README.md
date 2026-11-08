@@ -538,8 +538,10 @@ if you need to cross an untrusted network, use an encrypted VPN or HTTPS proxy.
 If you have your phone handy, you can open Iris in its browser and type a message
 or tap **Microphone** and just start talking. Iris sends the spoken reply back
 to the phone, then listens again. Tap the button again to switch the mic off.
-Typed messages get a written reply. The page keeps your key and transcript in
-the open tab. Iris still follows the server's usual memory and private-mode settings.
+Typed messages get a written reply. On HTTPS, tick **Remember this phone** to
+keep the connection key in this browser after a successful turn. Untick it
+under **Connection key** to remove the saved copy. The page keeps the transcript
+in the open tab, and Iris still follows the server's usual memory and private-mode settings.
 
 On the computer that runs Iris, add `--web-chat` to the existing server command
 and restart it. For example:

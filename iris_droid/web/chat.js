@@ -8,11 +8,57 @@ const mic = document.querySelector("#mic");
 const status = document.querySelector("#status");
 const messages = document.querySelector("#messages");
 const connection = document.querySelector("#connection");
+const remember = document.querySelector("#remember");
+const rememberOption = document.querySelector("#remember-option");
+const rememberStatus = document.querySelector("#remember-status");
+const storageKey = "iris.droid.connection-key";
 const phraseLimit = Number(document.body.dataset.phraseLimit);
 let session = newSession();
 let voice = null;
 let pending = false;
 let privateMode = false;
+let savedToken = null;
+
+if (location.protocol === "https:") {
+  try {
+    savedToken = localStorage.getItem(storageKey);
+    if (savedToken) {
+      key.value = savedToken;
+      remember.checked = true;
+      connection.open = false;
+    }
+    rememberOption.hidden = false;
+  } catch {
+    showRememberStatus("This browser won’t let Iris save the connection key.");
+  }
+}
+
+function showRememberStatus(text) {
+  rememberStatus.textContent = text;
+  rememberStatus.hidden = !text;
+}
+
+function forgetSavedKey() {
+  try {
+    localStorage.removeItem(storageKey);
+    savedToken = null;
+    showRememberStatus("");
+  } catch {
+    remember.checked = true;
+    showRememberStatus("Couldn’t remove the saved key. Clear this site’s data in your browser.");
+  }
+}
+
+remember.addEventListener("change", () => {
+  if (!remember.checked) forgetSavedKey();
+});
+
+window.addEventListener("storage", event => {
+  if (event.key === storageKey || event.key === null) {
+    savedToken = event.newValue;
+    if (!savedToken) remember.checked = false;
+  }
+});
 
 function newSession() {
   // getRandomValues also works for typed chat over plain HTTP on the LAN.
@@ -69,6 +115,7 @@ async function playReply(active, wav) {
 
 async function turn(body, active = null) {
   const spoken = active !== null;
+  const token = key.value;
   pending = true;
   send.disabled = true;
   key.readOnly = true;
@@ -81,7 +128,7 @@ async function turn(body, active = null) {
     const response = await fetch(spoken ? "/v1/voice" : "/v1/text", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key.value}`,
+        Authorization: `Bearer ${token}`,
         "Content-Type": spoken ? "audio/wav" : "text/plain",
         "X-Iris-Session": session,
       },
@@ -90,7 +137,10 @@ async function turn(body, active = null) {
     });
     const reply = await response.json();
     if (!response.ok) {
-      if (response.status === 401) connection.open = true;
+      if (response.status === 401) {
+        connection.open = true;
+        if (token === savedToken) forgetSavedKey();
+      }
       if (response.status === 422 && spoken) {
         feedback = "I didn’t catch that. Try again.";
         return;
@@ -99,6 +149,16 @@ async function turn(body, active = null) {
     }
     privateMode = response.headers.get("X-Iris-Private") === "1";
     connection.open = false;
+    if (remember.checked && !rememberOption.hidden && token !== savedToken) {
+      try {
+        localStorage.setItem(storageKey, token);
+        savedToken = token;
+        showRememberStatus("");
+      } catch {
+        connection.open = true;
+        showRememberStatus("Couldn’t save the key. You can still chat in this tab.");
+      }
+    }
     addMessage("You", reply.heard);
     addMessage("Iris", reply.text);
     if (!spoken && message.value.trim() === body) message.value = "";

@@ -21,6 +21,10 @@
         <summary>Connection key</summary>
         <label for="key">Use the same key as your Iris client.</label>
         <input id="key" type="password" autocomplete="off" spellcheck="false" required>
+        <label id="remember-option" hidden>
+          <input id="remember" type="checkbox"> Remember this phone
+        </label>
+        <p id="remember-status" role="status" hidden></p>
       </details>
       <div id="messages" role="log" aria-label="Conversation"></div>
       <p id="status" role="status">Ready</p>
