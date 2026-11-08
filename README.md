@@ -717,15 +717,15 @@ python iris.py client --list-microphones
 python -m sounddevice
 ```
 
-The first command lists names and indices from SpeechRecognition/PyAudio for `--microphone`. The second lists sounddevice devices for `--speaker`; choose one with output channels (`out`). The first list can include playback-only devices too, so choose an entry for your microphone rather than assuming every listed device can record. The two libraries enumerate devices separately, so choose each index from its own list.
+The first command lists PyAudio devices for `--microphone`. The second lists sounddevice devices for `--speaker`. Look for one with output channels (`out`). Choose names from the respective lists. On a Pi, USB audio devices can come back in a different order after a reboot, so use names in the client service.
 
-For example, if your microphone is index `2` in the first list and your speaker is index `7` in the second, run:
+This command works in PowerShell and Bash. Replace the address and the quoted names with yours.
 
 ```sh
-python iris.py client --server http://192.168.1.10:8765 --microphone 2 --speaker 7
+python iris.py client --server http://192.168.1.10:8765 --microphone 'USB Microphone' --speaker 'USB Speaker'
 ```
 
-Replace the address and both indices with yours. These numbers are examples, not defaults. `--speaker` selects the output for both the listening cue and Iris's spoken reply. Without these options, the libraries use their default input and output devices. Device choices are command-line options; they aren't saved by the server's configuration script. Include them each time you launch the client, including with continuous or wake activation.
+Iris looks up the current indices at launch. A full name takes precedence, and part of a name works if it identifies one device in the right direction. On Linux the card number in a suffix such as `(hw:3,0)` can change, so Iris ignores that part of the suffix when matching names. If several devices match, use a more specific name. Indices still work, and leaving out either option uses the corresponding default. The speaker plays both the listening cue and Iris's reply. Put these options in the client command, including when launching it as a service.
 
 #### Control the speaker volume by voice
 
@@ -740,19 +740,19 @@ if `amixer` isn't already available (`sudo apt install alsa-utils` on Raspberry
 Pi OS). Choose the card and playback control that drive your speaker:
 
 ```sh
-aplay -l
-amixer -c 3 scontrols
-amixer -M -c 3 sget 'PCM'
-python iris.py client --server http://192.168.1.10:8765 --speaker 7 --volume-backend alsa --alsa-card 3 --alsa-control 'PCM'
+cat /proc/asound/cards
+amixer -c 'Device' scontrols
+amixer -M -c 'Device' sget 'PCM'
+python iris.py client --server http://192.168.1.10:8765 --speaker 'USB Speaker' --volume-backend alsa --alsa-card 'Device' --alsa-control 'PCM'
 ```
 
-Those card, speaker and control values are examples: use yours. The mixer
-control might be called `Master`, `PCM`, `Speaker` or something else; use the
-name shown by `amixer`. Without overrides, Iris uses the default ALSA card and
-the `Master` control. `--alsa-card` also accepts an ALSA card ID. It is separate
-from the sounddevice index used by `--speaker`, so make sure they refer to the
-same output. Put these options in your client launcher if you run it as a
-service. They belong on the Pi, rather than in the PC's server configuration.
+Use the ALSA card ID in square brackets in `/proc/asound/cards`. For example,
+if the line begins with `3 [Device         ]`, use `Device`. ALSA finds the
+card by that ID even when its number changes. The mixer control might be
+called `Master`, `PCM` or `Speaker`. Use the name shown by `amixer`. The
+speaker name and ALSA card ID come from different lists, so check that both
+refer to the same output. A numeric ALSA card still works. Without overrides,
+Iris uses the default ALSA card and the `Master` control.
 
 The recording goes to the server for recognition as usual. Iris recognises
 these whole commands directly, sends an instruction back to the client and

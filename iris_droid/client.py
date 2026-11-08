@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 import base64
 import os
-from collections.abc import Iterator
+import re
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, nullcontext
 from importlib.resources import files
 from pathlib import Path
@@ -321,6 +322,71 @@ def record_turn(
     return write_wav(pcm[: int(limit * 16000) * 2], 16000)
 
 
+def audio_selector(value: str) -> int | str:
+    try:
+        return int(value)
+    except ValueError:
+        if not value.strip():
+            raise argparse.ArgumentTypeError("Enter a device index or name") from None
+        return value.strip()
+
+
+def resolve_audio_name(
+    name: str, devices: Iterable[tuple[int, str]], *, option: str, list_command: str
+) -> int:
+    def stable_name(value: str) -> str:
+        # PortAudio's ALSA names can embed the changing card index.
+        return re.sub(r"\(hw:\d+,(\d+)\)$", r"(hw:*,\1)", value.strip()).casefold()
+
+    wanted = stable_name(name)
+    exact = []
+    partial = []
+    for index, label in devices:
+        candidate = stable_name(label)
+        if wanted == candidate:
+            exact.append(index)
+        elif wanted in candidate:
+            partial.append(index)
+    matches = exact or partial
+    if len(matches) == 1:
+        return matches[0]
+    reason = f"matches indices {', '.join(map(str, matches))}" if matches else "was not found"
+    raise ValueError(f"{option} {name!r} {reason}. Check {list_command} for a unique device name.")
+
+
+def resolve_microphone(name: str) -> int:
+    import speech_recognition as sr
+
+    audio = sr.Microphone.get_pyaudio().PyAudio()
+    try:
+        devices = []
+        for index in range(audio.get_device_count()):
+            info = audio.get_device_info_by_index(index)
+            if info["maxInputChannels"] > 0:
+                devices.append((index, str(info["name"])))
+    finally:
+        audio.terminate()
+    return resolve_audio_name(
+        name,
+        devices,
+        option="--microphone",
+        list_command="python iris.py client --list-microphones",
+    )
+
+
+def resolve_speaker(name: str) -> int:
+    import sounddevice as sd
+
+    devices = (
+        (index, str(info["name"]))
+        for index, info in enumerate(sd.query_devices())
+        if info["max_output_channels"] > 0
+    )
+    return resolve_audio_name(
+        name, devices, option="--speaker", list_command="python -m sounddevice"
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -368,7 +434,7 @@ def main(argv: list[str] | None = None) -> int:
         default=300,
         help="Wake conversation idle timeout in seconds (0 < value <= 3600; default: 300)",
     )
-    parser.add_argument("--microphone", type=int)
+    parser.add_argument("--microphone", type=audio_selector, help="PyAudio input index or name")
     parser.add_argument(
         "--microphone-rate",
         type=int,
@@ -390,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Record and play one local test; no server, key, wake model or saved files needed",
     )
-    parser.add_argument("--speaker", type=int, help="sounddevice output device index")
+    parser.add_argument("--speaker", type=audio_selector, help="sounddevice output index or name")
     parser.add_argument(
         "--speech-lead-in",
         type=float,
@@ -473,9 +539,20 @@ def main(argv: list[str] | None = None) -> int:
             energy_threshold=args.energy_threshold,
             calibration_duration=args.calibration_duration,
         )
+        if args.play_wav is not None and (args.text or args.test_microphone):
+            raise ValueError("--play-wav cannot be combined with --text or --test-microphone")
+        if args.test_microphone and args.text:
+            raise ValueError("--test-microphone cannot be combined with --text")
+        if not args.text:
+            if isinstance(args.speaker, str):
+                name = args.speaker
+                args.speaker = resolve_speaker(name)
+                print(f"Speaker {name!r} resolved to index {args.speaker}.")
+            if args.play_wav is None and isinstance(args.microphone, str):
+                name = args.microphone
+                args.microphone = resolve_microphone(name)
+                print(f"Microphone {name!r} resolved to index {args.microphone}.")
         if args.play_wav is not None:
-            if args.text or args.test_microphone:
-                raise ValueError("--play-wav cannot be combined with --text or --test-microphone")
             play_wav(
                 args.play_wav.read_bytes(),
                 args.speaker,
@@ -493,8 +570,6 @@ def main(argv: list[str] | None = None) -> int:
             args.speaker, play_wav, stop_playback, enabled=not args.no_sounds and not args.text
         ) as feedback:
             if args.test_microphone:
-                if args.text:
-                    raise ValueError("--test-microphone cannot be combined with --text")
                 print("Local microphone test. Stay quiet until the listening cue, then speak.")
                 import speech_recognition as sr
 
