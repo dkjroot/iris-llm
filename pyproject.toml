@@ -44,6 +44,7 @@ include = ["iris_chat_engines*", "iris_stt_engines*", "iris_tts_engines*", "iris
 
 [tool.setuptools.package-data]
 iris_sounds = ["*.wav", "README.md"]
+iris_droid = ["web/*.html", "web/*.css", "web/*.js"]
 
 [tool.ruff]
 line-length = 100

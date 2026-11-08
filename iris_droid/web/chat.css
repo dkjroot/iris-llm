@@ -1,0 +1,57 @@
+:root {
+  color-scheme: dark;
+  font: 100%/1.5 system-ui, sans-serif;
+  background: #11111b;
+  color: #f0edf8;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+main {
+  width: min(100%, 42rem);
+  min-height: 100svh;
+  margin: auto;
+  padding: 1.25rem 1rem max(1rem, env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+}
+header p { margin: .4rem 0 1rem; color: #c4bed5; }
+header .eyebrow { color: #cbb8ff; font-size: .75rem; letter-spacing: .15em; }
+h1 { font-size: 2.25rem; line-height: 1.1; margin: 0; }
+form { flex: 1; display: flex; flex-direction: column; gap: .5rem; }
+details, input, textarea, article {
+  background: #1d1b2b;
+  border: 1px solid #49425c;
+  border-radius: .75rem;
+  padding: .75rem;
+}
+summary { cursor: pointer; }
+details label { margin: .5rem 0; display: block; }
+input, textarea { width: 100%; color: inherit; font: inherit; }
+textarea { resize: vertical; }
+#messages {
+  flex: 1 1 8rem;
+  min-height: 8rem;
+  max-height: 42svh;
+  overflow-y: auto;
+  padding: .25rem;
+}
+article { margin: .5rem 0; overflow-wrap: anywhere; }
+article[data-speaker="You"] { background: #2d2343; margin-left: 1rem; }
+article p { margin: .25rem 0 0; white-space: pre-wrap; }
+#status { margin: 0; color: #cbb8ff; min-height: 1.5em; }
+.actions { display: flex; gap: .65rem; }
+button {
+  flex: 1;
+  min-height: 3rem;
+  border: 1px solid #9685bb;
+  border-radius: .75rem;
+  background: #262039;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+#send { background: #d2bcff; color: #1d142f; }
+#mic[aria-pressed="true"] { background: #f7b3c0; color: #2b1422; }
+button:disabled { opacity: .55; cursor: default; }
+:focus-visible { outline: 2px solid #ebdfff; outline-offset: 2px; }

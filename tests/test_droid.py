@@ -139,14 +139,23 @@ def test_session_memory_is_bounded() -> None:
     assert len(brain.sessions) == 16 and "0" not in brain.sessions
 
 
-def test_real_http_transport_auth_validation_and_voice_turn() -> None:
+@pytest.mark.parametrize("web_chat", [False, True])
+def test_real_http_transport_auth_validation_and_voice_turn(web_chat: bool) -> None:
     brain, transport = make_brain()
-    with transport, HTTPServer(("127.0.0.1", 0), handler_for(brain, TOKEN)) as server:
+    handler = handler_for(brain, TOKEN, web_chat=web_chat)
+    with transport, HTTPServer(("127.0.0.1", 0), handler) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             with httpx.Client(trust_env=False, timeout=5) as http:
                 url = f"http://127.0.0.1:{server.server_port}"
+                page = http.get(f"{url}/chat")
+                assert page.status_code == (200 if web_chat else 404)
+                if web_chat:
+                    assert f'data-phrase-limit="{brain.settings.phrase_time_limit}"' in page.text
+                    assert page.headers["cache-control"] == "no-store"
+                    for path in ("/chat.css", "/chat.js", "/speech.js", "/mic.js"):
+                        assert http.get(f"{url}{path}").status_code == 200
                 assert http.post(f"{url}/v1/voice", content=b"bad").status_code == 401
                 headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "audio/wav"}
                 assert (

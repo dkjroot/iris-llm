@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Talk to Iris</title>
+  <link rel="stylesheet" href="/chat.css">
+  <link rel="icon" href="data:,">
+  <script type="module" src="/chat.js"></script>
+</head>
+<body data-phrase-limit="__IRIS_PHRASE_LIMIT__">
+  <main>
+    <header>
+      <p class="eyebrow">HOME NETWORK</p>
+      <h1>Talk to Iris</h1>
+      <p>Type a message, or turn on the mic and speak when you’re ready.</p>
+    </header>
+    <form id="chat">
+      <details id="connection" open>
+        <summary>Connection key</summary>
+        <label for="key">Use the same key as your Iris client.</label>
+        <input id="key" type="password" autocomplete="off" spellcheck="false" required>
+      </details>
+      <div id="messages" role="log" aria-label="Conversation"></div>
+      <p id="status" role="status">Ready</p>
+      <label for="message">Your message</label>
+      <textarea id="message" rows="2" maxlength="8000" placeholder="Say something to Iris"></textarea>
+      <div class="actions">
+        <button type="submit" id="send">Send</button>
+        <button type="button" id="mic" aria-pressed="false">Microphone</button>
+      </div>
+    </form>
+  </main>
+</body>
+</html>

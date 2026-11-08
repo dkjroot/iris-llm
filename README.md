@@ -36,6 +36,8 @@ the PC that has the model horsepower, and the client looks after the microphone
 and speaker. That client can be a laptop while you're trying it out, then a
 Raspberry Pi when you're ready to build the droid. You can also run both on the
 same computer; it's exactly the same setup, using a local connection.
+Your phone's browser can be the client too when you're on your home Wi-Fi.
+[Talk to Iris from your phone](#talk-to-iris-from-your-phone).
 
 ```text
 Laptop or Pi                          PC
@@ -530,6 +532,60 @@ VPN can change who can reach the PC. Iris doesn't create router mappings or
 public tunnels. Keep it on your trusted network and don't forward this port to
 the internet. This small HTTP service doesn't encrypt the key or conversation;
 if you need to cross an untrusted network, use an encrypted VPN or HTTPS proxy.
+
+## Talk to Iris from your phone
+
+If you have your phone handy, you can open Iris in its browser and type a message
+or tap **Microphone** and just start talking. Iris sends the spoken reply back
+to the phone, then listens again. Tap the button again to switch the mic off.
+Typed messages get a written reply. The page keeps your key and transcript in
+the open tab. Iris still follows the server's usual memory and private-mode settings.
+
+On the computer that runs Iris, add `--web-chat` to the existing server command
+and restart it. For example:
+
+```sh
+python iris.py server --host 0.0.0.0 --web-chat
+```
+
+Connect your phone to your home Wi-Fi and open
+`http://192.168.1.10:8765/chat`, replacing `192.168.1.10` with the server's
+LAN address. Enter the same connection key you set as `IRIS_DROID_TOKEN`.
+If the server firewall only allows the Pi, allow the phone too. Plain HTTP
+is enough for a quick text test on trusted Wi-Fi, though it sends the key
+and messages without encryption.
+
+### Enable the phone microphone
+
+The browser needs an HTTPS address it trusts before it can use the microphone.
+If you already have an HTTPS reverse proxy on the server, point it at Iris on
+`127.0.0.1:8765` and open `/chat` through it. If you don't, you can run
+[Caddy](https://caddyserver.com/docs/quick-starts/reverse-proxy) on the same
+computer with this Caddyfile. Use your server's LAN address in both places
+where `192.168.1.10` appears:
+
+```caddyfile
+{
+    auto_https disable_redirects
+}
+
+https://192.168.1.10:8443 {
+    bind 192.168.1.10
+    tls internal
+    reverse_proxy 127.0.0.1:8765
+}
+```
+
+Start Caddy with `caddy run --config Caddyfile` and allow TCP port 8443 from
+your home network in the server firewall. Follow
+[Caddy's guide to finding its local root certificate](https://caddyserver.com/docs/running)
+and install that certificate on the phone. On iPhone, enable full trust for it
+under **Settings → General → About → Certificate Trust Settings** after
+installing it. [Apple's certificate trust instructions](https://support.apple.com/en-us/102390).
+
+Open `https://192.168.1.10:8443/chat` and allow microphone access
+when the browser asks. Keep these ports on the home network and leave router
+port forwarding off. The Pi can keep using its existing server address.
 
 ## How to set up the client
 

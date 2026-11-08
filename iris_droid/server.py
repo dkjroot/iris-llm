@@ -10,8 +10,9 @@ import os
 import sqlite3
 from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -50,6 +51,14 @@ from iris_stt_engines.ISTT import ISTT
 from iris_tools import Skill
 
 LOGGER = logging.getLogger(__name__)
+
+WEB_ASSETS = {
+    "/chat": ("index.html", "text/html"),
+    "/chat.css": ("chat.css", "text/css"),
+    "/chat.js": ("chat.js", "text/javascript"),
+    "/mic.js": ("mic.js", "text/javascript"),
+    "/speech.js": ("speech.js", "text/javascript"),
+}
 
 
 class Synthesizer(Protocol):
@@ -824,9 +833,13 @@ class Brain:
         return result
 
 
-def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
+def handler_for(
+    brain: Brain, token: str, *, web_chat: bool = False
+) -> type[BaseHTTPRequestHandler]:
+    turn_lock = Lock()
+
     class Handler(BaseHTTPRequestHandler):
-        # HTTP/1.0 deliberately closes each connection. Models run serially.
+        # HTTP/1.0 deliberately closes each connection.
         def setup(self) -> None:
             super().setup()
             self.connection.settimeout(15)
@@ -834,15 +847,43 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
         def log_message(self, format: str, *args: object) -> None:
             pass  # Don't log conversation bodies, credentials or request headers.
 
-        def respond(self, status: int, body: bytes, *, private: bool | None = None) -> None:
+        def respond(
+            self,
+            status: int,
+            body: bytes,
+            *,
+            private: bool | None = None,
+            content_type: str = "application/json",
+        ) -> None:
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            if content_type.startswith("text/html"):
+                self.send_header(
+                    "Content-Security-Policy",
+                    "default-src 'self'; img-src data:; object-src 'none'; "
+                    "base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+                )
+                self.send_header("Permissions-Policy", "microphone=(self)")
             if private is not None:
                 self.send_header("X-Iris-Private", "1" if private else "0")
             self.end_headers()
             self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            asset = WEB_ASSETS.get(self.path) if web_chat else None
+            if asset is None:
+                self.respond(404, b'{"error":"Unknown route"}')
+                return
+            name, content_type = asset
+            body = Path(__file__).with_name("web").joinpath(name).read_bytes()
+            if name == "index.html":
+                body = body.replace(
+                    b"__IRIS_PHRASE_LIMIT__", str(brain.settings.phrase_time_limit).encode()
+                )
+            self.respond(200, body, content_type=f"{content_type}; charset=utf-8")
 
         def do_POST(self) -> None:
             if not hmac.compare_digest(
@@ -853,6 +894,11 @@ def handler_for(brain: Brain, token: str) -> type[BaseHTTPRequestHandler]:
             if self.path not in {"/v1/voice", "/v1/text", "/v1/volume-result"}:
                 self.respond(404, b'{"error":"Unknown route"}')
                 return
+            # Browser connections can overlap, but the brain and its sessions are shared.
+            with turn_lock:
+                self.handle_turn()
+
+        def handle_turn(self) -> None:
             text_only = self.path == "/v1/text"
             companion_idle = self.headers.get("X-Iris-Companion-Idle") == "1"
             expected = (
@@ -933,6 +979,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("local-config.json"))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--web-chat", action="store_true", help="Serve the browser chat at /chat")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     try:
@@ -945,7 +992,9 @@ def main(argv: list[str] | None = None) -> int:
 
         with httpx.Client(trust_env=False, follow_redirects=False) as client:
             brain = Brain(settings, client, make_stt(settings), TTS(settings))
-            with HTTPServer((args.host, args.port), handler_for(brain, token)) as server:
+            handler = handler_for(brain, token, web_chat=args.web_chat)
+            server_class = ThreadingHTTPServer if args.web_chat else HTTPServer
+            with server_class((args.host, args.port), handler) as server:
                 print(f"Iris droid server listening on {args.host}:{args.port}")
                 server.serve_forever()
         return 0
