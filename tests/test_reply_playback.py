@@ -4,12 +4,13 @@ import base64
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
 import numpy as np
 import pytest
 
 import iris
 from iris_droid.client import play_stream, play_wav, report_voice_timing
-from iris_droid.protocol import TurnReply, VoiceTiming, write_wav
+from iris_droid.protocol import VOICE_STREAM_TYPE, TurnReply, VoiceTiming, write_wav
 
 SAMPLES = np.arange(1, 2401, dtype="<i2")
 WAV = write_wav(SAMPLES.tobytes(), 24000)
@@ -231,6 +232,33 @@ def test_default_does_not_save_reply_audio():
         ),
     ):
         assert iris.main(["client", "--activation", "continuous", "--no-sounds"]) == 0
+    save.assert_not_called()
+
+
+def test_no_speech_stream_plays_complete_server_wav_without_saving():
+    def respond(request):
+        assert request.url.path == "/v1/voice"
+        assert request.headers.get("Accept") != VOICE_STREAM_TYPE
+        reply = TurnReply(
+            heard="exit", text="goodbye", audio=base64.b64encode(WAV).decode(), finished=True
+        )
+        return httpx.Response(200, json=reply.model_dump())
+
+    transport = httpx.Client(transport=httpx.MockTransport(respond))
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": "test"}),
+        patch("iris_droid.client.httpx.Client", return_value=transport),
+        patch("iris_droid.client.record_turn", return_value=WAV),
+        patch("iris_droid.client.play_wav") as play,
+        patch("iris_droid.client.play_stream") as stream,
+        patch("pathlib.Path.write_bytes") as save,
+    ):
+        assert (
+            iris.main(["client", "--activation", "continuous", "--no-sounds", "--no-speech-stream"])
+            == 0
+        )
+    play.assert_called_once_with(WAV, None, lead_in=0.3, primer=False)
+    stream.assert_not_called()
     save.assert_not_called()
 
 

@@ -553,7 +553,12 @@ voice between replies.
 Restart the server and update the Pi's Iris client too. With Pocket selected,
 the command-line client starts playback as audio arrives. Iris still waits for
 the chat model's reply text before synthesis begins. Browser chat, older Iris
-clients and the `--save-reply` diagnostic receive complete WAVs.
+clients and the `--save-reply` diagnostic receive complete WAVs. If speech is
+missing at the start on the Pi, try adding `--no-speech-stream` to the client
+command. The client waits for the whole reply before playing it and keeps the
+audio in memory. The option works on Windows and Linux. If your Pi runs Iris
+as a service, add it to the Python command in `run_client.sh` and run
+`systemctl --user restart iris-client`.
 Use `--trace-voice` on the Pi to see when the first chunk was generated and
 when the speaker was scheduled to play the first speech sample.
 

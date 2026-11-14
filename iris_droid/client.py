@@ -769,6 +769,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Report reply word count and timing from synthesis to speaker output",
     )
     parser.add_argument(
+        "--no-speech-stream",
+        action="store_true",
+        help="Wait for the complete reply audio before playing it",
+    )
+    parser.add_argument(
         "--save-reply",
         type=Path,
         help="Diagnostic: save the unmodified reply WAV here, replacing it each voice turn",
@@ -917,15 +922,14 @@ def main(argv: list[str] | None = None) -> int:
                         primer=args.speech_primer,
                     )
 
+                stream_replies = not (args.text or args.no_speech_stream or args.save_reply)
                 client = DroidClient(
                     args.server,
                     os.environ.get("IRIS_DROID_TOKEN", ""),
                     transport,
                     wake_conversation=args.activation == "wake" and not args.text,
                     trace_voice=args.trace_voice,
-                    stream_player=(
-                        stream_player if not args.text and args.save_reply is None else None
-                    ),
+                    stream_player=stream_player if stream_replies else None,
                     volume_backend=make_volume_backend(
                         args.volume_backend, card=args.alsa_card, control=args.alsa_control
                     ),
