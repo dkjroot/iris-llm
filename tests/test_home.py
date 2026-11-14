@@ -172,3 +172,19 @@ def test_matter_adapter_translates_power_and_targets_configured_endpoint(tmp_pat
     assert plug.read("energy") == {"metric": "energy", "value": 1543.0, "unit": "Wh"}
     with pytest.raises(DeviceError, match="available meter"):
         plug.read("voltage")
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_matter_command_failure_logs_chip_tool_output(tmp_path, monkeypatch, caplog, timeout):
+    def run(argv, **kwargs):
+        output = "\x1b[31mRun command failure: CHIP Error 0x00000032: Timeout\x1b[0m\n"
+        if timeout:
+            raise subprocess.TimeoutExpired(argv, 8, output=output.encode())
+        raise subprocess.CalledProcessError(1, argv, output=output)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(DeviceError, match="The Matter command failed or timed out"):
+        ChipTool("/usr/bin/chip-tool", tmp_path).run("onoff", "on", node=92, endpoint=1)
+    assert "'onoff', 'on', '92', '1'" in caplog.text
+    assert "Run command failure: CHIP Error 0x00000032: Timeout" in caplog.text
+    assert "\x1b" not in caplog.text

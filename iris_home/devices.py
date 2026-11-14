@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from dataclasses import dataclass
@@ -12,6 +13,9 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from iris_home.protocol import Metric, PowerState
+
+LOG = logging.getLogger(__name__)
+ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class DeviceError(Exception):
@@ -73,9 +77,17 @@ class ChipTool:
                     timeout=8,
                     check=True,
                 )
-            except (OSError, subprocess.SubprocessError) as error:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                output = error.output or ""
+                if isinstance(output, bytes):
+                    output = output.decode(errors="replace")
+                tail = ANSI_COLOUR.sub("", output).rstrip()[-4000:]
+                LOG.warning("CHIP Tool failed: %s\n%s", error, tail or "No output captured.")
                 raise DeviceError("The Matter command failed or timed out.") from error
-        return re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+            except (OSError, subprocess.SubprocessError) as error:
+                LOG.warning("Could not run CHIP Tool with %r: %s", args, error)
+                raise DeviceError("The Matter command failed or timed out.") from error
+        return ANSI_COLOUR.sub("", result.stdout)
 
 
 # chip-tool prints attribute names followed by values in its decoded response.
