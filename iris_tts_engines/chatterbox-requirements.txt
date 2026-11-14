@@ -1,0 +1,3 @@
+chatterbox-tts==0.1.6
+# Perth 1.0.1 uses pkg_resources.
+setuptools==80.9.0

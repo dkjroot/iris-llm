@@ -148,7 +148,7 @@ With the environment active:
 python -m pip install -e ".[whisper,kokoro]"
 ```
 
-The server uses Whisper for recognition and Kokoro for its voice. Neither ordinary startup nor an import downloads model files; preparing those is a separate step below. The server doesn't need the client's `microphone` extra.
+The server uses Whisper for recognition and Kokoro by default for its voice. You can also set up Chatterbox Turbo if you'd like Iris to speak using a voice prepared from a recording. Preparing models is a separate step below. The server doesn't need the client's `microphone` extra.
 
 If you prefer uv, use `uv sync --locked --python 3.12 --extra whisper --extra kokoro` instead of the venv/pip steps. Run subsequent commands with `uv run --no-sync python` instead of `python`. You can pick pip or uv; you don't need to use both. If this environment also runs the client, include `--extra microphone` in the sync command so all three extras stay installed.
 
@@ -207,17 +207,17 @@ These are the normal choices for a local setup:
 | Chat base URL | The address from your model server, including `/v1`. |
 | Model name | Its advertised model ID, or the model you've pulled in Ollama. |
 | Speech recognition | `whisper` is the local default. |
+| Speech synthesis | Choose `kokoro`, `chatterbox` for Chatterbox Turbo, or `pocket` for CPU voice cloning and streaming. |
 | Voice | Press Enter for Heart (`af_heart`), or try Emma (`bf_emma`) for British English. |
 | Talking speed | Start with `1.0`, then change it once you've heard her. |
 | Outbound remote services | Leave this off when the model runs on this PC and speech stays local. |
 
-Kokoro is selected automatically because it produces the audio that goes back
-to the client. There is no server “start listening” setting: the client owns the
-microphone and you choose how it listens when you launch it.
+The chosen synthesizer runs on the server and sends audio back to the client.
+The client owns the microphone and you choose how it listens when you launch it.
 
 “Outbound remote services” controls whether the PC can send conversation or
 speech to another machine or an online service. It doesn't need to be enabled
-for a laptop or Pi to connect to Iris. With a local model, Whisper and Kokoro,
+for a laptop or Pi to connect to Iris. With a local chat model and local speech,
 leave it off.
 
 Online weather and phone notifications have their own `weather_enabled` and
@@ -454,6 +454,108 @@ ONNX model and voice pack. Keep the internet available until setup finishes;
 afterwards normal startup uses the cached files. Kokoro's fixed files are checked
 for size and SHA-256 hash. Use `--download-voices` to prepare just Kokoro, or
 `--list-voices` to see the voice suggestions without loading a model.
+
+#### Optional voice cloning with Chatterbox Turbo
+
+Chatterbox runs on the Iris server. I use a separate Python environment because
+its NumPy requirement clashes with Kokoro's. Keep the regular Iris environment
+active and use these commands to build the separate one alongside it. The GPU
+commands are for NVIDIA cards with a driver that supports CUDA 12.6.
+
+**Windows (PowerShell), from the Iris checkout**
+
+```powershell
+uv venv --python 3.11 .venv-chatterbox
+$turbo = '.venv-chatterbox/Scripts/python.exe'
+```
+
+**Linux (Bash), from the Iris checkout**
+
+```bash
+uv venv --python 3.11 .venv-chatterbox
+turbo=.venv-chatterbox/bin/python
+```
+
+**Both platforms, for NVIDIA GPU synthesis**
+
+```sh
+uv pip install --python "$turbo" --index https://download.pytorch.org/whl/cu126 "torch==2.6.0+cu126" "torchaudio==2.6.0+cu126"
+uv pip install --python "$turbo" -r iris_tts_engines/chatterbox-requirements.txt
+```
+
+For CPU synthesis, use the same commands with the `/whl/cpu` index and
+`torch==2.6.0+cpu` and `torchaudio==2.6.0+cpu`. Choose `cpu` in the Iris
+configuration before preparing a voice.
+
+In the **regular Iris environment**, choose `chatterbox` in
+`python iris.py configure`, then prepare the model and voice:
+
+```sh
+python iris.py voice download
+python iris.py voice prepare "path/to/your-recording.wav" my-iris-voice
+```
+
+Use a clean recording of about ten seconds. Turbo uses the recording to work
+out how the voice sounds and saves those features in
+`prepared-voices/my-iris-voice.pt`. This directory stays out of Git. Run
+`python iris.py configure` again and select `file:my-iris-voice`, or choose
+`bundled` to try Turbo's own voice. Restart the Iris server after switching.
+It loads the model and prepared voice once, then keeps them ready between
+replies. The recording and replies are processed locally.
+
+If you already have the weights or a separate environment, set
+`chatterbox_model_dir` or `chatterbox_python` in advanced settings. The
+`--download-models` command prepares the speech recognizer and selected speech
+synthesizer. `voice download` prepares Turbo on its own.
+
+#### Optional CPU voice cloning with Pocket TTS
+
+Pocket runs on the server CPU, leaving the GPU free for the chat model. Use
+a separate environment on the server. The Pi uses its usual Iris client
+environment.
+
+**Windows (PowerShell), from the Iris checkout**
+
+```powershell
+uv venv --python 3.11 .venv-pocket
+$pocket = '.venv-pocket/Scripts/python.exe'
+```
+
+**Linux (Bash), from the Iris checkout**
+
+```bash
+uv venv --python 3.11 .venv-pocket
+pocket=.venv-pocket/bin/python
+```
+
+**Both platforms, on the server**
+
+```sh
+uv pip install --python "$pocket" --index https://download.pytorch.org/whl/cpu "torch==2.8.0+cpu"
+uv pip install --python "$pocket" -r iris_tts_engines/pocket-requirements.txt
+```
+
+Back in your **regular Iris environment**, run these on either platform:
+
+```sh
+python iris.py voice --engine pocket download
+python iris.py voice --engine pocket prepare "path/to/your-recording.wav" my-iris-voice
+python iris.py configure
+```
+
+Choose `pocket` and then `file:my-iris-voice`. A clean, single-speaker WAV
+works best. The prepare command uses up to the first 30 seconds and saves the
+voice as `prepared-voices/my-iris-voice.safetensors`. That directory stays out
+of Git. Downloads use the English Pocket checkpoint from the listening test.
+The recording is processed on the server, and the server reuses the prepared
+voice between replies.
+
+Restart the server and update the Pi's Iris client too. With Pocket selected,
+the command-line client starts playback as audio arrives. Iris still waits for
+the chat model's reply text before synthesis begins. Browser chat, older Iris
+clients and the `--save-reply` diagnostic receive complete WAVs.
+Use `--trace-voice` on the Pi to see when the first chunk was generated and
+when the speaker was scheduled to play the first speech sample.
 
 ### 4. Set the client connection key
 
@@ -1408,6 +1510,16 @@ A fresh client run starts a fresh conversation; saying `exit` clears that sessio
 and restarting the server clears them all. Turning memory on saves conversation
 text in a local database, as described below. Iris never saves microphone recordings.
 The server's `trace` setting can print conversation text to its terminal if you enable it.
+
+To time spoken replies, add `--trace-voice` to your usual
+`python iris.py client` command on Windows or Linux. Update the server and client
+first. The client prints the reply word count, synthesis time, audio length,
+and the estimated time from the start of synthesis to the first speech sample
+at the speaker. This includes the transfer, client buffering and any playback
+padding. The trace uses the audio driver's playback schedule, so Bluetooth or
+speaker processing may add delay. If the server and client are on different
+machines, keep both system clocks synchronized for the total to be useful.
+This flag can be used with the server's conversation trace off.
 
 ### Conversation memory
 

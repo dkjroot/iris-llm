@@ -47,6 +47,13 @@
     "kokoro_voice": "af_heart",
     "kokoro_speed": 1.0,
     "kokoro_model_dir": null,
+    "chatterbox_device": "cuda",
+    "chatterbox_voice": null,
+    "chatterbox_python": null,
+    "chatterbox_model_dir": null,
+    "pocket_voice": null,
+    "pocket_python": null,
+    "pocket_model_dir": null,
     "phrase_time_limit": 60.0,
     "memory_hierarchy_enabled": true
 }

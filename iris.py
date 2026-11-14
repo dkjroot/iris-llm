@@ -28,9 +28,18 @@ def download_models(settings: Settings) -> None:
         Wav2Vec2ForCTC.from_pretrained(settings.ctc_model)
     else:
         print("Google recognition has no local model to download.")
-    from iris_tts_engines.kokoro_offline import download_voices
+    if settings.tts_engine == "chatterbox":
+        from iris_tts_engines.chatterbox import run_setup
 
-    download_voices(settings)
+        run_setup(settings, "download")
+    elif settings.tts_engine == "pocket":
+        from iris_tts_engines.pocket import run_setup as pocket_setup
+
+        pocket_setup(settings, "download")
+    else:
+        from iris_tts_engines.kokoro_offline import download_voices
+
+        download_voices(settings)
     print("Done. Ordinary startup uses local/cached model files only.")
 
 
@@ -81,8 +90,13 @@ def check_setup(settings: Settings, client: httpx.Client) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] in {"server", "client", "configure", "memory"}:
+    commands = ["server", "client", "configure", "memory", "voice"]
+    if arguments and arguments[0] in commands:
         command, *remaining = arguments
+        if command == "voice":
+            from iris_tts_engines.voice_cli import main as voice_main
+
+            return voice_main(remaining)
         if command == "memory":
             from iris_memory.cli import main as memory_main
 
@@ -103,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         return configure.main()
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=["server", "client", "configure", "memory"])
+    parser.add_argument("command", nargs="?", choices=commands)
     parser.add_argument("--config", type=Path, help="PC server configuration file")
     actions = parser.add_mutually_exclusive_group()
     actions.add_argument("--check", action="store_true", help="Check the PC's model endpoint")

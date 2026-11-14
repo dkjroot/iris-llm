@@ -23,6 +23,9 @@ BASIC_SETTINGS = frozenset(
         "tts_engine",
         "kokoro_voice",
         "kokoro_speed",
+        "chatterbox_device",
+        "chatterbox_voice",
+        "pocket_voice",
         "allow_remote",
         "tools_enabled",
         "local_timezone",
@@ -79,6 +82,10 @@ ADVANCED_HELP = {
     "tokenizer_model": "Wav2vec2 tokenizer model name or path",
     "ctc_model": "Wav2vec2 speech model name or path",
     "kokoro_model_dir": "Kokoro model directory; null uses the default",
+    "chatterbox_python": "Chatterbox Python interpreter; null uses .venv-chatterbox",
+    "chatterbox_model_dir": "Chatterbox Turbo model directory; null uses .cache/chatterbox-turbo",
+    "pocket_python": "Pocket TTS Python interpreter; null uses .venv-pocket",
+    "pocket_model_dir": "Pocket TTS model directory; null uses .cache/pocket-tts",
     "phrase_time_limit": "Maximum accepted recording length in seconds; match the client too",
 }
 
@@ -140,6 +147,57 @@ def choose_kokoro_speed(default: float) -> float:
         print("Choose a number from 0.5 to 2.0.")
 
 
+def configure_tts(previous: Settings, data: dict[str, Any]) -> None:
+    engine = choose(
+        "Speech synthesis on the PC", ["kokoro", "chatterbox", "pocket"], previous.tts_engine
+    )
+    data["tts_engine"] = engine
+    if engine in {"chatterbox", "pocket"}:
+        from iris_tts_engines.chatterbox import VOICE_DIRECTORY
+        from iris_tts_engines.voice_cli import VOICE_NAME
+
+        is_pocket = engine == "pocket"
+        suffix = "*.safetensors" if is_pocket else "*.pt"
+        choices = sorted(
+            f"file:{path.stem}"
+            for path in VOICE_DIRECTORY.glob(suffix)
+            if path.is_file() and VOICE_NAME.fullmatch(path.stem)
+        )
+        if is_pocket:
+            if not choices:
+                raise ValueError(
+                    "Prepare a Pocket voice first. "
+                    "Run python iris.py voice --engine pocket prepare WAV NAME."
+                )
+            default = f"file:{previous.pocket_voice}"
+            voice = choose(
+                "Pocket TTS voice", choices, default if default in choices else choices[0]
+            )
+            data["pocket_voice"] = voice.removeprefix("file:")
+        else:
+            data["chatterbox_device"] = choose(
+                "Chatterbox Turbo device", ["cuda", "cpu"], previous.chatterbox_device
+            )
+            print("Use the bundled voice or prepare one with python iris.py voice prepare.")
+            default = f"file:{previous.chatterbox_voice}"
+            selected = choose(
+                "Chatterbox Turbo voice",
+                ["bundled", *choices],
+                default if default in choices else "bundled",
+            )
+            data["chatterbox_voice"] = (
+                selected.removeprefix("file:") if selected != "bundled" else None
+            )
+    else:
+        from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
+
+        for name, description in RECOMMENDED_VOICES.items():
+            print(f"  {name}: {description}")
+        choices = list(dict.fromkeys([*RECOMMENDED_VOICES, previous.kokoro_voice]))
+        data["kokoro_voice"] = choose("Kokoro voice", choices, previous.kokoro_voice)
+        data["kokoro_speed"] = choose_kokoro_speed(previous.kokoro_speed)
+
+
 def main() -> int:
     path = ROOT / "local-config.json"
     try:
@@ -150,7 +208,7 @@ def main() -> int:
         )
         print(
             "Whisper recognises your speech on the PC; "
-            "Kokoro makes the voice sent back to the client."
+            "The speech synthesizer makes the voice sent back to the client."
         )
         previous = load_settings(path if path.exists() else None)
         data = previous.model_dump(mode="json")
@@ -170,22 +228,13 @@ def main() -> int:
             ["whisper", "wav2vec2", "google"],
             previous.stt_engine,
         )
-        # The other TTS adapters play on the PC; they cannot return droid audio.
-        data["tts_engine"] = "kokoro"
-        from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
-
-        print("Droid speech output uses Kokoro. Let's choose her voice.")
-        for name, description in RECOMMENDED_VOICES.items():
-            print(f"  {name}: {description}")
-        choices = list(dict.fromkeys([*RECOMMENDED_VOICES, previous.kokoro_voice]))
-        data["kokoro_voice"] = choose("Kokoro voice", choices, previous.kokoro_voice)
-        data["kokoro_speed"] = choose_kokoro_speed(previous.kokoro_speed)
+        configure_tts(previous, data)
         print(
             "Remote services means sending chat to another machine or a hosted provider, "
             "or using Google speech recognition."
         )
         print(
-            "Leave this off when the model runs on this PC and speech uses Whisper/Kokoro. "
+            "Leave this off when the chat model and speech processing run on this PC. "
             "Your laptop or Pi can still connect to Iris with it off."
         )
         data["allow_remote"] = (

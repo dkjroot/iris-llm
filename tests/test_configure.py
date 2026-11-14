@@ -6,6 +6,7 @@ import pytest
 
 import configure
 from iris_settings import load_settings
+from iris_tts_engines import chatterbox
 
 
 def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: Path) -> None:
@@ -29,7 +30,7 @@ def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: 
     assert settings.tts_engine == "kokoro"
     assert not settings.allow_remote
     assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
-    assert len(prompts) == 13
+    assert len(prompts) == 14
     assert not any("Start listening" in prompt or "Feedback sounds" in prompt for prompt in prompts)
 
 
@@ -49,7 +50,7 @@ def test_kokoro_wizard_offers_named_voices_and_saves_selection(
         patch.object(configure, "ROOT", tmp_path),
         patch(
             "builtins.input",
-            side_effect=["", "", "", "", "bf_emma", "1.3", "", "", "", "", "", "", ""],
+            side_effect=["", "", "", "", "", "bf_emma", "1.3", "", "", "", "", "", "", ""],
         ),
     ):
         assert configure.main() == 0
@@ -57,6 +58,41 @@ def test_kokoro_wizard_offers_named_voices_and_saves_selection(
     assert settings.tts_engine == "kokoro" and settings.kokoro_voice == "bf_emma"
     assert settings.kokoro_speed == 1.3
     assert "Emma - British female" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("engine", "suffix", "prompt"),
+    [
+        ("chatterbox", ".pt", "Chatterbox Turbo voice"),
+        ("pocket", ".safetensors", "Pocket TTS voice"),
+    ],
+)
+def test_voice_wizard_lists_and_saves_prepared_voice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, engine: str, suffix: str, prompt: str
+) -> None:
+    voices = tmp_path / "prepared-voices"
+    voices.mkdir()
+    (voices / f"voice_sample{suffix}").touch()
+    (voices / "raw.wav").touch()
+    (voices / f"bad voice{suffix}").touch()
+    monkeypatch.setattr(chatterbox, "VOICE_DIRECTORY", voices)
+
+    def answer(question: str) -> str:
+        if question.startswith("Speech synthesis"):
+            return engine
+        if question.startswith(prompt):
+            assert "file:voice_sample" in question
+            assert ("bundled" in question) == (engine == "chatterbox")
+            assert "raw" not in question and "bad voice" not in question
+            return "file:voice_sample"
+        return ""
+
+    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main() == 0
+    settings = load_settings(tmp_path / "local-config.json")
+    assert settings.tts_engine == engine
+    assert getattr(settings, f"{engine}_voice") == "voice_sample"
+    assert settings.chatterbox_device == "cuda"
 
 
 def test_existing_config_switches_to_droid_tts_and_preserves_other_settings(

@@ -13,7 +13,9 @@ from pydantic import Field, JsonValue, SecretStr, field_validator, model_validat
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class VoiceSettings(BaseSettings):
+    """Voice setup can run independently of Iris's chat and home services."""
+
     model_config = SettingsConfigDict(env_prefix="IRIS_", extra="forbid", hide_input_in_errors=True)
 
     @classmethod
@@ -27,6 +29,21 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return env_settings, init_settings, file_secret_settings
 
+
+class ChatterboxSettings(VoiceSettings):
+    chatterbox_device: Literal["cpu", "cuda"] = "cuda"
+    chatterbox_voice: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    chatterbox_python: Path | None = None
+    chatterbox_model_dir: Path | None = None
+
+
+class PocketSettings(VoiceSettings):
+    pocket_voice: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,64}$")
+    pocket_python: Path | None = None
+    pocket_model_dir: Path | None = None
+
+
+class Settings(ChatterboxSettings, PocketSettings):
     base_url: str = "http://127.0.0.1:5001/v1"
     model: str = "local-model"
     api_key: SecretStr | None = Field(default=None, exclude=True)
@@ -133,7 +150,7 @@ class Settings(BaseSettings):
     language: str | None = "en"
     tokenizer_model: str = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
     ctc_model: str = "jonatasgrosman/wav2vec2-large-xlsr-53-english"
-    tts_engine: Literal["kokoro"] = "kokoro"
+    tts_engine: Literal["kokoro", "chatterbox", "pocket"] = "kokoro"
     kokoro_voice: str = Field(default="af_heart", pattern=r"^[ab][fm]_[a-z]+$")
     kokoro_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     kokoro_model_dir: Path | None = None
@@ -283,12 +300,15 @@ def migrate_config(data: dict[str, object]) -> dict[str, object]:
     return result
 
 
+def read_config(path: Path | None) -> dict[str, object]:
+    if path is None:
+        return {}
+    raw: object = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
+        raise ValueError("The configuration must be a JSON object")
+    return raw
+
+
 def load_settings(path: Path | None = None) -> Settings:
     # Environment values override the file; secrets never need to go in that file.
-    data: dict[str, object] = {}
-    if path is not None:
-        raw: object = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
-            raise ValueError("The configuration must be a JSON object")
-        data = migrate_config(raw)
-    return Settings.model_validate(data)
+    return Settings.model_validate(migrate_config(read_config(path)))

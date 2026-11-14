@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, nullcontext
+from functools import partial
 from importlib.resources import files
+from math import isfinite
 from pathlib import Path
-from typing import TYPE_CHECKING
+from queue import Empty, SimpleQueue
+from threading import Event
+from time import time_ns
+from typing import TYPE_CHECKING, Protocol, TypedDict
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 import httpx
+from pydantic import ValidationError
 
 from iris_droid.capture import (
     DEFAULT_MICROPHONE_BUFFER,
@@ -27,7 +34,11 @@ from iris_droid.conversation import WakeConversation
 from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import (
     MAX_BODY,
+    VOICE_STREAM_TYPE,
+    VOICE_TIMING_HEADER,
     TurnReply,
+    VoiceStreamStart,
+    VoiceTiming,
     is_clear_context,
     is_stop_listening,
     read_wav,
@@ -38,6 +49,8 @@ from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend
 from iris_droid.wake import WakeDetector
 
 if TYPE_CHECKING:
+    import numpy as np
+    import numpy.typing as npt
     import speech_recognition as sr
 
     from iris_droid.vad import SpeechDetector
@@ -52,6 +65,8 @@ class DroidClient:
         *,
         wake_conversation: bool = False,
         volume_backend: VolumeBackend | None = None,
+        trace_voice: bool = False,
+        stream_player: Callable[[VoiceStreamStart, Iterator[bytes]], int | None] | None = None,
     ) -> None:
         parts = urlsplit(url)
         _ = parts.port
@@ -72,6 +87,8 @@ class DroidClient:
         self.url = url.rstrip("/")
         self.client = client
         self.volume_backend = volume_backend
+        self.trace_voice = trace_voice
+        self.stream_player = stream_player
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
@@ -113,20 +130,76 @@ class DroidClient:
         return reply
 
     def _request(self, route: str, body: bytes, headers: dict[str, str]) -> TurnReply:
+        if self.trace_voice:
+            headers = {**headers, VOICE_TIMING_HEADER: "1"}
+        if route != "text" and self.stream_player is not None:
+            headers = {**headers, "Accept": VOICE_STREAM_TYPE}
         with self.client.stream(
             "POST", f"{self.url}/v1/{route}", content=body, headers=headers
         ) as response:
             response.raise_for_status()
             private = response.headers.get("X-Iris-Private")
+            if private in {"0", "1"}:
+                self.private_mode = private == "1"
+            if response.headers.get("Content-Type") == VOICE_STREAM_TYPE:
+                return self._stream_reply(response)
+            timing = response.headers.get(VOICE_TIMING_HEADER)
             data = bytearray()
             for chunk in response.iter_bytes():
                 data.extend(chunk)
                 if len(data) > MAX_BODY:
                     raise ValueError("Server response exceeds the transport size limit")
         reply = TurnReply.model_validate_json(bytes(data))
-        if private in {"0", "1"}:
-            self.private_mode = private == "1"
+        if self.trace_voice and timing is not None:
+            try:
+                reply._voice_timing = VoiceTiming.model_validate_json(timing)
+            except ValidationError:
+                print("Voice timing unavailable: invalid server timing.", flush=True)
         return reply
+
+    def _stream_reply(self, response: httpx.Response) -> TurnReply:
+        lines = response.iter_lines()
+        timing: VoiceTiming | None = None
+
+        def chunks() -> Iterator[bytes]:
+            nonlocal timing
+            size = 0
+            for line in lines:
+                if len(line) > MAX_BODY:
+                    raise ValueError("Oversized voice stream frame")
+                frame = json.loads(line)
+                if not isinstance(frame, dict):
+                    raise ValueError("Invalid voice stream frame")
+                event = frame.get("event")
+                if event == "done":
+                    timing = VoiceTiming.model_validate(frame.get("timing"))
+                    return
+                if event != "audio" or not isinstance(frame.get("pcm"), str):
+                    raise ValueError("Voice stream stopped before the reply finished")
+                pcm = base64.b64decode(frame["pcm"], validate=True)
+                size += len(pcm)
+                if not pcm or len(pcm) % 2 or size > MAX_BODY:
+                    raise ValueError("Invalid voice stream audio")
+                yield pcm
+            raise ValueError("Voice stream ended without a completion frame")
+
+        try:
+            if self.stream_player is None:
+                raise ValueError("Unexpected voice stream")
+            first = next(lines, "")
+            if len(first) > MAX_BODY:
+                raise ValueError("Oversized voice stream header")
+            start = VoiceStreamStart.model_validate_json(first)
+            scheduled_ns = self.stream_player(start, chunks())
+            completed = timing
+            if completed is None:
+                raise ValueError("Incomplete voice stream")
+        except ValueError as error:
+            raise httpx.RemoteProtocolError(str(error), request=response.request) from error
+        if self.trace_voice:
+            report_stream_timing(completed, start.first_audio_ns, scheduled_ns)
+        start.reply._streamed = True
+        return start.reply
 
 
 def play_wav(
@@ -136,6 +209,7 @@ def play_wav(
     loop: bool = False,
     lead_in: float = 0,
     primer: bool = False,
+    on_speech_start: Callable[[int | None], None] | None = None,
 ) -> None:
     if not 0 <= lead_in <= 2:
         raise ValueError("Speech lead-in must be between 0 and 2 seconds")
@@ -164,10 +238,20 @@ def play_wav(
             prefixes.append(np.frombuffer(cue, dtype="<i2"))
         if lead_in:
             prefixes.append(np.zeros(round(rate * lead_in), dtype="<i2"))
+        if on_speech_start is not None and not loop:
+            # Ignore the primer, padding and exact silence in the synthesized WAV.
+            first = int(np.argmax(samples != 0)) if samples.any() else None
+            speech_frame = (
+                None if first is None else sum(len(prefix) for prefix in prefixes) + first
+            )
+        else:
+            speech_frame = None
         if prefixes:
             samples = np.concatenate([*prefixes, samples])
         if loop:
             sd.play(samples, rate, device=device, blocking=False, loop=True, latency="high")
+        elif on_speech_start is not None:
+            play_timed(samples, rate, device, speech_frame, on_speech_start)
         else:
             sd.play(samples, rate, device=device, blocking=True, latency="high")
             status = sd.get_status()
@@ -175,6 +259,217 @@ def play_wav(
                 print("Speaker playback underrun: some audio may have been lost.", flush=True)
     except sd.PortAudioError as error:
         raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
+
+
+class AudioClock(Protocol):
+    @property
+    def currentTime(self) -> float: ...
+
+    @property
+    def outputBufferDacTime(self) -> float: ...
+
+
+class OutputStatus(Protocol):
+    @property
+    def output_underflow(self) -> bool: ...
+
+
+class PlaybackTrace(TypedDict, total=False):
+    on_speech_start: Callable[[int | None], None]
+
+
+def scheduled_output(timing: AudioClock, frame: int, rate: int) -> int | None:
+    callback_ns = time_ns()
+    current = timing.currentTime
+    dac = timing.outputBufferDacTime
+    if isfinite(current) and isfinite(dac) and dac >= current and dac > 0:
+        return callback_ns + round((dac - current + frame / rate) * 1e9)
+    return None
+
+
+def play_timed(
+    samples: npt.NDArray[np.int16],
+    rate: int,
+    device: int | None,
+    speech_frame: int | None,
+    on_speech_start: Callable[[int | None], None],
+) -> None:
+    import sounddevice as sd
+
+    finished = Event()
+    position = 0
+    scheduled_ns: int | None = None
+    underrun = False
+
+    def callback(
+        outdata: npt.NDArray[np.int16], frames: int, timing: AudioClock, status: OutputStatus
+    ) -> None:
+        nonlocal position, scheduled_ns, underrun
+        underrun |= status.output_underflow
+        if speech_frame is not None and position <= speech_frame < position + frames:
+            scheduled_ns = scheduled_output(timing, speech_frame - position, rate)
+        count = min(frames, len(samples) - position)
+        outdata[:count, 0] = samples[position : position + count]
+        outdata[count:].fill(0)
+        position += count
+        if position == len(samples):
+            raise sd.CallbackStop
+
+    with sd.OutputStream(
+        samplerate=rate,
+        channels=1,
+        dtype="int16",
+        device=device,
+        latency="high",
+        callback=callback,
+        finished_callback=finished.set,
+    ):
+        finished.wait()
+    on_speech_start(scheduled_ns)
+    if underrun:
+        print("Speaker playback underrun: some audio may have been lost.", flush=True)
+
+
+def play_stream(
+    chunks: Iterator[bytes], rate: int, device: int | None, *, lead_in: float, primer: bool
+) -> int | None:
+    import numpy as np
+    import sounddevice as sd
+    import speech_recognition as sr
+
+    try:
+        try:
+            sd.check_output_settings(device=device, channels=1, dtype="int16", samplerate=rate)
+            output_rate = rate
+        except sd.PortAudioError:
+            output_rate = int(sd.query_devices(device, "output")["default_samplerate"])
+            sd.check_output_settings(
+                device=device, channels=1, dtype="int16", samplerate=output_rate
+            )
+        # Buffer a small amount before opening the device to absorb network jitter.
+        initial: list[bytes] = []
+        size = 0
+        while size < round(rate * 0.16) * 2:
+            pcm = next(chunks, None)
+            if pcm is None:
+                break
+            initial.append(pcm)
+            size += len(pcm)
+        if not initial:
+            raise ValueError("Voice stream returned no audio")
+
+        queue: SimpleQueue[tuple[npt.NDArray[np.int16], int | None] | None] = SimpleQueue()
+        if primer:
+            cue, cue_rate = read_wav(files("iris_sounds").joinpath("chirp.wav").read_bytes())
+            cue = sr.AudioData(cue, cue_rate, 2).get_raw_data(convert_rate=output_rate)
+            queue.put((np.frombuffer(cue, dtype="<i2"), None))
+        if lead_in:
+            queue.put((np.zeros(round(output_rate * lead_in), dtype="<i2"), None))
+
+        converter = None
+
+        def enqueue(pcm: bytes) -> None:
+            nonlocal converter
+            if output_rate != rate:
+                pcm, converter = sr.audioop.ratecv(pcm, 2, 1, rate, output_rate, converter)
+            samples = np.frombuffer(pcm, dtype="<i2")
+            if samples.size:
+                first = int(np.argmax(samples != 0)) if samples.any() else None
+                queue.put((samples, first))
+
+        for pcm in initial:
+            enqueue(pcm)
+        finished = Event()
+        current: tuple[npt.NDArray[np.int16], int | None] | None = None
+        offset = 0
+        scheduled_ns: int | None = None
+        found_speech = False
+        underrun = False
+
+        def callback(
+            outdata: npt.NDArray[np.int16], frames: int, timing: AudioClock, status: OutputStatus
+        ) -> None:
+            nonlocal current, offset, scheduled_ns, found_speech, underrun
+            underrun |= status.output_underflow
+            outdata.fill(0)
+            written = 0
+            while written < frames:
+                if current is None:
+                    try:
+                        current = queue.get_nowait()
+                    except Empty:
+                        underrun = True
+                        return
+                    if current is None:
+                        raise sd.CallbackStop
+                    offset = 0
+                samples, first = current
+                count = min(frames - written, len(samples) - offset)
+                if not found_speech and first is not None and offset <= first < offset + count:
+                    scheduled_ns = scheduled_output(timing, written + first - offset, output_rate)
+                    found_speech = True
+                outdata[written : written + count, 0] = samples[offset : offset + count]
+                written += count
+                offset += count
+                if offset == len(samples):
+                    current = None
+
+        with sd.OutputStream(
+            samplerate=output_rate,
+            channels=1,
+            dtype="int16",
+            device=device,
+            latency="high",
+            callback=callback,
+            finished_callback=finished.set,
+        ):
+            for pcm in chunks:
+                enqueue(pcm)
+            queue.put(None)
+            finished.wait()
+        if underrun:
+            print("Speaker stream underrun: playback may have paused.", flush=True)
+        return scheduled_ns
+    except sd.PortAudioError as error:
+        raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
+
+
+def report_stream_timing(
+    timing: VoiceTiming, first_audio_ns: int, scheduled_ns: int | None
+) -> None:
+    message = (
+        f"Voice timing ({timing.engine}, {timing.words} words, streaming) | "
+        f"first chunk {first_audio_ns / 1e9:.3f} s | synthesis {timing.synthesis_ns / 1e9:.3f} s | "
+        f"audio length {timing.audio_seconds:.3f} s"
+    )
+    if scheduled_ns is not None and scheduled_ns - timing.started_ns >= first_audio_ns:
+        message += (
+            f" | synthesis start to speaker {(scheduled_ns - timing.started_ns) / 1e9:.3f} s "
+            "(estimated)"
+        )
+    else:
+        message += " | speaker timing unavailable (check output device and system clocks)"
+    print(message, flush=True)
+
+
+def report_voice_timing(timing: VoiceTiming, scheduled_ns: int | None) -> None:
+    synthesis = timing.synthesis_ns / 1e9
+    message = (
+        f"Voice timing ({timing.engine}, {timing.words} words) | "
+        f"synthesis {synthesis:.3f} s | audio length {timing.audio_seconds:.3f} s"
+    )
+    if scheduled_ns is None:
+        message += " | speaker timing unavailable"
+    elif scheduled_ns - timing.started_ns < timing.synthesis_ns:
+        message += " | speaker timing unavailable (check both system clocks)"
+    else:
+        elapsed = (scheduled_ns - timing.started_ns) / 1e9
+        after_synthesis = elapsed - synthesis
+        message += (
+            f" | synthesis start to speaker {elapsed:.3f} s (estimated)"
+            f" | after synthesis {after_synthesis:.3f} s"
+        )
+    print(message, flush=True)
 
 
 def stop_playback() -> None:
@@ -469,6 +764,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Diagnostic: prepend a soft chirp in the same stream as spoken replies",
     )
     parser.add_argument(
+        "--trace-voice",
+        action="store_true",
+        help="Report reply word count and timing from synthesis to speaker output",
+    )
+    parser.add_argument(
         "--save-reply",
         type=Path,
         help="Diagnostic: save the unmodified reply WAV here, replacing it each voice turn",
@@ -606,11 +906,26 @@ def main(argv: list[str] | None = None) -> int:
             with httpx.Client(
                 trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
             ) as transport:
+
+                def stream_player(start: VoiceStreamStart, chunks: Iterator[bytes]) -> int | None:
+                    feedback.stop_working()
+                    return play_stream(
+                        chunks,
+                        start.rate,
+                        args.speaker,
+                        lead_in=args.speech_lead_in,
+                        primer=args.speech_primer,
+                    )
+
                 client = DroidClient(
                     args.server,
                     os.environ.get("IRIS_DROID_TOKEN", ""),
                     transport,
                     wake_conversation=args.activation == "wake" and not args.text,
+                    trace_voice=args.trace_voice,
+                    stream_player=(
+                        stream_player if not args.text and args.save_reply is None else None
+                    ),
                     volume_backend=make_volume_backend(
                         args.volume_backend, card=args.alsa_card, control=args.alsa_control
                     ),
@@ -754,9 +1069,13 @@ def main(argv: list[str] | None = None) -> int:
                             if proactive
                             else f"You: {reply.heard}\nIris: {reply.text}"
                         )
-                    if not reply.audio and (
-                        is_clear_context(reply.heard)
-                        or (conversation is not None and is_stop_listening(reply.heard))
+                    if (
+                        not reply.audio
+                        and (
+                            is_clear_context(reply.heard)
+                            or (conversation is not None and is_stop_listening(reply.heard))
+                        )
+                        and not getattr(reply, "_streamed", False)
                     ):
                         feedback.acknowledge()
                     if conversation is not None and is_stop_listening(reply.heard):
@@ -771,11 +1090,23 @@ def main(argv: list[str] | None = None) -> int:
                             args.save_reply.parent.mkdir(parents=True, exist_ok=True)
                             args.save_reply.write_bytes(reply_audio)
                             print(f"Saved unmodified reply audio to {args.save_reply}", flush=True)
+                        playback_trace: PlaybackTrace = {}
+                        if args.trace_voice:
+                            if reply._voice_timing is None:
+                                print(
+                                    "Voice timing unavailable: the server sent no timing.",
+                                    flush=True,
+                                )
+                            else:
+                                playback_trace["on_speech_start"] = partial(
+                                    report_voice_timing, reply._voice_timing
+                                )
                         play_wav(
                             reply_audio,
                             args.speaker,
                             lead_in=args.speech_lead_in,
                             primer=args.speech_primer,
+                            **playback_trace,
                         )
                     if reply.finished:
                         return 0

@@ -186,3 +186,9 @@ agent_docs/
 *.sqlite3
 *.sqlite3-*
 /iris-memory-export*.json
+
+# Local speech model experiments, weights, and recordings
+/tts-experiments/
+/prepared-voices/
+/.venv-chatterbox/
+/.venv-pocket/

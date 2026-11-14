@@ -5,20 +5,26 @@ from __future__ import annotations
 import argparse
 import base64
 import hmac
+import json
 import logging
 import os
+import re
 import sqlite3
 from collections import OrderedDict
+from collections.abc import Callable, Generator
+from contextlib import closing, suppress
+from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from itertools import chain
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from time import perf_counter_ns, time_ns
+from typing import cast
 from uuid import UUID, uuid4
 
 import httpx
 import numpy as np
-import numpy.typing as npt
 import speech_recognition as sr
 from pydantic import BaseModel
 
@@ -26,7 +32,10 @@ from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.protocol import (
     MAX_BODY,
+    VOICE_STREAM_TYPE,
+    VOICE_TIMING_HEADER,
     TurnReply,
+    VoiceTiming,
     companion_command,
     is_clear_context,
     is_stop_listening,
@@ -49,8 +58,13 @@ from iris_settings import Settings, load_settings
 from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
 from iris_tools import Skill
+from iris_tts_engines import StreamingSynthesizer, Synthesizer, open_tts
+from iris_tts_engines.text import plain_speech_text
 
 LOGGER = logging.getLogger(__name__)
+STREAM_REPLY: ContextVar[Callable[[TurnReply, Generator[bytes], int], None] | None] = ContextVar(
+    "stream_reply", default=None
+)
 
 WEB_ASSETS = {
     "/chat": ("index.html", "text/html"),
@@ -59,10 +73,6 @@ WEB_ASSETS = {
     "/mic.js": ("mic.js", "text/javascript"),
     "/speech.js": ("speech.js", "text/javascript"),
 }
-
-
-class Synthesizer(Protocol):
-    def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]: ...
 
 
 class Brain:
@@ -190,18 +200,32 @@ class Brain:
     def _reply(
         self, heard: str, text: str, *, text_only: bool, companion: bool, finished: bool = False
     ) -> TurnReply:
+        result = TurnReply(
+            heard=heard, text=text, finished=finished, companion_mode=companion and not finished
+        )
+        stream_reply = STREAM_REPLY.get()
+        if not text_only and stream_reply is not None:
+            tts = cast(StreamingSynthesizer, self.tts)
+            stream_reply(result, tts.stream(text), tts.sample_rate)
+            return result
         audio = ""
+        timing = None
         if not text_only:
+            started_ns = time_ns()
+            started = perf_counter_ns()
             samples, rate = self.tts.synthesize(text)
+            synthesis_ns = perf_counter_ns() - started
+            timing = VoiceTiming(
+                engine=self.settings.tts_engine,
+                words=len(re.findall(r"[^\W_]+(?:[’'-][^\W_]+)*", plain_speech_text(text))),
+                started_ns=started_ns,
+                synthesis_ns=synthesis_ns,
+                audio_seconds=samples.size / rate,
+            )
             pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
             audio = base64.b64encode(write_wav(pcm, rate)).decode("ascii")
-        result = TurnReply(
-            heard=heard,
-            text=text,
-            audio=audio,
-            finished=finished,
-            companion_mode=companion and not finished,
-        )
+        result.audio = audio
+        result._voice_timing = timing
         if len(result.model_dump_json().encode()) > MAX_BODY:
             raise ValueError("Synthesized reply exceeds the transport size limit")
         return result
@@ -854,6 +878,7 @@ def handler_for(
             *,
             private: bool | None = None,
             content_type: str = "application/json",
+            voice_timing: VoiceTiming | None = None,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
@@ -869,6 +894,8 @@ def handler_for(
                 self.send_header("Permissions-Policy", "microphone=(self)")
             if private is not None:
                 self.send_header("X-Iris-Private", "1" if private else "0")
+            if voice_timing is not None:
+                self.send_header(VOICE_TIMING_HEADER, voice_timing.model_dump_json())
             self.end_headers()
             self.wfile.write(body)
 
@@ -899,6 +926,73 @@ def handler_for(
                 self.handle_turn()
 
         def handle_turn(self) -> None:
+            stream_timing: VoiceTiming | None = None
+            self._stream_started = False
+
+            def send_event(event: str, **data: object) -> None:
+                self.wfile.write((json.dumps({"event": event, **data}) + "\n").encode())
+
+            def stream_reply(reply: TurnReply, chunks: Generator[bytes], rate: int) -> None:
+                nonlocal stream_timing
+                words = len(re.findall(r"[^\W_]+(?:[’'-][^\W_]+)*", plain_speech_text(reply.text)))
+                started_ns = time_ns()
+                started = perf_counter_ns()
+                size = 0
+                with closing(chunks):
+                    first = next(chunks, None)
+                    if first is None:
+                        raise RuntimeError("Pocket TTS returned no audio.")
+                    first_audio_ns = perf_counter_ns() - started
+                    self._stream_started = True
+                    self.send_response(200)
+                    self.send_header("Content-Type", VOICE_STREAM_TYPE)
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("X-Iris-Private", "1" if brain.private_mode else "0")
+                    self.end_headers()
+                    send_event(
+                        "start",
+                        reply=reply.model_dump(exclude_none=True),
+                        rate=rate,
+                        started_ns=started_ns,
+                        first_audio_ns=first_audio_ns,
+                    )
+                    for pcm in chain((first,), chunks):
+                        size += len(pcm)
+                        if size > MAX_BODY:
+                            raise RuntimeError("Pocket TTS reply exceeds the transport limit.")
+                        send_event("audio", pcm=base64.b64encode(pcm).decode("ascii"))
+                stream_timing = VoiceTiming(
+                    engine=brain.settings.tts_engine,
+                    words=words,
+                    started_ns=started_ns,
+                    synthesis_ns=perf_counter_ns() - started,
+                    audio_seconds=size / (2 * rate),
+                )
+
+            use_stream = (
+                brain.settings.tts_engine == "pocket"
+                and self.headers.get("Accept") == VOICE_STREAM_TYPE
+                and callable(getattr(brain.tts, "stream", None))
+            )
+            token = STREAM_REPLY.set(stream_reply if use_stream else None)
+            try:
+                self.deliver_turn()
+                if self._stream_started:
+                    assert stream_timing is not None
+                    send_event("done", timing=stream_timing.model_dump())
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+            except Exception as error:
+                if not self._stream_started:
+                    raise
+                LOGGER.warning("Droid voice stream failed (%s)", type(error).__name__)
+                with suppress(OSError):
+                    send_event("error")
+                self.close_connection = True
+            finally:
+                STREAM_REPLY.reset(token)
+
+        def deliver_turn(self) -> None:
             text_only = self.path == "/v1/text"
             companion_idle = self.headers.get("X-Iris-Companion-Idle") == "1"
             expected = (
@@ -940,23 +1034,33 @@ def handler_for(
                         volume_supported=self.headers.get("X-Iris-Volume") == "1",
                     )
             except (ValueError, EOFError):
+                if self._stream_started:
+                    raise
                 self.respond(400, b'{"error":"Invalid session, text or WAV recording"}')
                 return
             except sr.UnknownValueError:
+                if self._stream_started:
+                    raise
                 self.respond(422, b'{"error":"No speech recognized; please try again"}')
                 return
             except sqlite3.Error as error:
+                if self._stream_started:
+                    raise
                 LOGGER.error("Conversation memory failed (%s)", type(error).__name__)
                 self.respond(
                     503, b'{"error":"Conversation memory unavailable; check the PC archive"}'
                 )
                 return
             except MemoryPolicyError:
+                if self._stream_started:
+                    raise
                 self.respond(
                     503, b'{"error":"Conversation memory policy changed; please try again"}'
                 )
                 return
             except ChatError as error:
+                if self._stream_started:
+                    raise
                 if brain.private_mode:
                     LOGGER.warning("Private chat failed (%s)", type(error).__name__)
                 else:
@@ -964,11 +1068,20 @@ def handler_for(
                 self.respond(502, b'{"error":"Chat failed; check the PC model server"}')
                 return
             except Exception as error:
+                if self._stream_started:
+                    raise
                 LOGGER.error("Droid turn failed (%s)", type(error).__name__)
                 self.respond(503, b'{"error":"Speech service failed; check the PC console"}')
                 return
+            if self._stream_started:
+                return
             self.respond(
-                200, reply.model_dump_json(exclude_none=True).encode(), private=brain.private_mode
+                200,
+                reply.model_dump_json(exclude_none=True).encode(),
+                private=brain.private_mode,
+                voice_timing=(
+                    reply._voice_timing if self.headers.get(VOICE_TIMING_HEADER) == "1" else None
+                ),
             )
 
     return Handler
@@ -988,10 +1101,11 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(args.config if args.config.exists() else None)
         if not args.config.exists() and args.config != Path("local-config.json"):
             raise ValueError("The requested configuration file does not exist")
-        from iris_tts_engines.kokoro_offline import TTS
-
-        with httpx.Client(trust_env=False, follow_redirects=False) as client:
-            brain = Brain(settings, client, make_stt(settings), TTS(settings))
+        with (
+            httpx.Client(trust_env=False, follow_redirects=False) as client,
+            open_tts(settings) as tts,
+        ):
+            brain = Brain(settings, client, make_stt(settings), tts)
             handler = handler_for(brain, token, web_chat=args.web_chat)
             server_class = ThreadingHTTPServer if args.web_chat else HTTPServer
             with server_class((args.host, args.port), handler) as server:

@@ -5,12 +5,15 @@ from __future__ import annotations
 import io
 import warnings
 import wave
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from iris_droid.volume import VolumeCommand
 
 MAX_BODY = 10_000_000
+VOICE_TIMING_HEADER = "X-Iris-Voice-Timing"
+VOICE_STREAM_TYPE = "application/x-iris-voice+ndjson"
 
 
 def companion_command(text: str) -> bool | None:
@@ -44,6 +47,15 @@ def validate_token(token: str) -> None:
         )
 
 
+class VoiceTiming(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    engine: str
+    words: int = Field(ge=0)
+    started_ns: int = Field(gt=0)
+    synthesis_ns: int = Field(ge=0)
+    audio_seconds: float = Field(ge=0, allow_inf_nan=False)
+
+
 class TurnReply(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     heard: str
@@ -52,6 +64,17 @@ class TurnReply(BaseModel):
     finished: bool = False
     companion_mode: bool = False
     volume: VolumeCommand | None = None
+    _voice_timing: VoiceTiming | None = PrivateAttr(default=None)
+    _streamed: bool = PrivateAttr(default=False)
+
+
+class VoiceStreamStart(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    event: Literal["start"]
+    reply: TurnReply
+    rate: int = Field(ge=8000, le=48000)
+    started_ns: int = Field(gt=0)
+    first_audio_ns: int = Field(ge=0)
 
 
 def read_wav(data: bytes, *, input_audio: bool = False) -> tuple[bytes, int]:

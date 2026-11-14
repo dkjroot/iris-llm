@@ -16,7 +16,7 @@ import speech_recognition as sr
 
 import iris
 from iris_droid.client import DroidClient, open_microphone, play_wav, record_turn
-from iris_droid.protocol import MAX_BODY, read_wav, validate_token, write_wav
+from iris_droid.protocol import MAX_BODY, VOICE_STREAM_TYPE, read_wav, validate_token, write_wav
 from iris_droid.server import Brain, handler_for
 from iris_droid.wake import WakeDetector
 from iris_settings import Settings
@@ -169,6 +169,13 @@ def test_real_http_transport_auth_validation_and_voice_turn(web_chat: bool) -> N
                 droid = DroidClient(url, TOKEN, http)
                 result = droid.turn(RECORDING)
                 assert result.audio and result.text == "Hello, Luke"
+                assert result._voice_timing is None
+                profiled = DroidClient(url, TOKEN, http, trace_voice=True)
+                timing = profiled.turn(RECORDING)._voice_timing
+                assert timing is not None
+                assert timing.engine == "kokoro" and timing.words == 2
+                assert timing.started_ns > 0 and timing.synthesis_ns >= 0
+                assert profiled.turn(b"hello", text_only=True)._voice_timing is None
                 assert droid.turn(b"exit", text_only=True).finished
                 with (
                     patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
@@ -180,6 +187,67 @@ def test_real_http_transport_auth_validation_and_voice_turn(web_chat: bool) -> N
                 record.assert_not_called()
                 play.assert_not_called()
         finally:
+            server.shutdown()
+            thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_pocket_voice_stream_plays_before_generation_finishes(fails: bool) -> None:
+    brain, transport = make_brain()
+    brain.settings.tts_engine = "pocket"
+    pcm = b"\x01\x00" * 100
+    consumed = threading.Event()
+    finished = threading.Event()
+
+    def stream(text):
+        assert text == "Hello, Luke"
+        yield pcm
+        assert consumed.wait(4)
+        if fails:
+            raise RuntimeError("synthetic failure")
+        yield pcm
+        finished.set()
+
+    brain.tts.stream = stream
+    brain.tts.sample_rate = 24000
+
+    def play(start, chunks):
+        assert (start.reply.text, start.rate) == ("Hello, Luke", 24000)
+        assert next(chunks) == pcm
+        assert not finished.is_set()
+        consumed.set()
+        assert list(chunks) == [pcm]
+        return None
+
+    with transport, HTTPServer(("127.0.0.1", 0), handler_for(brain, TOKEN)) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with httpx.Client(trust_env=False, timeout=5) as http:
+                url = f"http://127.0.0.1:{server.server_port}"
+                legacy = DroidClient(url, TOKEN, http)
+                assert legacy.turn(RECORDING).audio
+                droid = DroidClient(url, TOKEN, http, stream_player=play)
+                if fails:
+                    with pytest.raises(httpx.RemoteProtocolError, match="before"):
+                        droid.turn(RECORDING)
+                    session = brain.sessions.get(droid.headers["X-Iris-Session"])
+                    assert session is None or not session.history
+                else:
+                    assert droid.turn(RECORDING)._streamed
+                    assert finished.is_set()
+                response = http.post(
+                    f"{url}/v1/text",
+                    headers={
+                        **droid.headers,
+                        "Accept": VOICE_STREAM_TYPE,
+                        "Content-Type": "text/plain",
+                    },
+                    content=b"Hello",
+                )
+                assert response.headers["Content-Type"] == "application/json"
+        finally:
+            consumed.set()
             server.shutdown()
             thread.join(timeout=5)
 
