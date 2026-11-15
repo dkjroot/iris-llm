@@ -10,6 +10,8 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field, ValidationError
 
+from iris_chat_engines.backends import chat_headers
+from iris_chat_engines.messages import ChatError
 from iris_settings import Settings, load_settings
 
 ROOT = Path(__file__).resolve().parent
@@ -54,14 +56,21 @@ class ModelList(BaseModel):
 def check_setup(settings: Settings, client: httpx.Client) -> int:
     print("Checking the chat server (no conversation or audio is sent)...")
     try:
+        headers = chat_headers(settings)
+    except ChatError as error:
+        print(error)
+        return 1
+    if settings.uses_openrouter:
+        try:
+            client.get(f"{settings.base_url}/key", timeout=10, headers=headers).raise_for_status()
+        except httpx.HTTPError:
+            print("Couldn't verify the OpenRouter key. Check IRIS_API_KEY and the connection.")
+            return 1
+    try:
         response = client.get(
             f"{settings.base_url}/models",
             timeout=10,
-            headers=(
-                {"Authorization": f"Bearer {settings.api_key.get_secret_value()}"}
-                if settings.api_key
-                else {}
-            ),
+            headers=headers,
         )
         response.raise_for_status()
     except httpx.HTTPError:

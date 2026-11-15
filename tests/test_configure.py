@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 import configure
-from iris_settings import load_settings
+from iris_settings import OPENROUTER_BASE_URL, load_settings
 from iris_tts_engines import chatterbox
 
 
@@ -30,7 +30,7 @@ def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: 
     assert settings.tts_engine == "kokoro"
     assert not settings.allow_remote
     assert "api_key" not in json.loads(path.read_text(encoding="utf-8"))
-    assert len(prompts) == 14
+    assert len(prompts) == 15
     assert not any("Start listening" in prompt or "Feedback sounds" in prompt for prompt in prompts)
 
 
@@ -43,15 +43,51 @@ def test_cancelled_configuration_preserves_existing_file(tmp_path: Path) -> None
     assert path.read_text(encoding="utf-8") == original
 
 
+def test_openrouter_preset_saves_connection_and_pocket_voice(tmp_path, monkeypatch):
+    monkeypatch.setenv("IRIS_API_KEY", "private-openrouter-key")
+    (tmp_path / "sample.safetensors").touch()
+    monkeypatch.setattr(chatterbox, "VOICE_DIRECTORY", tmp_path)
+    models = iter(["", "example/model"])
+    prompts = []
+
+    def answer(prompt):
+        prompts.append(prompt)
+        if prompt.startswith("Chat connection"):
+            return "openrouter"
+        if prompt.startswith("Model name"):
+            return next(models)
+        if prompt.startswith("Speech synthesis"):
+            return "pocket"
+        return ""
+
+    with patch.object(configure, "ROOT", tmp_path):
+        with patch("builtins.input", side_effect=answer):
+            assert configure.main() == 0
+        with patch("builtins.input", return_value=""):
+            assert configure.main() == 0
+    saved = json.loads((tmp_path / "local-config.json").read_text())
+    assert saved["base_url"] == OPENROUTER_BASE_URL
+    assert saved["model"] == "example/model"
+    assert saved["allow_remote"] is True
+    assert saved["tts_engine"] == "pocket"
+    assert saved["pocket_voice"] == "sample"
+    assert "api_key" not in saved
+    assert not any(prompt.startswith("Chat base URL") for prompt in prompts)
+
+
 def test_kokoro_wizard_offers_named_voices_and_saves_selection(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    def answer(prompt: str) -> str:
+        if prompt.startswith("Kokoro voice"):
+            return "bf_emma"
+        if prompt.startswith("Talking speed"):
+            return "1.3"
+        return ""
+
     with (
         patch.object(configure, "ROOT", tmp_path),
-        patch(
-            "builtins.input",
-            side_effect=["", "", "", "", "", "bf_emma", "1.3", "", "", "", "", "", "", ""],
-        ),
+        patch("builtins.input", side_effect=answer),
     ):
         assert configure.main() == 0
     settings = load_settings(tmp_path / "local-config.json")

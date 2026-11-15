@@ -180,6 +180,7 @@ python iris.py configure
 python iris.py --check
 ```
 
+Choose `custom` for a local model server or another OpenAI-compatible endpoint.
 The configuration script asks for the model address and name, the model host's
 context window, the recogniser, the voice and speaking speed, optional time and
 weather skills, and whether to save conversation memory locally. With memory enabled,
@@ -211,6 +212,23 @@ These are the normal choices for a local setup:
 | Voice | Press Enter for Heart (`af_heart`), or try Emma (`bf_emma`) for British English. |
 | Talking speed | Start with `1.0`, then change it once you've heard her. |
 | Outbound remote services | Leave this off when the model runs on this PC and speech stays local. |
+
+#### Using OpenRouter
+
+Choose `openrouter` when the setup asks for a chat connection. Iris fills in
+`https://openrouter.ai/api/v1` for you. Copy the full model ID from the
+[OpenRouter model list](https://openrouter.ai/models), including the part before
+the slash, and enter the context window listed for that model. If you want Iris
+to use skills like the clock, pick a model that supports tool calling. You can
+also turn skills off during setup.
+
+Accept outbound remote services when prompted so Iris can send your chat to
+OpenRouter. You can still use local speech recognition and synthesis. Create an
+[OpenRouter API key](https://openrouter.ai/keys) and set it as `IRIS_API_KEY` in
+the environment you use to run the Iris server. Run `python iris.py --check`
+from that environment to check the key and list the available model IDs.
+
+#### Speech and outbound connections
 
 The chosen synthesizer runs on the server and sends audio back to the client.
 The client owns the microphone and you choose how it listens when you launch it.
@@ -393,7 +411,8 @@ your host accepts per-request template options, put them in that dictionary.
 Iris sends them as `chat_template_kwargs` without interpreting them. Additional
 non-secret request fields can go in `chat_request_options`. Both settings are
 empty by default, so Iris doesn't send template options or assume a particular
-host. They also accept JSON through `IRIS_CHAT_TEMPLATE_KWARGS` and
+host. Iris leaves `chat_template_kwargs` out of requests to OpenRouter.
+Both settings also accept JSON through `IRIS_CHAT_TEMPLATE_KWARGS` and
 `IRIS_CHAT_REQUEST_OPTIONS`. Use only fields supported by your chosen endpoint;
 Iris's named settings and conversation/tool fields can't be replaced through
 the extra options. Trace output includes these options, so keep authentication

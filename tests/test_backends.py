@@ -6,10 +6,11 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+from iris import check_setup
 from iris_chat_engines.backends import ChatCompletionsBackend
 from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_chat_engines.messages import FunctionCall, Message, ToolCall
-from iris_settings import Settings
+from iris_settings import OPENROUTER_BASE_URL, Settings
 
 
 def test_an_injected_adapter_can_drive_the_entire_skill_loop_without_model_http():
@@ -91,6 +92,67 @@ def test_host_specific_options_and_template_kwargs_are_opt_in_and_reach_each_req
         assert payload["chat_template_kwargs"] == {"enable_thinking": False}
         assert payload["top_k"] == 20 and payload["provider_option"] == {"mode": "example"}
         assert payload["tool_choice"] == "auto" and payload["stream"] is False
+
+
+def test_openrouter_checks_credentials_and_preserves_reasoning_across_tool_calls():
+    reasoning = [{"type": "reasoning.encrypted", "data": "opaque", "index": 0}]
+    paths = []
+
+    def handle(request):
+        assert request.url.host == "openrouter.ai"
+        assert request.headers["authorization"] == "Bearer router-key"
+        paths.append(request.url.path)
+        if request.url.path == "/api/v1/key":
+            return httpx.Response(200, json={"data": {}})
+        if request.url.path == "/api/v1/models":
+            return httpx.Response(200, json={"data": [{"id": "example/model"}]})
+        assert request.url.path == "/api/v1/chat/completions"
+        payload = json.loads(request.content)
+        assert payload["model"] == "example/model"
+        assert "chat_template_kwargs" not in payload
+        if paths.count("/api/v1/chat/completions") == 1:
+            message = {
+                "role": "assistant",
+                "content": None,
+                "reasoning_details": reasoning,
+                "tool_calls": [
+                    {
+                        "id": "clock-1",
+                        "type": "function",
+                        "function": {"name": "get_local_time", "arguments": "{}"},
+                    }
+                ],
+            }
+        else:
+            assert payload["messages"][-2]["reasoning_details"] == reasoning
+            assert payload["messages"][-1]["tool_call_id"] == "clock-1"
+            message = {"role": "assistant", "content": "Here's the local time."}
+        return httpx.Response(200, json={"choices": [{"message": message}]})
+
+    settings = Settings(
+        base_url=OPENROUTER_BASE_URL,
+        model="example/model",
+        allow_remote=True,
+        api_key="router-key",
+        chat_template_kwargs={"enable_thinking": False},
+    )
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        assert check_setup(settings, client) == 0
+        assert ChatEngine(settings, client).get_response("What time is it?") == (
+            "Here's the local time."
+        )
+    assert paths == ["/api/v1/key", "/api/v1/models", *["/api/v1/chat/completions"] * 2]
+
+
+def test_openrouter_requires_key_before_sending_chat(monkeypatch, capsys):
+    monkeypatch.delenv("IRIS_API_KEY", raising=False)
+    settings = Settings(base_url=OPENROUTER_BASE_URL, allow_remote=True)
+    transport = httpx.MockTransport(lambda request: pytest.fail("Unexpected HTTP"))
+    with httpx.Client(transport=transport) as client:
+        assert check_setup(settings, client) == 1
+        assert "IRIS_API_KEY" in capsys.readouterr().out
+        with pytest.raises(ChatError, match="IRIS_API_KEY"):
+            ChatEngine(settings, client).get_response("Hello")
 
 
 @pytest.mark.parametrize(

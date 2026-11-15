@@ -33,6 +33,13 @@ class ChatResponse(BaseModel):
     choices: list[Choice] = Field(min_length=1)
 
 
+def chat_headers(settings: Settings) -> dict[str, str]:
+    key = settings.api_key.get_secret_value() if settings.api_key else ""
+    if settings.uses_openrouter and not key.strip():
+        raise ChatError("Set IRIS_API_KEY to your OpenRouter API key on the Iris server.")
+    return {"Authorization": f"Bearer {key}"} if key else {}
+
+
 class ChatCompletionsBackend:
     """OpenAI-compatible Chat Completions for local hosts or hosted services."""
 
@@ -41,6 +48,7 @@ class ChatCompletionsBackend:
         self.client = client
 
     def complete(self, messages: list[Message], tools: list[dict[str, object]]) -> Message:
+        headers = chat_headers(self.settings)
         payload: dict[str, object] = {
             "model": self.settings.model,
             "messages": [message.model_dump(exclude_none=True) for message in messages],
@@ -52,13 +60,10 @@ class ChatCompletionsBackend:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
         payload.update(self.settings.chat_request_options)
-        if self.settings.chat_template_kwargs:
+        if self.settings.chat_template_kwargs and not self.settings.uses_openrouter:
             payload["chat_template_kwargs"] = self.settings.chat_template_kwargs
         if self.settings.trace:
             print("Sending:", json.dumps(payload, ensure_ascii=False))
-        headers = {}
-        if self.settings.api_key:
-            headers["Authorization"] = f"Bearer {self.settings.api_key.get_secret_value()}"
         started = time.monotonic()
         try:
             response = self.client.post(

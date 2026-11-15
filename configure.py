@@ -8,7 +8,13 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from iris_settings import Settings, load_settings
+from iris_settings import (
+    DEFAULT_CHAT_BASE_URL,
+    DEFAULT_CHAT_MODEL,
+    OPENROUTER_BASE_URL,
+    Settings,
+    load_settings,
+)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -198,6 +204,30 @@ def configure_tts(previous: Settings, data: dict[str, Any]) -> None:
         data["kokoro_speed"] = choose_kokoro_speed(previous.kokoro_speed)
 
 
+def configure_chat(data: dict[str, Any], previous: Settings) -> None:
+    connection = choose(
+        "Chat connection (custom for a local server or another endpoint)",
+        ["custom", "openrouter"],
+        "openrouter" if previous.uses_openrouter else "custom",
+    )
+    if connection == "openrouter":
+        data["base_url"] = OPENROUTER_BASE_URL
+        print("Find the model ID at https://openrouter.ai/models.")
+        print("Set IRIS_API_KEY to your OpenRouter key in the Iris server environment.")
+        default_model = previous.model if previous.uses_openrouter else ""
+    else:
+        default_url = DEFAULT_CHAT_BASE_URL if previous.uses_openrouter else previous.base_url
+        data["base_url"] = input(f"Chat base URL [{default_url}]: ").strip() or default_url
+        default_model = DEFAULT_CHAT_MODEL if previous.uses_openrouter else previous.model
+    model_prompt = f"Model name [{default_model}]: " if default_model else "Model name: "
+    while True:
+        model = input(model_prompt).strip() or default_model
+        if model:
+            data["model"] = model
+            return
+        print("Enter the model ID you want Iris to use.")
+
+
 def main() -> int:
     path = ROOT / "local-config.json"
     try:
@@ -212,10 +242,7 @@ def main() -> int:
         )
         previous = load_settings(path if path.exists() else None)
         data = previous.model_dump(mode="json")
-        data["base_url"] = (
-            input(f"Chat base URL [{previous.base_url}]: ").strip() or previous.base_url
-        )
-        data["model"] = input(f"Model name [{previous.model}]: ").strip() or previous.model
+        configure_chat(data, previous)
         data["model_context_tokens"] = int(
             input(
                 "Model context window in tokens (match your host) "
@@ -241,7 +268,7 @@ def main() -> int:
             choose(
                 "Allow outbound remote model/speech services",
                 ["yes", "no"],
-                "yes" if previous.allow_remote else "no",
+                "yes" if previous.allow_remote or data["base_url"] == OPENROUTER_BASE_URL else "no",
             )
             == "yes"
         )

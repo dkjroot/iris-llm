@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class ChatError(RuntimeError):
@@ -31,3 +31,4 @@ class Message(BaseModel):
     tool_calls: list[ToolCall] | None = Field(default=None, max_length=8)
     tool_call_id: str | None = None
     reasoning_content: str | None = None
+    reasoning_details: list[dict[str, JsonValue]] | None = None

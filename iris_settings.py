@@ -12,6 +12,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, JsonValue, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
+DEFAULT_CHAT_BASE_URL = "http://127.0.0.1:5001/v1"
+DEFAULT_CHAT_MODEL = "local-model"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
 
 class VoiceSettings(BaseSettings):
     """Voice setup can run independently of Iris's chat and home services."""
@@ -44,8 +48,8 @@ class PocketSettings(VoiceSettings):
 
 
 class Settings(ChatterboxSettings, PocketSettings):
-    base_url: str = "http://127.0.0.1:5001/v1"
-    model: str = "local-model"
+    base_url: str = DEFAULT_CHAT_BASE_URL
+    model: str = DEFAULT_CHAT_MODEL
     api_key: SecretStr | None = Field(default=None, exclude=True)
     allow_remote: bool = False
     system_prompt: str = "You are Iris, a friendly assistant. Keep spoken replies fairly short."
@@ -155,6 +159,10 @@ class Settings(ChatterboxSettings, PocketSettings):
     kokoro_speed: float = Field(default=1.0, ge=0.5, le=2.0)
     kokoro_model_dir: Path | None = None
     phrase_time_limit: float = Field(default=60, gt=0, le=300)
+
+    @property
+    def uses_openrouter(self) -> bool:
+        return self.base_url == OPENROUTER_BASE_URL
 
     @field_validator("base_url")
     @classmethod
