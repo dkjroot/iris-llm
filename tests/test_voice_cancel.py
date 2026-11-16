@@ -1,10 +1,11 @@
+import base64
 import json
 import sys
-from contextlib import nullcontext
 from http.server import ThreadingHTTPServer
+from importlib.resources import files
 from threading import Event, Thread
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 from uuid import uuid4
 
 import httpx
@@ -13,6 +14,7 @@ import pytest
 
 from iris_chat_engines.messages import FunctionCall, Message, ToolCall
 from iris_droid.client import DroidClient
+from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import TurnCancelled, write_wav
 from iris_droid.server import Brain, handler_for
 from iris_droid.wake import WakeDetector
@@ -48,7 +50,8 @@ def voice_server(tmp_path):
                 thread.join(timeout=5)
 
 
-def test_cancel_returns_while_transcription_is_still_running(voice_server):
+@pytest.mark.parametrize("sounds_enabled", [True, False])
+def test_cancel_returns_while_transcription_is_still_running(voice_server, sounds_enabled):
     brain, chat, client, url = voice_server
     recognizing = Event()
     release = Event()
@@ -63,7 +66,8 @@ def test_cancel_returns_while_transcription_is_still_running(voice_server):
     def listen(stop):
         return recognizing.wait(3)
 
-    feedback = Mock(working=Mock(side_effect=nullcontext))
+    audio = Mock()
+    feedback = ClientFeedback(7, audio.play, audio.stop, enabled=sounds_enabled)
     droid = DroidClient(url, TOKEN, client, cancel_listener=listen, cancel_feedback=feedback)
     try:
         with pytest.raises(TurnCancelled):
@@ -71,7 +75,12 @@ def test_cancel_returns_while_transcription_is_still_running(voice_server):
         assert not release.is_set()
         assert brain.memory.current_conversation("default") is None
         chat.backend.complete.assert_not_called()
-        feedback.acknowledge.assert_called_once()
+        expected = []
+        if sounds_enabled:
+            working = files("iris_sounds").joinpath("workinglongquiet.wav").read_bytes()
+            expected.extend([call.play(working, 7, loop=True), call.stop()])
+        cancelled = files("iris_sounds").joinpath("cancelled.wav").read_bytes()
+        assert audio.mock_calls == [*expected, call.play(cancelled, 7)]
     finally:
         release.set()
 
@@ -171,7 +180,7 @@ def test_cancellation_prevents_tool_dispatch(voice_server):
 
 
 def test_delete_previous_voice_command_can_itself_be_cancelled(voice_server):
-    brain, _, client, url = voice_server
+    brain, chat, client, url = voice_server
     droid = DroidClient(url, TOKEN, client)
     droid.turn(b"Keep until deletion is accepted", text_only=True)
     brain.stt.recognize.return_value = "Delete previous"
@@ -185,8 +194,19 @@ def test_delete_previous_voice_command_can_itself_be_cancelled(voice_server):
         return False
 
     droid.cancel_listener = accept
-    assert droid.turn(RECORDING).text == "Previous exchange deleted."
+    deleted = droid.turn(RECORDING)
+    assert deleted.text == "Previous exchange deleted."
+    assert base64.b64decode(deleted.audio) == (
+        files("iris_sounds").joinpath("previous-deleted.wav").read_bytes()
+    )
+    empty = droid.turn(RECORDING)
+    assert empty.text == "There's no previous exchange to delete."
+    assert base64.b64decode(empty.audio) == (
+        files("iris_sounds").joinpath("nothing-to-delete.wav").read_bytes()
+    )
     assert brain.memory.export("default")["exchanges"] == []
+    chat.backend.complete.assert_called_once()
+    brain.tts.synthesize.assert_not_called()
 
 
 def test_delete_previous_response_identifies_the_browser_messages_to_remove(voice_server):

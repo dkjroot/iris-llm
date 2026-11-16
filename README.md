@@ -37,7 +37,8 @@ and speaker. That client can be a laptop while you're trying it out, then a
 Raspberry Pi when you're ready to build the droid. You can also run both on the
 same computer; it's exactly the same setup, using a local connection.
 Your phone's browser can be the client too when you're on your home Wi-Fi.
-[Talk to Iris from your phone](#talk-to-iris-from-your-phone).
+[Talk to Iris from your phone](#talk-to-iris-from-your-phone), or run her from
+[an iPhone shortcut](#talk-to-iris-with-siri).
 
 ```text
 Laptop or Pi                          PC
@@ -195,11 +196,11 @@ check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
 
-The advanced `conversation_style_prompt` describes Iris as curious without
-interviewing her friend: she can let a thought stand, with a conversational
-follow-up roughly one reply in four. This is a light character nudge, not an
-enforced quota; she can still ask for clarification. You can edit it in advanced
-configuration, or enter `""` to remove it. Restart the server after changing it.
+By default, Iris is happy to let a reply stand on its own. She can still ask if
+she needs to clear something up or if the answer would add something to what
+you're talking about. If you'd like to change that, you can edit
+`conversation_style_prompt` in advanced configuration, or enter `""` to remove
+the guidance. Restart the server after changing it.
 
 These are the normal choices for a local setup:
 
@@ -754,9 +755,11 @@ all three occurrences of `192.168.1.10` with your server's LAN address, then run
 
 Allow TCP port 8443 from your home network in the server firewall. Follow
 [Caddy's guide to finding its local root certificate](https://caddyserver.com/docs/running)
-and install that certificate on the phone. On iPhone, enable full trust for it
-under **Settings → General → About → Certificate Trust Settings** after
-installing it. [Apple's certificate trust instructions](https://support.apple.com/en-us/102390).
+and install that certificate on the phone. On iPhone, there's a separate step
+after the profile is installed. Go to **Settings → General → About → Certificate
+Trust Settings** and turn on the switch for the Caddy root under **Enable Full
+Trust for Root Certificates**. If the certificate is already listed there,
+check that its switch is on. [Apple's certificate trust instructions](https://support.apple.com/en-us/102390).
 
 Open `https://192.168.1.10:8443/chat` and allow microphone access
 when the browser asks. Keep these ports on the home network and leave router
@@ -793,6 +796,61 @@ Caddy can listen inside WSL. Keep the Windows LAN IP in the site address, and
 forward TCP port 8443 from Windows to WSL. With mirrored networking, check
 that the Hyper-V firewall allows inbound TCP 8443 from your LAN.
 [Microsoft's WSL networking guide](https://learn.microsoft.com/en-us/windows/wsl/networking).
+
+### Talk to Iris with Siri
+
+This is handy when you've got your hands full and want to ask Iris about the
+living room lamp. Say **“Hey Siri, Iris Relay”**, wait for the prompt, then say
+**“Turn on the living room lamp”** or whatever you'd normally ask Iris. The
+shortcut sends what you said as text, then your iPhone reads Iris's reply
+aloud. The lamp example uses Iris's [home automation setup](docs/home-automation.md).
+
+First, open Iris's HTTPS chat page in Safari on your home Wi-Fi and make sure
+you can send a message. If Safari shows a certificate warning with Caddy, go
+back to the [certificate setup above](#enable-the-phone-microphone) and check
+that the Caddy root's full trust switch is on, even if you installed it earlier.
+You only need Safari for this check. The shortcut contacts Iris directly.
+
+Open **Shortcuts** on the iPhone, tap **+**, and name the shortcut **Iris Relay**.
+I use that name because Siri can hear “Ask Iris” as a question for Siri herself.
+Add these actions in order.
+
+1. Add **Ask for Input**, choose **Text**, and set the prompt to
+   **“What do you want to ask Iris?”**
+2. Add **Get Contents of URL**. Use the same HTTPS address and port as the chat
+   page, replacing `/chat` with `/v1/text`. For example, use
+   `https://192.168.1.10:8443/v1/text`. Expand the action, set **Method** to
+   **POST**, and add these headers.
+
+   | Header | Value |
+   | --- | --- |
+   | `Authorization` | `Bearer YOUR_CONNECTION_KEY` |
+   | `Content-Type` | `text/plain` |
+   | `X-Iris-Session` | A UUID for this shortcut |
+
+   Use your `IRIS_DROID_TOKEN` in place of `YOUR_CONNECTION_KEY`, with `Bearer`
+   spelled exactly as shown, followed by one space. To make a session ID, run
+   `python -c "import uuid; print(uuid.uuid4())"` on your PC and paste the result
+   into the header. Iris uses that ID to keep track of follow-up messages from
+   this shortcut. You can keep using the same ID each time.
+
+   Set **Request Body** to **File** and select the **Provided Input** magic
+   variable from **Ask for Input** as the file. This sends the words you entered
+   as the request body. [Apple's Shortcuts API guide](https://support.apple.com/guide/shortcuts/apd58d46713f/ios).
+3. Add **Get Dictionary Value**. Set the key to `text` and use **Contents of URL**
+   as its input. This picks Iris's reply out of the response.
+4. Add **Speak Text** and select **Dictionary Value** as the text to read aloud.
+
+Try the ▶ button in Shortcuts first. Type something like **“Is the living room
+lamp on?”** and allow the connection if the phone asks. Once Iris replies, try
+**“Hey Siri, Iris Relay”** and give your request after the prompt.
+[Apple's guide to running shortcuts with Siri](https://support.apple.com/guide/shortcuts/apd07c25bb38/ios).
+
+If the shortcut goes quiet after you enter a message, put a temporary **Quick
+Look** action after **Get Contents of URL** and feed it **Contents of URL** so
+you can see the server's reply. If it says **Authentication required**, check
+the key in the web chat, make sure autocorrect kept the **z** in `Authorization`,
+and check the capitalisation of `Bearer`.
 
 ## How to set up the client
 
@@ -955,6 +1013,35 @@ The client checks for this file in the directory you launch it from. Use
 Relative model paths are resolved from the launch directory. You can still pass
 switches like `--server` or `--microphone` to override a saved value for one run.
 One-off commands like `--text` and `--test-microphone` still go on the command line.
+
+#### Give a client its own personalities
+
+You might want Iris to chat one way on a little robot around the house and
+another way on the one that plays chess with you. On each client, make a
+`personalities.json` file with the names and a short prompt for each personality.
+
+```json
+{
+    "friend": "Be warm and easygoing, like a friend with time for a chat.",
+    "scientist": "Be curious and precise. Explain what we can test and what we're guessing.",
+    "philosopher": "Be reflective and patient. Look for the interesting question underneath."
+}
+```
+
+Add `"personalities_file": "personalities.json"` to `client_config.json`, or run
+`python iris.py client --personalities-file personalities.json`. Relative paths
+start from the directory you launch the client in. Use the first entry for the
+personality you want at startup.
+
+Say or type **“list personalities”** to hear what this client has and which one
+it's using. Say **“switch to personality philosopher”** to change it for the
+rest of the run. That choice carries through ordinary conversation, companion
+mode and the little conversations Iris starts herself. If you restart the client,
+it reads the file again and starts with the first entry.
+
+The client sends the active snippet to the Iris server with each turn. The
+server adds it to Iris's role instructions for the chat model. Update both the
+server and the client before trying this.
 
 #### Control the speaker volume by voice
 
@@ -1279,21 +1366,21 @@ Update both the server and client before using the conversation controls. Start 
 
 Say “hey iris”, wait for the listening bloop, then give your message. After Iris finishes speaking, she quietly returns to listening, and you can give your next message without saying her name again.
 
-Say **“stop listening”** as a complete utterance to close the conversation window. The client stays running and returns to waiting locally for “hey iris”. The PC recognises the stop phrase, handles it before the chat model and returns a control acknowledgement without generating speech. It doesn't add that phrase to chat history. Text mode, Enter mode and continuous mode don't treat it as a wake control.
+Say **“stop listening”** as a complete utterance to close the conversation window. Iris says “Stopped listening” and the client goes back to waiting locally for “hey iris”. The PC handles the stop phrase before the chat model, outside the conversation history. Text mode, Enter mode and continuous mode don't treat it as a wake control.
 
 Five minutes without a new detected utterance also returns the client to wake waiting, without sending that silence to the server or playing an error cue. Server processing and reply playback don't use up the idle interval; the timer starts afresh after each reply. Change the idle period with `--conversation-timeout SECONDS` on the client (default `300`, greater than 0, up to `3600`). `--listen-timeout` still applies to ordinary Enter/continuous turns; an open wake conversation waits for the remaining conversation interval instead.
 
 Chat history is kept when you say “stop listening” or the conversation goes idle, so the next wake phrase can resume the discussion. Say `exit` to stop the client, or use Ctrl-C. With memory off, either gives you a fresh conversation on the next client run. With [conversation memory](#conversation-memory) enabled, the next run resumes the saved conversation.
 
-Say **“clear context”** as a complete utterance to start afresh without stopping the client. With memory off, the server discards this client's conversation history, keeping Iris's configured personality and instructions. With memory enabled, it starts a new shared conversation for your configured owner. The earlier conversation stays in the archive, but isn't included in the new context. It returns a text confirmation without generating a chat reply or speech; a pending memory summary checkpoint may still run. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
+Say **“clear context”** as a complete utterance to start afresh without stopping the client. With memory off, the server discards this client's conversation history, keeping Iris's configured personality and instructions. With memory enabled, it starts a new shared conversation for your configured owner. The earlier conversation stays in the archive. Once the context is cleared, Iris says “Context cleared”. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter. A longer sentence containing “clear context” is still an ordinary chat message.
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
 
 #### Cancel something Iris picked up by mistake
 
 If you hear the processing bloops and realise Iris picked up something you
-weren't saying to her, say **“cancel, cancel”**. The bloops stop and you get a
-short acknowledgement. Iris drops that turn before it can become a reply or
+weren't saying to her, say **“cancel, cancel”**. The bloops stop and the client
+says “Cancelled”. Iris drops that turn before it can become a reply or
 part of the conversation she remembers.
 
 Update the server and the client, then add `--voice-cancel` to your client
@@ -1705,7 +1792,8 @@ backups aren't erased by entering private mode.
 If Iris picks up something by mistake, or gets the wrong end of the stick, say
 or type **“delete previous”** on its own. This immediately removes the latest
 completed exchange from the current conversation, including what you said and
-Iris's reply. Then you can give her the message again. With memory on, the
+Iris's reply. In voice mode, Iris tells you when she's deleted it or if there
+was nothing to delete. Then you can give her the message again. With memory on, the
 current saved conversation is shared across clients. In private mode or with
 memory off, the command works on this client's live conversation.
 

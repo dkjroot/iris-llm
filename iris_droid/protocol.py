@@ -77,6 +77,7 @@ class TurnReply(BaseModel):
     companion_mode: bool = False
     volume: VolumeCommand | None = None
     expression: FaceExpression | None = None
+    selected_personality: str | None = None
     _voice_timing: VoiceTiming | None = PrivateAttr(default=None)
     _streamed: bool = PrivateAttr(default=False)
     _exchange_id: str | None = PrivateAttr(default=None)

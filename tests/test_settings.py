@@ -114,6 +114,25 @@ def test_distributed_default_and_template_match_model_defaults() -> None:
     assert load_settings(root / "config_template.json") == Settings()
 
 
+@pytest.mark.parametrize(
+    ("saved_prompt", "expected"),
+    [
+        (
+            "Iris is curious without interviewing her friend. She's comfortable letting a thought "
+            "stand; she asks a conversational follow-up roughly one reply in four, while still "
+            "asking for clarification when needed.",
+            Settings.model_fields["conversation_style_prompt"].default,
+        ),
+        ("Keep the chat relaxed.", "Keep the chat relaxed."),
+        ("", ""),
+    ],
+)
+def test_saved_conversation_style_prompt(tmp_path: Path, saved_prompt: str, expected: str) -> None:
+    path = tmp_path / "local-config.json"
+    path.write_text(json.dumps({"conversation_style_prompt": saved_prompt}), encoding="utf-8")
+    assert load_settings(path).conversation_style_prompt == expected
+
+
 def test_skill_settings_can_be_overridden_from_environment(monkeypatch):
     monkeypatch.setenv("IRIS_LOCAL_TIMEZONE", "Asia/Tokyo")
     monkeypatch.setenv("IRIS_WEATHER_LOCATION", "Tokyo")

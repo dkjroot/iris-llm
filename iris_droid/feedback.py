@@ -62,6 +62,14 @@ class ClientFeedback:
     def acknowledge(self) -> None:
         self._cue("acknowledge.wav")
 
+    def cancelled(self) -> None:
+        self.stop_working()
+        try:
+            self.player(self._load("cancelled.wav"), self.speaker)
+        except (OSError, ValueError, ImportError) as error:
+            print(f"Couldn't play the cancellation confirmation ({error}).", flush=True)
+            self.acknowledge()
+
     def stop_working(self) -> None:
         if self._working:
             self._working = False

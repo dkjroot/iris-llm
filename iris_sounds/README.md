@@ -1,6 +1,6 @@
 # IRIS feedback sounds
 
-The WAV files here are original procedural cues made for IRIS. The initial
+The six cue WAVs below are original procedural cues made for IRIS. The initial
 four cues were added on 20 October 2026, with the error and command acknowledgement cues added on 1 November 2026. They use only sine waves and mathematical envelopes, with no recordings,
 samples, melodies copied from elsewhere, or external sound-generation service.
 The generator and cues are supplied under the repository's
@@ -13,7 +13,14 @@ The generator and cues are supplied under the repository's
 | `longbleep.wav` | Recording finished in Enter mode or a local test: one gentle 100 ms chirp, slightly higher than the ready cue. |
 | `workinglongquiet.wav` | Waiting for the server: low pulses in a 3.6-second loop, repeated until the request finishes or fails. |
 | `error.wav` | A failed turn, or no speech during Enter-to-talk/a local test: three short low pulses. Hands-free timeouts and unrecognised recordings stay quiet. |
-| `acknowledge.wav` | Command accepted: four quick rising chirps, lasting 255 ms altogether. Used for “clear context” and “stop listening”. |
+| `acknowledge.wav` | Command accepted: four quick rising chirps, lasting 255 ms altogether. Used when a command has no spoken confirmation available. |
+
+The spoken confirmations were generated with eSpeak NG 1.52 using `en+f3` at
+185 words per minute and amplitude 90. The client plays `cancelled.wav` after
+the server confirms the discard. For the other commands, the server returns
+`context-cleared.wav`, `stopped-listening.wav`, `previous-deleted.wav` or
+`nothing-to-delete.wav` as ordinary reply audio. These files work with
+`--no-sounds`, and text mode stays silent.
 
 The client owns feedback playback, including in a remote-client setup. Cues use
 its selected `--speaker` device and the same sample-rate conversion as spoken
@@ -31,8 +38,7 @@ working cue either. See the main README for setup and sensitivity controls.
 Use `python iris.py client --no-sounds` to disable feedback while keeping spoken
 replies. These commands and options are shared by Windows PowerShell, macOS and
 Linux Bash. Text mode doesn't play cues. Missing or unplayable feedback produces
-a warning and disables cues for that run; it doesn't make the conversation depend
-on optional sound files. No FFmpeg or MP3 decoder is needed.
+a warning and disables cues for that run. No FFmpeg or MP3 decoder is needed.
 
 ## Recreate or change them
 

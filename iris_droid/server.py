@@ -16,6 +16,7 @@ from contextlib import closing, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from importlib.resources import files
 from itertools import chain
 from pathlib import Path
 from threading import Event, Lock
@@ -31,6 +32,12 @@ from pydantic import BaseModel
 from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.expression import FACE_HEADER, FaceExpression
+from iris_droid.personalities import (
+    MAX_PERSONALITY_HEADER,
+    PERSONALITY_HEADER,
+    PersonalityContext,
+    personality_command,
+)
 from iris_droid.protocol import (
     MAX_BODY,
     VOICE_CANCEL_PATH,
@@ -79,6 +86,17 @@ WEB_ASSETS = {
     "/mic.js": ("mic.js", "text/javascript"),
     "/speech.js": ("speech.js", "text/javascript"),
 }
+
+
+def command_audio(name: str, *, text_only: bool) -> str:
+    if text_only:
+        return ""
+    try:
+        wav = files("iris_sounds").joinpath(name).read_bytes()
+    except OSError:
+        LOGGER.warning("Spoken confirmation unavailable (%s).", name)
+        return ""
+    return base64.b64encode(wav).decode("ascii")
 
 
 class VoiceDecision:
@@ -263,6 +281,7 @@ class Brain:
         companion: bool,
         finished: bool = False,
         expression: FaceExpression | None = None,
+        selected_personality: str | None = None,
     ) -> TurnReply:
         result = TurnReply(
             heard=heard,
@@ -270,6 +289,7 @@ class Brain:
             finished=finished,
             companion_mode=companion and not finished,
             expression=expression,
+            selected_personality=selected_personality,
         )
         stream_reply = STREAM_REPLY.get()
         if not text_only and stream_reply is not None:
@@ -574,7 +594,9 @@ class Brain:
             except sqlite3.Error as error:
                 LOGGER.warning("Memory checkpoint deferred (%s).", type(error).__name__)
 
-    def _delete_previous(self, heard: str, chat: ChatEngine | None) -> TurnReply:
+    def _delete_previous(
+        self, heard: str, chat: ChatEngine | None, *, text_only: bool
+    ) -> TurnReply:
         companion = chat is not None and chat.companion_mode
         deleted: str | None = None
         removed = False
@@ -609,6 +631,10 @@ class Brain:
                 "Previous exchange deleted."
                 if removed
                 else "There's no previous exchange to delete."
+            ),
+            audio=command_audio(
+                "previous-deleted.wav" if removed else "nothing-to-delete.wav",
+                text_only=text_only,
             ),
             companion_mode=companion,
         )
@@ -663,6 +689,7 @@ class Brain:
         volume_supported: bool = False,
         face: bool = False,
         decision: VoiceDecision | None = None,
+        personality: PersonalityContext | None = None,
     ) -> TurnReply:
         self._sync_policy()
         if companion_idle:
@@ -701,6 +728,7 @@ class Brain:
         )
         finished = heard.casefold().strip(" .!?") == "exit"
         command = companion_command(heard)
+        requested_personality = personality_command(heard)
         if decision is not None and (
             detail is not None
             or block_followup
@@ -711,10 +739,11 @@ class Brain:
             or stop_listening
             or finished
             or command is not None
+            or requested_personality is not None
         ):
             decision.require_acceptance()
         if delete_previous:
-            return self._delete_previous(heard, existing)
+            return self._delete_previous(heard, existing, text_only=text_only)
         if detail is not None:
             return self._detail_control(session, heard, detail, text_only=text_only)
         if block_followup:
@@ -746,6 +775,35 @@ class Brain:
             return self._memory_control(session, heard, action, text_only=text_only)
         if existing is not None and not companion_idle:
             existing.pending_forget = None
+        if requested_personality is not None:
+            selected_personality = None
+            if personality is None:
+                text = "There aren't any personalities configured on this client."
+            elif not requested_personality:
+                names = ", ".join(personality.names)
+                text = f"The personalities here are {names}. I'm using {personality.active}."
+            else:
+                selected_personality = next(
+                    (
+                        name
+                        for name in personality.names
+                        if name.casefold() == requested_personality
+                    ),
+                    None,
+                )
+                text = (
+                    f"I've switched to {selected_personality}."
+                    if selected_personality is not None
+                    else "That personality isn't available here. "
+                    "Say list personalities to hear the names."
+                )
+            return self._reply(
+                heard,
+                text,
+                text_only=text_only,
+                companion=companion,
+                selected_personality=selected_personality,
+            )
         if volume is not None:
             if volume_supported:
                 return TurnReply(heard=heard, text="", volume=volume, companion_mode=companion)
@@ -775,6 +833,7 @@ class Brain:
                     if self.memory is not None
                     else "Context cleared. Ready for a fresh conversation."
                 ),
+                audio=command_audio("context-cleared.wav", text_only=text_only),
                 companion_mode=companion,
             )
         if stop_listening:
@@ -788,6 +847,7 @@ class Brain:
                 text="Waiting for the wake phrase."
                 if wake_conversation and not text_only
                 else "Companion mode off.",
+                audio=command_audio("stopped-listening.wav", text_only=text_only),
             )
         chat = self._session(session)
         # All clients for an owner deliberately share one active conversation.
@@ -817,6 +877,7 @@ class Brain:
         followup_conversation: str | None = None
         hierarchy_plan = None
         expression: FaceExpression | None = None
+        personality_prompt = personality.prompt if personality is not None else ""
         try:
             if command is not None:
                 if not command:
@@ -838,7 +899,9 @@ class Brain:
                             chat.memory_sources.add(followup_conversation)
                     except (sqlite3.Error, ValueError, KeyError, IndexError) as error:
                         LOGGER.warning("Companion memory unavailable (%s).", type(error).__name__)
-                opener = chat.generate_companion_opener(face=face)
+                opener = chat.generate_companion_opener(
+                    face=face, personality_prompt=personality_prompt
+                )
                 text, expression = opener.text, opener.expression
             else:
                 recall_reply: str | None = None
@@ -937,7 +1000,7 @@ class Brain:
                             conversation,
                             heard,
                             chat.history,
-                            chat._system_prompt(face=face),
+                            chat._system_prompt(face=face, personality_prompt=personality_prompt),
                             chat.tools.definitions(),
                             recalled,
                             core_context,
@@ -972,6 +1035,7 @@ class Brain:
                     generated = chat.generate_reply(
                         heard,
                         face=face,
+                        personality_prompt=personality_prompt,
                         before_tools=decision.require_acceptance if decision else None,
                         check_cancelled=decision.check if decision else None,
                     )
@@ -1338,6 +1402,12 @@ def handler_for(
         def run_voice_or_text(
             self, session: str, body: bytes, text_only: bool, companion_idle: bool
         ) -> TurnReply:
+            personality = None
+            if (value := self.headers.get(PERSONALITY_HEADER)) is not None:
+                if len(value) > MAX_PERSONALITY_HEADER or not value.isascii():
+                    raise ValueError("Invalid personality header")
+                personality = PersonalityContext.model_validate_json(value)
+
             def run(decision: VoiceDecision | None = None) -> TurnReply:
                 return brain.turn(
                     session,
@@ -1348,6 +1418,7 @@ def handler_for(
                     volume_supported=self.headers.get("X-Iris-Volume") == "1",
                     face=self.headers.get(FACE_HEADER) == "1",
                     decision=decision,
+                    personality=personality,
                 )
 
             if self.path != VOICE_CANCEL_PATH:

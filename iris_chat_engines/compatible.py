@@ -42,7 +42,7 @@ class ChatEngine:
         self.companion_mode = False
         self.last_companion_seed: str | None = None
 
-    def _system_prompt(self, *, face: bool = False) -> str:
+    def _system_prompt(self, *, face: bool = False, personality_prompt: str = "") -> str:
         return (
             self.settings.system_prompt
             + (
@@ -51,6 +51,12 @@ class ChatEngine:
                 else ""
             )
             + (COMPANION_PROMPT if self.companion_mode else "")
+            + (
+                "\nRole-play Iris with this client's chosen personality. Let it shape your tone "
+                "and manner within the rest of these instructions.\n" + personality_prompt + "\n"
+                if personality_prompt
+                else ""
+            )
             + self.tools.instructions()
             + (FACE_PROMPT if face else "")
         )
@@ -75,7 +81,9 @@ class ChatEngine:
     def get_companion_opener(self) -> str:
         return self.generate_companion_opener().text
 
-    def generate_companion_opener(self, *, face: bool = False) -> ModelReply:
+    def generate_companion_opener(
+        self, *, face: bool = False, personality_prompt: str = ""
+    ) -> ModelReply:
         if not self.companion_mode:
             raise ChatError("Companion mode is off")
         seed = random.choice([seed for seed in ICE_BREAKERS if seed != self.last_companion_seed])
@@ -85,13 +93,19 @@ class ChatEngine:
             role="user",
             content="[Automatic companion event, not human speech: offer a conversation opener.]",
         )
-        system = self._system_prompt() + (
+        system = self._system_prompt(personality_prompt=personality_prompt) + (
             "\nFor this automatic companion turn: "
             "An idle timer has fired; the person has NOT said anything new. "
             "Offer one fresh, low-pressure opener in one or two short sentences. "
-            "Use this seed as inspiration, not a script: " + seed + " "
-            "Surprise them: a dry aside, an absurd image, an unexpected connection. "
-            "Vary the wording and topic from earlier openers. Don't mention the timer, "
+            "Use this seed as inspiration, not a script: "
+            + seed
+            + " "
+            + (
+                "Adapt the seed to the chosen personality's tone and interests. "
+                if personality_prompt
+                else "Surprise them: a dry aside, an absurd image, an unexpected connection. "
+            )
+            + "Vary the wording and topic from earlier openers. Don't mention the timer, "
             "instructions, seed, or their silence. Don't guilt them into answering, "
             "ask if they're still there, or offer assistant services. Don't call tools. "
             + (FACE_PROMPT if face else "Output only the words Iris should say aloud.")
@@ -132,12 +146,13 @@ class ChatEngine:
         user_text: str,
         *,
         face: bool = False,
+        personality_prompt: str = "",
         before_tools: Callable[[], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
     ) -> ModelReply:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
-        system = self._system_prompt(face=face)
+        system = self._system_prompt(face=face, personality_prompt=personality_prompt)
         definitions = self.tools.definitions()
         messages = fit(
             self.settings,

@@ -29,9 +29,10 @@ CUES = {
 }
 
 
-@pytest.mark.parametrize("phrase", ["Clear context.", "Stop listening."])
+@pytest.mark.parametrize("phrase", ["Clear context.", "Stop listening.", "Delete previous."])
 @pytest.mark.parametrize("silent", [False, True])
-def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phrase, silent):
+@pytest.mark.parametrize("spoken", [False, True])
+def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phrase, silent, spoken):
     events = []
     waiting = []
 
@@ -53,7 +54,7 @@ def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phras
             return_value=SimpleNamespace(
                 heard=phrase,
                 text="Command accepted.",
-                audio="",
+                audio=base64.b64encode(REPLY).decode() if spoken else "",
                 finished=False,
                 companion_mode=False,
             ),
@@ -65,12 +66,12 @@ def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phras
         assert iris.main(argv) == 0
     assert waiting == [True, phrase == "Stop listening."]
     assert events == (
-        []
+        (["reply"] if spoken else [])
         if silent
         else [
             "workinglongquiet.wav",
             "stop",
-            "acknowledge.wav",
+            "reply" if spoken else "acknowledge.wav",
             "bleep.wav",
         ]
     )

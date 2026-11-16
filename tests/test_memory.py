@@ -128,14 +128,14 @@ def test_delete_previous_live_history_is_limited_to_issuing_session(settings, pr
         brain.turn("pi", b"Please describe the words delete previous", text_only=True)
         brain.stt.recognize.return_value = "Delete previous."
         deleted = brain.turn("pi", write_wav(b"\0\0" * 160, 16000))
-        assert deleted.text == "Previous exchange deleted." and not deleted.audio
+        assert deleted.text == "Previous exchange deleted." and deleted.audio
         assert [m.content for m in brain.sessions["pi"].history if m.role == "user"] == [
             "First live turn"
         ]
         assert brain.sessions["phone"].history[0]._exchange_id == other._exchange_id
         brain.turn("pi", b"delete previous", text_only=True)
         empty = brain.turn("pi", b"delete previous", text_only=True)
-        assert "no previous exchange" in empty.text
+        assert "no previous exchange" in empty.text and not empty.audio
         if private:
             assert [exchange["user_text"] for exchange in exchanges(settings)] == [
                 "Previously saved"

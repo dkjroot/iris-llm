@@ -8,6 +8,7 @@ run_with_autoupdate.ps1
 run_client.sh
 .vscode
 vosk-model-small-en-us-0.15
+personalities.json
 
 __pycache__/
 *.py[cod]

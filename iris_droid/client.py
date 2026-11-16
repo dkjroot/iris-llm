@@ -11,6 +11,7 @@ from contextlib import contextmanager, nullcontext
 from functools import partial
 from importlib.resources import files
 from math import isfinite
+from pathlib import Path
 from queue import Empty, SimpleQueue
 from threading import Event, Thread
 from time import time_ns
@@ -33,6 +34,7 @@ from iris_droid.conversation import WakeConversation
 from iris_droid.expression import FACE_HEADER
 from iris_droid.face_display import FaceDisplay
 from iris_droid.feedback import ClientFeedback
+from iris_droid.personalities import PERSONALITY_HEADER, PersonalityContext, personality_command
 from iris_droid.protocol import (
     MAX_BODY,
     VOICE_CANCEL_PATH,
@@ -53,6 +55,7 @@ from iris_droid.protocol import (
 )
 from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
 from iris_droid.wake import WakeDetector
+from iris_settings import read_config
 
 if TYPE_CHECKING:
     import numpy as np
@@ -82,6 +85,7 @@ class DroidClient:
         face: bool = False,
         cancel_listener: Callable[[Event], bool] | None = None,
         cancel_feedback: ClientFeedback | None = None,
+        personalities_file: Path | None = None,
     ) -> None:
         parts = urlsplit(url)
         _ = parts.port
@@ -106,6 +110,20 @@ class DroidClient:
         self.stream_player = stream_player
         self.cancel_listener = cancel_listener
         self.cancel_feedback = cancel_feedback
+        self.personality_headers: dict[str, str] = {}
+        if personalities_file is not None:
+            try:
+                personalities = read_config(personalities_file)
+                names = list(personalities)
+                self.personality_headers = {
+                    name: PersonalityContext.model_validate(
+                        {"names": names, "active": name, "prompt": prompt}
+                    ).to_header()
+                    for name, prompt in personalities.items()
+                }
+            except ValueError as error:
+                raise ValueError(f"{personalities_file}: {error}") from error
+        self.personality = next(iter(self.personality_headers), None)
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
@@ -122,13 +140,28 @@ class DroidClient:
             **self.headers,
             "Content-Type": "text/plain" if text_only or companion_idle else "audio/wav",
         }
+        if self.personality is not None:
+            headers[PERSONALITY_HEADER] = self.personality_headers[self.personality]
         if companion_idle:
             headers["X-Iris-Companion-Idle"] = "1"
         path = "/v1/text" if text_only else "/v1/voice"
         if self.cancel_listener is not None and not (text_only or companion_idle):
             path = VOICE_CANCEL_PATH
             headers[VOICE_TURN_HEADER] = str(uuid4())
-        reply = self._request(path, body, headers)
+        try:
+            reply = self._request(path, body, headers)
+        except TurnCancelled:
+            if self.cancel_feedback is not None:
+                self.cancel_feedback.cancelled()
+            raise
+        if (selected := reply.selected_personality) is not None:
+            if (
+                companion_idle
+                or selected not in self.personality_headers
+                or personality_command(reply.heard) != selected.casefold()
+            ):
+                raise ValueError("Unexpected personality switch in server reply")
+            self.personality = selected
         if reply.volume is not None:
             if companion_idle or reply.volume != volume_command(reply.heard):
                 raise ValueError("Unexpected speaker volume action")
@@ -196,7 +229,7 @@ class DroidClient:
         assert listener is not None
         stop = Event()
         cancelled = Event()
-        acknowledged = Event()
+        confirmed = Event()
 
         def decide(command: bytes) -> None:
             result = self.client.post(
@@ -208,12 +241,6 @@ class DroidClient:
             result.raise_for_status()
             if result.status_code != 204:
                 raise httpx.RemoteProtocolError("Unexpected voice turn decision response")
-
-        def acknowledge_cancel() -> None:
-            if not acknowledged.is_set():
-                acknowledged.set()
-                if feedback is not None:
-                    feedback.acknowledge()
 
         def listen() -> None:
             try:
@@ -229,7 +256,7 @@ class DroidClient:
                     # The processing request can still confirm cancellation or
                     # retry the decision when it reaches the acceptance boundary.
                     return
-                acknowledge_cancel()
+                confirmed.set()
 
         with feedback.working() if feedback is not None else nullcontext():
             worker = Thread(target=listen, name="iris-cancel-listener")
@@ -250,7 +277,7 @@ class DroidClient:
                         if feedback is not None:
                             feedback.stop_working()
                         if cancelled.is_set():
-                            if not acknowledged.is_set():
+                            if not confirmed.is_set():
                                 try:
                                     decide(b"cancel")
                                 except httpx.HTTPStatusError as error:
@@ -259,19 +286,18 @@ class DroidClient:
                                     # The first attempt may have cancelled and closed
                                     # the turn before its acknowledgement reached us.
                                 else:
-                                    acknowledge_cancel()
+                                    confirmed.set()
                         else:
                             decide(b"accept")
                             accepted = True
                     elif event == "cancelled":
                         stop.set()
                         worker.join()
-                        acknowledge_cancel()
                         raise TurnCancelled()
                     elif event == "failed":
                         stop.set()
                         worker.join()
-                        if acknowledged.is_set():
+                        if confirmed.is_set():
                             raise TurnCancelled()
                         status = frame.get("status")
                         if type(status) is not int or not 400 <= status <= 599:
@@ -293,7 +319,7 @@ class DroidClient:
                         return reply
                     else:
                         raise ValueError("Unexpected cancellable voice event")
-                if acknowledged.is_set():
+                if confirmed.is_set():
                     raise TurnCancelled()
                 raise ValueError("Cancellable voice stream ended before the reply")
             except ValueError as error:
@@ -971,6 +997,7 @@ def main(argv: list[str] | None = None) -> int:
                     face=face_port is not None,
                     cancel_listener=listen_for_cancel if args.voice_cancel else None,
                     cancel_feedback=feedback if args.voice_cancel else None,
+                    personalities_file=args.personalities_file,
                     volume_backend=make_volume_backend(
                         args.volume_backend,
                         card=args.alsa_card,
@@ -1119,21 +1146,17 @@ def main(argv: list[str] | None = None) -> int:
                             if proactive
                             else f"You: {reply.heard}\nIris: {reply.text}"
                         )
+                    stop_listening = conversation is not None and is_stop_listening(reply.heard)
                     if (
                         not reply.audio
                         and (
                             is_clear_context(reply.heard)
                             or is_delete_previous(reply.heard)
-                            or (conversation is not None and is_stop_listening(reply.heard))
+                            or stop_listening
                         )
                         and not getattr(reply, "_streamed", False)
                     ):
                         feedback.acknowledge()
-                    if conversation is not None and is_stop_listening(reply.heard):
-                        companion.update(False)
-                        conversation.sleep()
-                        print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
-                        continue
                     if reply.audio and not args.text:
                         reply_audio = base64.b64decode(reply.audio, validate=True)
                         read_wav(reply_audio)
@@ -1163,6 +1186,11 @@ def main(argv: list[str] | None = None) -> int:
                             )
                     elif face_port is not None and args.text and reply.text:
                         display.show("listening", reply.expression, seconds=3)
+                    if stop_listening and conversation is not None:
+                        companion.update(False)
+                        conversation.sleep()
+                        print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
+                        continue
                     if reply.finished:
                         return 0
                     companion.update(reply.companion_mode, proactive=proactive)

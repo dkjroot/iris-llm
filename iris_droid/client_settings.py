@@ -26,6 +26,9 @@ def settings_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--server", default="http://127.0.0.1:8765", help="Iris server URL (default: this machine)"
     )
+    parser.add_argument(
+        "--personalities-file", type=Path, help="JSON file with this client's personality prompts"
+    )
     parser.add_argument("--face", choices=FACE_HEADS, help="Serve a face for the droid's display")
     parser.add_argument(
         "--face-idle", choices=FACE_IDLE_MODES, default="snow", help="Idle display (default: snow)"

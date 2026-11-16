@@ -39,7 +39,7 @@ def test_clear_context_resets_only_current_session_and_next_request_is_fresh(
         )
         assert "pi" not in brain.sessions
         assert brain.sessions["other"].history == other_history
-        assert not reply.audio and not reply.finished
+        assert bool(reply.audio) != text_only and not reply.finished
         assert "Context cleared" in reply.text
         assert len(requests) == 2
         brain.tts.synthesize.assert_not_called()
@@ -147,7 +147,7 @@ def test_stop_control_bypasses_chat_synthesis_and_preserves_existing_history():
         previous = brain.sessions["pi"].history.copy()
         brain.stt.recognize.return_value = "Stop listening."
         reply = brain.turn("pi", RECORDING, wake_conversation=True)
-        assert reply.heard == "Stop listening." and not reply.audio and not reply.finished
+        assert reply.heard == "Stop listening." and reply.audio and not reply.finished
         assert brain.sessions["pi"].history == previous
         assert len(requests) == 1 and brain.tts.synthesize.call_count == 1
         brain.stt.recognize.return_value = "hello again"
@@ -314,13 +314,19 @@ def test_invalid_idle_setting_fails_before_audio_or_transport(value):
     microphone.assert_not_called()
 
 
-@pytest.mark.parametrize("phrase", ["Stop listening.", "Clear context."])
-def test_http_wake_control_reaches_server_without_chat_or_synthesis(phrase):
+@pytest.mark.parametrize(
+    ("phrase", "audio_file"),
+    [("Stop listening.", "stopped-listening.wav"), ("Clear context.", "context-cleared.wav")],
+)
+def test_http_wake_control_reaches_server_without_chat_or_synthesis(phrase, audio_file):
+    import base64
     import threading
     from http.server import HTTPServer
+    from importlib.resources import files
 
     from iris_droid.server import handler_for
 
+    expected_audio = files("iris_sounds").joinpath(audio_file).read_bytes()
     brain, transport, requests = make_brain()
     brain.stt.recognize.return_value = phrase
     with transport, HTTPServer(("127.0.0.1", 0), handler_for(brain, "test")) as server:
@@ -332,7 +338,8 @@ def test_http_wake_control_reaches_server_without_chat_or_synthesis(phrase):
                     f"http://127.0.0.1:{server.server_port}", "test", http, wake_conversation=True
                 )
                 reply = client.turn(RECORDING)
-                assert reply.heard == phrase and not reply.audio
+                assert reply.heard == phrase
+                assert base64.b64decode(reply.audio) == expected_audio
                 assert not requests and not brain.sessions
                 brain.tts.synthesize.assert_not_called()
         finally:

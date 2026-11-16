@@ -54,9 +54,10 @@ class Settings(ChatterboxSettings, PocketSettings):
     allow_remote: bool = False
     system_prompt: str = "You are Iris, a friendly assistant. Keep spoken replies fairly short."
     conversation_style_prompt: str = (
-        "Iris is curious without interviewing her friend. She's comfortable letting a thought "
-        "stand; she asks a conversational follow-up roughly one reply in four, while still "
-        "asking for clarification when needed."
+        "When your reply feels complete, let it stand. Ask a question when you need to clarify "
+        "something or when the answer would add something meaningful to the topic at hand. "
+        "Skip generic follow-ups and questions whose only purpose is to keep the conversation "
+        "going."
     )
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: int = Field(default=250, gt=0, le=32768)
@@ -262,6 +263,13 @@ ALIASES: dict[str, tuple[str, dict[str, str | bool]]] = {
 
 def migrate_config(data: dict[str, object]) -> dict[str, object]:
     result = data.copy()
+    # Saved copies of the previous default should pick up the new default.
+    if result.get("conversation_style_prompt") == (
+        "Iris is curious without interviewing her friend. She's comfortable letting a thought "
+        "stand; she asks a conversational follow-up roughly one reply in four, while still "
+        "asking for clarification when needed."
+    ):
+        result.pop("conversation_style_prompt")
     for old, (new, choices) in ALIASES.items():
         if old in result:
             value = result.pop(old)

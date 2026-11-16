@@ -430,3 +430,65 @@ def test_real_http_idle_roundtrip_returns_speech_without_recognition():
         finally:
             server.shutdown()
             worker.join(timeout=5)
+
+
+def test_client_personalities_apply_to_normal_and_companion_turns(tmp_path):
+    home_file = tmp_path / "home.json"
+    chess_file = tmp_path / "chess.json"
+    home_file.write_text(
+        json.dumps(
+            {"Friend": "Be warm and easygoing.", "Scientist": "Explain with café examples."}
+        ),
+        encoding="utf-8",
+    )
+    chess_file.write_text('{"Chess Coach": "Explain the opponent’s plans."}', encoding="utf-8")
+    brain, transport, requests = make_brain()
+    with transport, HTTPServer(("127.0.0.1", 0), handler_for(brain, TOKEN)) as server:
+        worker = Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            with httpx.Client(trust_env=False, timeout=5) as http:
+                url = f"http://127.0.0.1:{server.server_port}"
+                home = DroidClient(url, TOKEN, http, personalities_file=home_file)
+                chess = DroidClient(url, TOKEN, http, personalities_file=chess_file)
+
+                listed = home.turn(b"List personalities!", text_only=True).text
+                assert "Friend, Scientist" in listed and "using Friend" in listed
+                assert "Friend" not in chess.turn(b"list personalities", text_only=True).text
+                assert not requests
+
+                home.turn(b"Hello there", text_only=True)
+                system = requests[-1]["messages"][0]["content"]
+                assert brain.settings.system_prompt in system
+                assert "Be warm and easygoing." in system
+                assert "caf\u00e9 examples" not in system
+
+                brain.stt.recognize.return_value = "Switch to personality SCIENTIST."
+                switched = home.turn(RECORDING)
+                assert switched.selected_personality == "Scientist" and switched.audio
+                unknown = home.turn(b"switch to personality chess coach", text_only=True)
+                assert unknown.selected_personality is None and "isn't available" in unknown.text
+                assert len(requests) == 1
+
+                home.turn(b"How does that work?", text_only=True)
+                assert "caf\u00e9 examples" in requests[-1]["messages"][0]["content"]
+                assert any(
+                    message["content"] == "Hello there" for message in requests[-1]["messages"]
+                )
+                chess.turn(b"What should I play?", text_only=True)
+                system = requests[-1]["messages"][0]["content"]
+                assert (
+                    "Explain the opponent’s plans." in system and "caf\u00e9 examples" not in system
+                )
+
+                assert home.turn(b"companion mode on", text_only=True).companion_mode
+                assert home.turn(b"clear context", text_only=True).companion_mode
+                home.turn(b"Still there?", text_only=True)
+                assert COMPANION_PROMPT in requests[-1]["messages"][0]["content"]
+                assert "caf\u00e9 examples" in requests[-1]["messages"][0]["content"]
+                assert home.turn(b"idle", companion_idle=True).companion_mode
+                assert "caf\u00e9 examples" in requests[-1]["messages"][0]["content"]
+                assert "automatic companion turn" in requests[-1]["messages"][0]["content"]
+        finally:
+            server.shutdown()
+            worker.join(timeout=5)
