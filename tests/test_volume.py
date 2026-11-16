@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
-from iris_droid.client import DroidClient
+from iris_droid.client import DroidClient, main
 from iris_droid.protocol import TurnReply, read_wav, write_wav
 from iris_droid.server import Brain, handler_for
 from iris_droid.volume import (
@@ -28,7 +28,7 @@ TOKEN = "volume-test-token-long-enough"
 MIXER = """Simple mixer control 'Master',0
   Capabilities: pvolume pswitch
   Playback channels: Front Left - Front Right
-  Limits: Playback 0 - 100
+  Limits: Playback 0 - 100 Capture 0 - 100
   Front Left: Playback 40 [40%] [-20.00dB] [on]
   Front Right: Playback 50 [50%] [-15.00dB] [on]
   Capture channels: Front Left
@@ -140,6 +140,58 @@ def test_get_reports_channel_range_and_mute():
     assert state.description() == "Speaker volume is 40 to 50 percent."
     state.muted = True
     assert state.description().endswith("The speaker is muted.")
+
+
+def test_client_restores_last_selected_levels_before_first_cue(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setenv("IRIS_DROID_TOKEN", TOKEN)
+    selected = MIXER.replace("40 [40%]", "37 [52%]").replace("50 [50%]", "42 [61%]")
+    external = MIXER.replace("[on]", "[off]")
+    with patch(
+        "iris_droid.volume.subprocess.run",
+        side_effect=[
+            Mock(stdout=MIXER),
+            Mock(stdout=""),
+            Mock(stdout=selected),  # Volume up.
+            Mock(stdout=external),  # Status after an external mixer change.
+            Mock(stdout=external),
+            Mock(stdout=""),
+            Mock(stdout=external),  # Mute.
+            Mock(stdout=external),
+            Mock(stdout=""),
+            Mock(stdout=selected),  # Restart.
+        ],
+    ) as run:
+        backend = make_volume_backend("alsa", card="Device", control="PCM", remember=True)
+        assert backend is not None
+        run.assert_not_called()
+        assert backend.execute(VolumeCommand(action="change", value=10)).levels == [52, 61]
+        backend.execute(VolumeCommand(action="get"))
+        backend.execute(VolumeCommand(action="mute"))
+        make_volume_backend("alsa", card="Other", control="PCM", remember=True)
+        assert run.call_count == 7
+
+        def first_cue():
+            assert run.call_count == 10
+            assert run.call_args_list[-2].args[0][-4:] == ["sset", "PCM", "playback", "37,42"]
+            raise EOFError
+
+        with patch("iris_droid.client.ClientFeedback.ready", side_effect=first_cue) as ready:
+            assert (
+                main(["--volume-backend", "alsa", "--alsa-card", "Device", "--alsa-control", "PCM"])
+                == 0
+            )
+            ready.assert_called_once()
+
+
+@pytest.mark.parametrize("saved", ["[false, 50]", "[40, 150]", "[40]"])
+def test_invalid_saved_volume_never_changes_the_mixer(tmp_path, caplog, saved):
+    path = tmp_path / "levels.json"
+    path.write_text(saved)
+    with patch("iris_droid.volume.subprocess.run", return_value=Mock(stdout=MIXER)) as run:
+        AlsaVolume(state_path=path).restore()
+    assert all(call.args[0][-2:] == ["sget", "Master"] for call in run.call_args_list)
+    assert "Could not restore speaker volume" in caplog.text
 
 
 @pytest.mark.parametrize(

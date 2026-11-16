@@ -15,6 +15,13 @@ from iris_droid.volume import VolumeCommand
 MAX_BODY = 10_000_000
 VOICE_TIMING_HEADER = "X-Iris-Voice-Timing"
 VOICE_STREAM_TYPE = "application/x-iris-voice+ndjson"
+VOICE_CANCEL_PATH = "/v1/voice/cancellable"
+VOICE_DECISION_PATH = "/v1/voice/decision"
+VOICE_TURN_HEADER = "X-Iris-Turn"
+
+
+class TurnCancelled(Exception):
+    """The provisional voice turn was discarded."""
 
 
 def companion_command(text: str) -> bool | None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import random
+from collections.abc import Callable
 
 import httpx
 
@@ -126,7 +127,14 @@ class ChatEngine:
             raise ChatError("The server returned an empty assistant reply")
         return reply
 
-    def generate_reply(self, user_text: str, *, face: bool = False) -> ModelReply:
+    def generate_reply(
+        self,
+        user_text: str,
+        *,
+        face: bool = False,
+        before_tools: Callable[[], None] | None = None,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> ModelReply:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
         system = self._system_prompt(face=face)
@@ -159,7 +167,11 @@ class ChatEngine:
                         "The current tool exchange exceeds model_context_tokens; "
                         "try a smaller request."
                     )
+            if check_cancelled is not None:
+                check_cancelled()
             reply = self.backend.complete(messages, definitions)
+            if check_cancelled is not None:
+                check_cancelled()
             if reply.role != "assistant":
                 raise ChatError("The server returned an invalid assistant reply")
             if not reply.tool_calls:
@@ -175,6 +187,8 @@ class ChatEngine:
                 raise ChatError("The model requested a tool, but tools are disabled")
             if round_number == 4 or len(call_ids) + len(reply.tool_calls) > 8:
                 raise ChatError("The model exceeded the tool-call limit; try a simpler question")
+            if before_tools is not None:
+                before_tools()
             # Preserve the complete exchange, including reasoning needed by some
             # model templates, and trim history only at whole user-turn boundaries.
             messages.append(reply)

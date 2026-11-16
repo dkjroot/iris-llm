@@ -14,7 +14,7 @@ from importlib.resources import files
 from math import isfinite
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from threading import Event
+from threading import Event, Thread
 from time import time_ns
 from typing import TYPE_CHECKING, Protocol, TypedDict
 from urllib.parse import urlsplit
@@ -36,8 +36,12 @@ from iris_droid.face_display import DEFAULT_FACE_PORT, FACE_HEADS, FACE_IDLE_MOD
 from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import (
     MAX_BODY,
+    VOICE_CANCEL_PATH,
+    VOICE_DECISION_PATH,
     VOICE_STREAM_TYPE,
     VOICE_TIMING_HEADER,
+    VOICE_TURN_HEADER,
+    TurnCancelled,
     TurnReply,
     VoiceStreamStart,
     VoiceTiming,
@@ -76,6 +80,8 @@ class DroidClient:
         trace_voice: bool = False,
         stream_player: Callable[[VoiceStreamStart, Iterator[bytes]], int | None] | None = None,
         face: bool = False,
+        cancel_listener: Callable[[Event], bool] | None = None,
+        cancel_feedback: ClientFeedback | None = None,
     ) -> None:
         parts = urlsplit(url)
         _ = parts.port
@@ -98,6 +104,8 @@ class DroidClient:
         self.volume_backend = volume_backend
         self.trace_voice = trace_voice
         self.stream_player = stream_player
+        self.cancel_listener = cancel_listener
+        self.cancel_feedback = cancel_feedback
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
@@ -116,8 +124,11 @@ class DroidClient:
         }
         if companion_idle:
             headers["X-Iris-Companion-Idle"] = "1"
-        route = "text" if text_only else "voice"
-        reply = self._request(route, body, headers)
+        path = "/v1/text" if text_only else "/v1/voice"
+        if self.cancel_listener is not None and not (text_only or companion_idle):
+            path = VOICE_CANCEL_PATH
+            headers[VOICE_TURN_HEADER] = str(uuid4())
+        reply = self._request(path, body, headers)
         if reply.volume is not None:
             if companion_idle or reply.volume != volume_command(reply.heard):
                 raise ValueError("Unexpected speaker volume action")
@@ -127,7 +138,7 @@ class DroidClient:
             heard = reply.heard
             print(result.description(), flush=True)
             reply = self._request(
-                "volume-result",
+                "/v1/volume-result",
                 result.model_dump_json().encode(),
                 {
                     **self.headers,
@@ -140,20 +151,23 @@ class DroidClient:
             reply.heard = heard
         return reply
 
-    def _request(self, route: str, body: bytes, headers: dict[str, str]) -> TurnReply:
+    def _request(self, path: str, body: bytes, headers: dict[str, str]) -> TurnReply:
         if self.trace_voice:
             headers = {**headers, VOICE_TIMING_HEADER: "1"}
-        if route != "text" and self.stream_player is not None:
+        if path != "/v1/text" and self.stream_player is not None:
             headers = {**headers, "Accept": VOICE_STREAM_TYPE}
         with self.client.stream(
-            "POST", f"{self.url}/v1/{route}", content=body, headers=headers
+            "POST", f"{self.url}{path}", content=body, headers=headers
         ) as response:
             response.raise_for_status()
             private = response.headers.get("X-Iris-Private")
             if private in {"0", "1"}:
                 self.private_mode = private == "1"
+            if path == VOICE_CANCEL_PATH:
+                return self._cancellable_reply(response, headers[VOICE_TURN_HEADER])
             if response.headers.get("Content-Type") == VOICE_STREAM_TYPE:
-                return self._stream_reply(response)
+                lines = response.iter_lines()
+                return self._stream_reply(response, next(lines, ""), lines)
             timing = response.headers.get(VOICE_TIMING_HEADER)
             data = bytearray()
             for chunk in response.iter_bytes():
@@ -168,8 +182,129 @@ class DroidClient:
                 print("Voice timing unavailable: invalid server timing.", flush=True)
         return reply
 
-    def _stream_reply(self, response: httpx.Response) -> TurnReply:
+    def _cancellable_reply(self, response: httpx.Response, turn_id: str) -> TurnReply:
         lines = response.iter_lines()
+        if response.headers.get("Content-Type") != VOICE_STREAM_TYPE:
+            raise httpx.RemoteProtocolError("Expected a cancellable voice stream")
+        try:
+            if json.loads(next(lines, "")) != {"event": "processing"}:
+                raise ValueError("Expected the voice processing event")
+        except ValueError as error:
+            raise httpx.RemoteProtocolError(str(error), request=response.request) from error
+        feedback = self.cancel_feedback
+        listener = self.cancel_listener
+        assert listener is not None
+        stop = Event()
+        cancelled = Event()
+        acknowledged = Event()
+
+        def decide(command: bytes) -> None:
+            result = self.client.post(
+                f"{self.url}{VOICE_DECISION_PATH}",
+                headers={**self.headers, VOICE_TURN_HEADER: turn_id},
+                content=command,
+                timeout=5,
+            )
+            result.raise_for_status()
+            if result.status_code != 204:
+                raise httpx.RemoteProtocolError("Unexpected voice turn decision response")
+
+        def acknowledge_cancel() -> None:
+            if not acknowledged.is_set():
+                acknowledged.set()
+                if feedback is not None:
+                    feedback.acknowledge()
+
+        def listen() -> None:
+            try:
+                matched = listener(stop)
+            except Exception:
+                print("Cancel listener failed. Discarding this voice turn.", flush=True)
+                matched = True
+            if matched:
+                cancelled.set()
+                try:
+                    decide(b"cancel")
+                except httpx.HTTPError:
+                    # The processing request can still confirm cancellation or
+                    # retry the decision when it reaches the acceptance boundary.
+                    return
+                acknowledge_cancel()
+
+        with feedback.working() if feedback is not None else nullcontext():
+            worker = Thread(target=listen, name="iris-cancel-listener")
+            worker.start()
+            accepted = False
+            try:
+                for line in lines:
+                    # ASCII JSON escaping can turn a two-byte character into six bytes.
+                    if len(line) > MAX_BODY * 3 + 1024:
+                        raise ValueError("Oversized voice stream frame")
+                    frame = json.loads(line)
+                    if not isinstance(frame, dict):
+                        raise ValueError("Invalid voice stream frame")
+                    event = frame.get("event")
+                    if event == "ready" and not accepted:
+                        stop.set()
+                        worker.join()
+                        if feedback is not None:
+                            feedback.stop_working()
+                        if cancelled.is_set():
+                            if not acknowledged.is_set():
+                                try:
+                                    decide(b"cancel")
+                                except httpx.HTTPStatusError as error:
+                                    if error.response.status_code != 409:
+                                        raise
+                                    # The first attempt may have cancelled and closed
+                                    # the turn before its acknowledgement reached us.
+                                else:
+                                    acknowledge_cancel()
+                        else:
+                            decide(b"accept")
+                            accepted = True
+                    elif event == "cancelled":
+                        stop.set()
+                        worker.join()
+                        acknowledge_cancel()
+                        raise TurnCancelled()
+                    elif event == "failed":
+                        stop.set()
+                        worker.join()
+                        if acknowledged.is_set():
+                            raise TurnCancelled()
+                        status = frame.get("status")
+                        if type(status) is not int or not 400 <= status <= 599:
+                            raise ValueError("Invalid voice error status")
+                        raise httpx.HTTPStatusError(
+                            "Voice turn failed",
+                            request=response.request,
+                            response=httpx.Response(status, request=response.request),
+                        )
+                    elif event == "start" and accepted:
+                        return self._stream_reply(response, line, lines)
+                    elif event == "result" and accepted:
+                        reply = TurnReply.model_validate(frame.get("reply"))
+                        private = frame.get("private")
+                        if isinstance(private, bool):
+                            self.private_mode = private
+                        if self.trace_voice and frame.get("timing") is not None:
+                            reply._voice_timing = VoiceTiming.model_validate(frame["timing"])
+                        return reply
+                    else:
+                        raise ValueError("Unexpected cancellable voice event")
+                if acknowledged.is_set():
+                    raise TurnCancelled()
+                raise ValueError("Cancellable voice stream ended before the reply")
+            except ValueError as error:
+                raise httpx.RemoteProtocolError(str(error), request=response.request) from error
+            finally:
+                stop.set()
+                worker.join()
+
+    def _stream_reply(
+        self, response: httpx.Response, first: str, lines: Iterator[str]
+    ) -> TurnReply:
         timing: VoiceTiming | None = None
 
         def chunks() -> Iterator[bytes]:
@@ -197,7 +332,6 @@ class DroidClient:
         try:
             if self.stream_player is None:
                 raise ValueError("Unexpected voice stream")
-            first = next(lines, "")
             if len(first) > MAX_BODY:
                 raise ValueError("Oversized voice stream header")
             start = VoiceStreamStart.model_validate_json(first)
@@ -736,6 +870,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--activation", choices=["enter", "continuous", "wake"], default="enter")
     parser.add_argument("--wake-model", type=Path)
     parser.add_argument("--wake-phrase", default="hey iris")
+    parser.add_argument(
+        "--voice-cancel",
+        action="store_true",
+        help='Listen locally for "cancel, cancel" during processing (requires --wake-model)',
+    )
     parser.add_argument("--vad-model", type=Path, help="Enable local Silero speech detection")
     parser.add_argument(
         "--download-vad-model",
@@ -876,6 +1015,10 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--play-wav cannot be combined with --text or --test-microphone")
         if args.test_microphone and args.text:
             raise ValueError("--test-microphone cannot be combined with --text")
+        if args.voice_cancel and (args.text or args.test_microphone or args.play_wav is not None):
+            raise ValueError("--voice-cancel is for normal microphone turns")
+        if args.voice_cancel and args.wake_model is None:
+            raise ValueError("--voice-cancel requires --wake-model with a local Vosk model folder")
         if not args.text:
             if isinstance(args.speaker, str):
                 name = args.speaker
@@ -970,6 +1113,22 @@ def main(argv: list[str] | None = None) -> int:
                             primer=args.speech_primer,
                         )
 
+                detector = None
+                if not args.text and (args.activation == "wake" or args.voice_cancel):
+                    if args.wake_model is None:
+                        raise ValueError(
+                            "Wake mode requires --wake-model with a local Vosk model folder"
+                        )
+                    detector = WakeDetector(args.wake_model, args.wake_phrase)
+                wake = detector if args.activation == "wake" else None
+
+                def listen_for_cancel(stop: Event) -> bool:
+                    assert detector is not None
+                    with open_microphone(
+                        args.microphone, args.microphone_buffer, args.microphone_rate
+                    ) as source:
+                        return detector.listen_for_cancel(source, stop)
+
                 stream_replies = not (args.text or args.no_speech_stream or args.save_reply)
                 client = DroidClient(
                     args.server,
@@ -979,17 +1138,15 @@ def main(argv: list[str] | None = None) -> int:
                     trace_voice=args.trace_voice,
                     stream_player=stream_player if stream_replies else None,
                     face=face_port is not None,
+                    cancel_listener=listen_for_cancel if args.voice_cancel else None,
+                    cancel_feedback=feedback if args.voice_cancel else None,
                     volume_backend=make_volume_backend(
-                        args.volume_backend, card=args.alsa_card, control=args.alsa_control
+                        args.volume_backend,
+                        card=args.alsa_card,
+                        control=args.alsa_control,
+                        remember=True,
                     ),
                 )
-                wake = None
-                if not args.text and args.activation == "wake":
-                    if args.wake_model is None:
-                        raise ValueError(
-                            "Wake mode requires --wake-model with a local Vosk model folder"
-                        )
-                    wake = WakeDetector(args.wake_model, args.wake_phrase)
                 conversation = wake_window if wake is not None else None
                 calibration = CaptureCalibration() if conversation is not None else None
                 companion_calibration = CaptureCalibration()
@@ -1084,12 +1241,19 @@ def main(argv: list[str] | None = None) -> int:
                             play_wav(body, args.speaker)
                     try:
                         display.show("thinking")
-                        with nullcontext() if proactive else feedback.working():
+                        with (
+                            nullcontext() if proactive or args.voice_cancel else feedback.working()
+                        ):
                             reply = client.turn(
                                 body,
                                 text_only=args.text,
                                 **({"companion_idle": True} if proactive else {}),
                             )
+                    except TurnCancelled:
+                        print("Voice turn discarded.", flush=True)
+                        if conversation is not None and conversation.active:
+                            conversation.activate()
+                        continue
                     except httpx.HTTPError as error:
                         display.show("idle")
                         # Failed input hasn't confirmed intelligible speech. Keep

@@ -15,10 +15,10 @@ from collections.abc import Callable, Generator
 from contextlib import closing, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import chain
 from pathlib import Path
-from threading import Lock
+from threading import Event, Lock
 from time import perf_counter_ns, time_ns
 from typing import cast
 from uuid import UUID, uuid4
@@ -33,8 +33,12 @@ from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.expression import FACE_HEADER, FaceExpression
 from iris_droid.protocol import (
     MAX_BODY,
+    VOICE_CANCEL_PATH,
+    VOICE_DECISION_PATH,
     VOICE_STREAM_TYPE,
     VOICE_TIMING_HEADER,
+    VOICE_TURN_HEADER,
+    TurnCancelled,
     TurnReply,
     VoiceTiming,
     companion_command,
@@ -74,6 +78,57 @@ WEB_ASSETS = {
     "/mic.js": ("mic.js", "text/javascript"),
     "/speech.js": ("speech.js", "text/javascript"),
 }
+
+
+class VoiceDecision:
+    def __init__(self, notify: Callable[[str], None]) -> None:
+        self._notify = notify
+        self._decided = Event()
+        self._lock = Lock()
+        self._accept: bool | None = None
+        self._ready = False
+        self._failed = False
+
+    def decide(self, accept: bool) -> bool:
+        with self._lock:
+            if self._failed or (accept and not self._ready):
+                return False
+            if self._accept is None:
+                self._accept = accept
+                if not accept:
+                    # Wake the client even if the current inference call is blocked.
+                    with suppress(OSError):
+                        self._notify("cancelled")
+                self._decided.set()
+            return self._accept == accept
+
+    def fail(self, notify: Callable[[], None]) -> None:
+        with self._lock:
+            if self._accept is not False:
+                self._failed = True
+                notify()
+
+    def check(self) -> None:
+        if self._decided.is_set() and self._accept is False:
+            raise TurnCancelled()
+
+    @property
+    def accepted(self) -> bool:
+        return self._accept is True
+
+    def require_acceptance(self) -> None:
+        if not self._decided.is_set():
+            try:
+                with self._lock:
+                    if self._accept is None:
+                        self._notify("ready")
+                        self._ready = True
+            except OSError as error:
+                self.decide(False)
+                raise TurnCancelled() from error
+            if not self._decided.wait(15):
+                self.decide(False)
+        self.check()
 
 
 class Brain:
@@ -518,10 +573,19 @@ class Brain:
             except sqlite3.Error as error:
                 LOGGER.warning("Memory checkpoint deferred (%s).", type(error).__name__)
 
-    def _restore(self, chat: ChatEngine) -> str | None:
+    def _restore(self, chat: ChatEngine, *, provisional: bool = False) -> str | None:
         if self.memory is None or self.private_mode:
             return None
-        conversation = self.memory.active_conversation(self.settings.memory_owner)
+        owner = self.settings.memory_owner
+        conversation = (
+            self.memory.current_conversation(owner)
+            if provisional
+            else self.memory.active_conversation(owner)
+        )
+        if conversation is None:
+            chat.history = []
+            chat.memory_revision = None
+            return None
         revision = (conversation, self.memory.revision(self.settings.memory_owner, conversation))
         if chat.memory_revision == revision:
             return conversation
@@ -556,6 +620,7 @@ class Brain:
         companion_idle: bool = False,
         volume_supported: bool = False,
         face: bool = False,
+        decision: VoiceDecision | None = None,
     ) -> TurnReply:
         self._sync_policy()
         if companion_idle:
@@ -571,16 +636,42 @@ class Brain:
             pcm, rate = read_wav(body, input_audio=True)
             if len(pcm) > rate * 2 * self.settings.phrase_time_limit:
                 raise ValueError("Recording exceeds the configured phrase_time_limit")
+            if decision is not None:
+                decision.check()
             heard = self.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
+        if decision is not None:
+            decision.check()
         if not heard and not companion_idle:
             raise sr.UnknownValueError()
         detail = detail_command(heard)
-        if detail is not None:
-            return self._detail_control(session, heard, detail, text_only=text_only)
-        if heard.casefold().strip(" .!?,") in {
+        block_followup = heard.casefold().strip(" .!?,") in {
             "don't bring that up again",
             "do not bring that up again",
-        }:
+        }
+        action = memory_command(heard)
+        existing = self.sessions.get(session)
+        companion = existing is not None and existing.companion_mode
+        volume = volume_command(heard) if not companion_idle else None
+        clear_context = is_clear_context(heard)
+        stop_listening = (companion or (wake_conversation and not text_only)) and is_stop_listening(
+            heard
+        )
+        finished = heard.casefold().strip(" .!?") == "exit"
+        command = companion_command(heard)
+        if decision is not None and (
+            detail is not None
+            or block_followup
+            or action is not None
+            or volume is not None
+            or clear_context
+            or stop_listening
+            or finished
+            or command is not None
+        ):
+            decision.require_acceptance()
+        if detail is not None:
+            return self._detail_control(session, heard, detail, text_only=text_only)
+        if block_followup:
             chat = self._session(session)
             target = None
             if not self.private_mode and self.companion_memory is not None:
@@ -602,19 +693,14 @@ class Brain:
             chat.pending_detail = None
             chat.pending_forget = None
             return result
-        existing = self.sessions.get(session)
         if existing is not None and not companion_idle:
             existing.pending_detail = None
             existing.selected_detail = None
-        action = memory_command(heard)
         if action is not None:
             return self._memory_control(session, heard, action, text_only=text_only)
-        existing = self.sessions.get(session)
         if existing is not None and not companion_idle:
             existing.pending_forget = None
-        volume = volume_command(heard) if not companion_idle else None
         if volume is not None:
-            companion = existing is not None and existing.companion_mode
             if volume_supported:
                 return TurnReply(heard=heard, text="", volume=volume, companion_mode=companion)
             return self._reply(
@@ -623,12 +709,10 @@ class Brain:
                 text_only=text_only,
                 companion=companion,
             )
-        if is_clear_context(heard):
+        if clear_context:
             if self.memory is not None and not self.private_mode:
                 self._checkpoint(self.memory.active_conversation(self.settings.memory_owner))
                 self.memory.start_conversation(self.settings.memory_owner)
-            existing = self.sessions.get(session)
-            companion = existing is not None and existing.companion_mode
             if companion:
                 # Reset tool caches too, just as clearing an ordinary session does.
                 fresh = self._new_chat()
@@ -647,9 +731,7 @@ class Brain:
                 ),
                 companion_mode=companion,
             )
-        existing = self.sessions.get(session)
-        companion = existing is not None and existing.companion_mode
-        if (companion or (wake_conversation and not text_only)) and is_stop_listening(heard):
+        if stop_listening:
             # A control utterance isn't a chat turn and doesn't clear history.
             if existing is not None:
                 existing.companion_mode = False
@@ -661,11 +743,21 @@ class Brain:
                 if wake_conversation and not text_only
                 else "Companion mode off.",
             )
-        finished = heard.casefold().strip(" .!?") == "exit"
         chat = self._session(session)
         # All clients for an owner deliberately share one active conversation.
         # Refresh each turn so another client's clear/append cannot leave stale context.
-        conversation = self._restore(chat)
+        conversation = self._restore(chat, provisional=decision is not None)
+        new_conversation = (
+            decision is not None
+            and conversation is None
+            and self.memory is not None
+            and not self.private_mode
+            and not finished
+        )
+        if new_conversation:
+            # Memory lookups can treat a provisional conversation as empty without
+            # leaving behind an archive entry if the first voice turn is discarded.
+            conversation = str(uuid4())
         previous = chat.history.copy()
         previous_mode = chat.companion_mode
         previous_seed = chat.last_companion_seed
@@ -680,7 +772,6 @@ class Brain:
         hierarchy_plan = None
         expression: FaceExpression | None = None
         try:
-            command = companion_command(heard)
             if command is not None:
                 if not command:
                     self._checkpoint(conversation)
@@ -737,6 +828,8 @@ class Brain:
                             "Please try again in a moment."
                         )
                 core_context = ""
+                if decision is not None:
+                    decision.check()
                 if (
                     not finished
                     and conversation is not None
@@ -830,8 +923,15 @@ class Brain:
                 elif finished:
                     text = "Shutting down"
                 else:
-                    generated = chat.generate_reply(heard, face=face)
+                    generated = chat.generate_reply(
+                        heard,
+                        face=face,
+                        before_tools=decision.require_acceptance if decision else None,
+                        check_cancelled=decision.check if decision else None,
+                    )
                     text, expression = generated.text, generated.expression
+            if decision is not None:
+                decision.check()
             result = self._reply(
                 heard,
                 text,
@@ -840,6 +940,10 @@ class Brain:
                 finished=finished,
                 expression=expression,
             )
+            if decision is not None:
+                decision.require_acceptance()
+                if new_conversation and self.memory is not None and command is None:
+                    conversation = self.memory.active_conversation(self.settings.memory_owner)
             if (
                 self.memory is not None
                 and conversation is not None
@@ -884,9 +988,13 @@ def handler_for(
     brain: Brain, token: str, *, web_chat: bool = False
 ) -> type[BaseHTTPRequestHandler]:
     turn_lock = Lock()
+    decisions: dict[tuple[str, str], VoiceDecision] = {}
+    decisions_lock = Lock()
 
     class Handler(BaseHTTPRequestHandler):
         # HTTP/1.0 deliberately closes each connection.
+        _decision: VoiceDecision | None = None
+
         def setup(self) -> None:
             super().setup()
             self.connection.settimeout(15)
@@ -903,6 +1011,18 @@ def handler_for(
             content_type: str = "application/json",
             voice_timing: VoiceTiming | None = None,
         ) -> None:
+            if self._decision is not None:
+                self._decision.check()
+                if status == 200:
+                    self.send_event(
+                        "result",
+                        reply=json.loads(body),
+                        private=private,
+                        timing=voice_timing.model_dump() if voice_timing is not None else None,
+                    )
+                else:
+                    self._decision.fail(lambda: self.send_event("failed", status=status))
+                return
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -920,7 +1040,19 @@ def handler_for(
             if voice_timing is not None:
                 self.send_header(VOICE_TIMING_HEADER, voice_timing.model_dump_json())
             self.end_headers()
-            self.wfile.write(body)
+            if body:
+                self.wfile.write(body)
+
+        def send_event(self, event: str, **data: object) -> None:
+            frame = json.dumps({"event": event, **data}, separators=(",", ":"))
+            self.wfile.write((frame + "\n").encode())
+
+        def start_voice_stream(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Type", VOICE_STREAM_TYPE)
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Iris-Private", "1" if brain.private_mode else "0")
+            self.end_headers()
 
         def do_GET(self) -> None:
             asset = WEB_ASSETS.get(self.path) if web_chat else None
@@ -941,19 +1073,47 @@ def handler_for(
             ):
                 self.respond(401, b'{"error":"Authentication required"}')
                 return
-            if self.path not in {"/v1/voice", "/v1/text", "/v1/volume-result"}:
+            if self.path == VOICE_DECISION_PATH:
+                self.handle_decision()
+                return
+            if self.path not in {"/v1/voice", VOICE_CANCEL_PATH, "/v1/text", "/v1/volume-result"}:
                 self.respond(404, b'{"error":"Unknown route"}')
                 return
             # Browser connections can overlap, but the brain and its sessions are shared.
             with turn_lock:
                 self.handle_turn()
 
+        def turn_key(self) -> tuple[str, str]:
+            return (
+                str(UUID(self.headers.get("X-Iris-Session", ""))),
+                str(UUID(self.headers.get(VOICE_TURN_HEADER, ""))),
+            )
+
+        def handle_decision(self) -> None:
+            try:
+                key = self.turn_key()
+                if (
+                    self.headers.get("Transfer-Encoding")
+                    or self.headers.get("Content-Length") != "6"
+                ):
+                    raise ValueError("Invalid decision length")
+                command = self.rfile.read(6)
+                if command not in {b"accept", b"cancel"}:
+                    raise ValueError("Invalid decision")
+            except ValueError:
+                self.respond(400, b'{"error":"Invalid voice turn decision"}')
+                return
+            with decisions_lock:
+                decision = decisions.get(key)
+            decided = decision is not None and decision.decide(command == b"accept")
+            if decided:
+                self.respond(204, b"")
+            else:
+                self.respond(409, b'{"error":"Voice turn is no longer pending"}')
+
         def handle_turn(self) -> None:
             stream_timing: VoiceTiming | None = None
             self._stream_started = False
-
-            def send_event(event: str, **data: object) -> None:
-                self.wfile.write((json.dumps({"event": event, **data}) + "\n").encode())
 
             def stream_reply(reply: TurnReply, chunks: Generator[bytes], rate: int) -> None:
                 nonlocal stream_timing
@@ -966,13 +1126,12 @@ def handler_for(
                     if first is None:
                         raise RuntimeError("Pocket TTS returned no audio.")
                     first_audio_ns = perf_counter_ns() - started
+                    if self._decision is not None:
+                        self._decision.require_acceptance()
+                    else:
+                        self.start_voice_stream()
                     self._stream_started = True
-                    self.send_response(200)
-                    self.send_header("Content-Type", VOICE_STREAM_TYPE)
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("X-Iris-Private", "1" if brain.private_mode else "0")
-                    self.end_headers()
-                    send_event(
+                    self.send_event(
                         "start",
                         reply=reply.model_dump(exclude_none=True),
                         rate=rate,
@@ -983,7 +1142,7 @@ def handler_for(
                         size += len(pcm)
                         if size > MAX_BODY:
                             raise RuntimeError("Pocket TTS reply exceeds the transport limit.")
-                        send_event("audio", pcm=base64.b64encode(pcm).decode("ascii"))
+                        self.send_event("audio", pcm=base64.b64encode(pcm).decode("ascii"))
                 stream_timing = VoiceTiming(
                     engine=brain.settings.tts_engine,
                     words=words,
@@ -1002,7 +1161,9 @@ def handler_for(
                 self.deliver_turn()
                 if self._stream_started:
                     assert stream_timing is not None
-                    send_event("done", timing=stream_timing.model_dump())
+                    self.send_event("done", timing=stream_timing.model_dump())
+            except TurnCancelled:
+                pass  # The decision already sent the terminal frame.
             except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
             except Exception as error:
@@ -1010,10 +1171,23 @@ def handler_for(
                     raise
                 LOGGER.warning("Droid voice stream failed (%s)", type(error).__name__)
                 with suppress(OSError):
-                    send_event("error")
+                    self.send_event("error")
                 self.close_connection = True
             finally:
                 STREAM_REPLY.reset(token)
+                if self._decision is not None:
+                    with decisions_lock:
+                        del decisions[self.turn_key()]
+
+        def begin_cancellable_turn(self) -> VoiceDecision:
+            key = self.turn_key()
+            decision = VoiceDecision(self.send_event)
+            with decisions_lock:
+                decisions[key] = decision
+                self._decision = decision
+                self.start_voice_stream()
+                self.send_event("processing")
+            return decision
 
         def deliver_turn(self) -> None:
             text_only = self.path == "/v1/text"
@@ -1048,15 +1222,11 @@ def handler_for(
                         companion=chat is not None and chat.companion_mode,
                     )
                 else:
-                    reply = brain.turn(
-                        session,
-                        body,
-                        text_only=text_only,
-                        wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
-                        companion_idle=companion_idle,
-                        volume_supported=self.headers.get("X-Iris-Volume") == "1",
-                        face=self.headers.get(FACE_HEADER) == "1",
-                    )
+                    if self.path == VOICE_CANCEL_PATH and companion_idle:
+                        raise ValueError("Companion openers do not support cancellation")
+                    reply = self.run_voice_or_text(session, body, text_only, companion_idle)
+            except TurnCancelled:
+                raise
             except (ValueError, EOFError):
                 if self._stream_started:
                     raise
@@ -1085,8 +1255,10 @@ def handler_for(
             except ChatError as error:
                 if self._stream_started:
                     raise
-                if brain.private_mode:
-                    LOGGER.warning("Private chat failed (%s)", type(error).__name__)
+                if brain.private_mode or (
+                    self._decision is not None and not self._decision.accepted
+                ):
+                    LOGGER.warning("Chat failed (%s)", type(error).__name__)
                 else:
                     LOGGER.warning("Chat failed: %s", error)
                 self.respond(502, b'{"error":"Chat failed; check the PC model server"}')
@@ -1107,6 +1279,40 @@ def handler_for(
                     reply._voice_timing if self.headers.get(VOICE_TIMING_HEADER) == "1" else None
                 ),
             )
+
+        def run_voice_or_text(
+            self, session: str, body: bytes, text_only: bool, companion_idle: bool
+        ) -> TurnReply:
+            def run(decision: VoiceDecision | None = None) -> TurnReply:
+                return brain.turn(
+                    session,
+                    body,
+                    text_only=text_only,
+                    companion_idle=companion_idle,
+                    wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
+                    volume_supported=self.headers.get("X-Iris-Volume") == "1",
+                    face=self.headers.get(FACE_HEADER) == "1",
+                    decision=decision,
+                )
+
+            if self.path != VOICE_CANCEL_PATH:
+                return run()
+            brain._sync_policy()
+            epoch = brain.policy_epoch
+            # Provisional turns can update live recall and chat state. Capture the
+            # session order as well, since opening a session can evict an old one.
+            sessions = brain.sessions.copy()
+            chat = sessions.get(session)
+            previous = vars(chat).copy() if chat is not None else None
+            decision = self.begin_cancellable_turn()
+            try:
+                return run(decision)
+            except Exception:
+                if not decision.accepted and brain.policy_epoch == epoch:
+                    if chat is not None and previous is not None:
+                        vars(chat).update(previous)
+                    brain.sessions = sessions
+                raise
 
     return Handler
 
@@ -1131,8 +1337,7 @@ def main(argv: list[str] | None = None) -> int:
         ):
             brain = Brain(settings, client, make_stt(settings), tts)
             handler = handler_for(brain, token, web_chat=args.web_chat)
-            server_class = ThreadingHTTPServer if args.web_chat else HTTPServer
-            with server_class((args.host, args.port), handler) as server:
+            with ThreadingHTTPServer((args.host, args.port), handler) as server:
                 print(f"Iris droid server listening on {args.host}:{args.port}")
                 server.serve_forever()
         return 0

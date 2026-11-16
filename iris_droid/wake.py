@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from threading import Event
 from typing import Any
+
+CANCEL_PHRASE = "cancel cancel"
 
 
 class WakeDetector:
@@ -32,3 +35,23 @@ class WakeDetector:
                 result = json.loads(detector.Result())
                 if result.get("text") == self.phrase:
                     return
+
+    def listen_for_cancel(self, source: Any, stop: Event) -> bool:
+        import speech_recognition as sr
+
+        detector = self.recognizer_type(self.model, 16000, json.dumps([CANCEL_PHRASE, "[unk]"]))
+        converter_state = None
+        while not stop.is_set():
+            data = source.stream.read(min(source.CHUNK, 2048))
+            if not data:
+                raise OSError("Microphone stopped during cancel detection")
+            if source.SAMPLE_RATE != 16000:
+                data, converter_state = sr.audioop.ratecv(
+                    data, 2, 1, source.SAMPLE_RATE, 16000, converter_state
+                )
+            if detector.AcceptWaveform(data):
+                if json.loads(detector.Result()).get("text") == CANCEL_PHRASE:
+                    return True
+        # Check buffered speech at the moment the server is ready for a decision.
+        result = json.loads(detector.FinalResult()).get("text")
+        return isinstance(result, str) and result == CANCEL_PHRASE

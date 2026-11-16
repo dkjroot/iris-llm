@@ -166,6 +166,13 @@ class SQLiteMemory:
             ).fetchone()
             return str(row[0]) if row else self._new_conversation(db, owner)
 
+    def current_conversation(self, owner: str) -> str | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT conversation FROM active_conversations WHERE owner=?", (owner,)
+            ).fetchone()
+            return str(row[0]) if row else None
+
     def start_conversation(self, owner: str) -> str:
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")

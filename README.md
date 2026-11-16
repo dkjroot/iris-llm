@@ -977,6 +977,14 @@ mute switch, in which case Iris reports that it couldn't make that change.
 After muting or setting zero, you won't hear confirmation until you unmute
 or raise the volume, but wake detection and the microphone still work.
 
+When you set the volume or turn it up or down through Iris, the client saves
+the speaker level it reads back from the mixer. It restores that level the
+next time it starts with the same ALSA card and control, before playing any
+cues. The setting lives on the Pi under `~/.local/state/iris/volume/` (or
+`$XDG_STATE_HOME/iris/volume/` if set), and Iris leaves the mute switch as it
+finds it. If you set up your own `alsactl restore` command for this speaker,
+you can stop using it once you've chosen a volume through Iris.
+
 If the mixer fails, Iris reports the failure rather than claiming success.
 Check the `amixer` command above as the same user who runs the client. If the
 connection fails after a change, the client prints the result it read locally
@@ -1247,7 +1255,7 @@ python iris.py client --server http://192.168.1.10:8765 --activation wake --wake
 
 Update both the server and client before using the conversation controls. Start the client with the same `--activation wake` command as above; no extra flag is needed to enable the conversation window.
 
-Say “hey iris”, wait for the listening bloop, then give your message. After Iris replies, she quietly returns to listening, and you can give your next message without saying her name again. She still finishes speaking before opening the microphone; this isn't simultaneous listening or interruption support.
+Say “hey iris”, wait for the listening bloop, then give your message. After Iris finishes speaking, she quietly returns to listening, and you can give your next message without saying her name again.
 
 Say **“stop listening”** as a complete utterance to close the conversation window. The client stays running and returns to waiting locally for “hey iris”. The PC recognises the stop phrase, handles it before the chat model and returns a control acknowledgement without generating speech. It doesn't add that phrase to chat history. Text mode, Enter mode and continuous mode don't treat it as a wake control.
 
@@ -1258,6 +1266,21 @@ Chat history is kept when you say “stop listening” or the conversation goes 
 Say **“clear context”** as a complete utterance to start afresh without stopping the client. With memory off, the server discards this client's conversation history, keeping Iris's configured personality and instructions. With memory enabled, it starts a new shared conversation for your configured owner. The earlier conversation stays in the archive, but isn't included in the new context. It returns a text confirmation without generating a chat reply or speech; a pending memory summary checkpoint may still run. In wake mode, the conversation stays open, so carry on after the acknowledgement without repeating the wake phrase. This command also works in Enter and continuous modes, or typed in text mode. Capitalisation and common surrounding punctuation don't matter; a longer sentence containing “clear context” is still an ordinary chat message. Update the server to enable the command.
 
 You can change the wake phrase with `--wake-phrase`, using words the Vosk model knows. While waiting for that phrase, background audio stays on the client. **While the conversation window is open, detected speech is sent to the PC without requiring a wake phrase for each turn**, including the “stop listening” utterance. This uses constrained local recognition for wake detection and the configured PC recogniser for your messages; try it with your own accent, microphone, distance and room noise rather than expecting every room to behave alike.
+
+#### Cancel something Iris picked up by mistake
+
+If you hear the processing bloops and realise Iris picked up something you
+weren't saying to her, say **“cancel, cancel”**. The bloops stop and you get a
+short acknowledgement. Iris drops that turn before it can become a reply or
+part of the conversation she remembers.
+
+Update the server and the client, then add `--voice-cancel` to your client
+command. If you already use wake mode, it shares the model from `--wake-model`.
+In Enter or continuous mode, supply the unpacked Vosk model folder with
+`--wake-model` as well. The cancel phrase is recognised locally. The window
+ends when the bloops stop for a reply or an action. If you use an online speech
+recogniser or chat model, that service may already have received the original
+utterance by then.
 
 ### 6. Companion mode
 
