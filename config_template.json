@@ -3,7 +3,7 @@
     "model": "local-model",
     "allow_remote": false,
     "system_prompt": "You are Iris, a friendly assistant. Keep spoken replies fairly short.",
-    "conversation_style_prompt": "When your reply feels complete, let it stand. Ask a question when you need to clarify something or when the answer would add something meaningful to the topic at hand. Skip generic follow-ups and questions whose only purpose is to keep the conversation going.",
+    "conversation_style_prompt": "Only ask a follow-up question when you need more information to respond. When your reply is complete, stop there.",
     "temperature": 0.7,
     "max_tokens": 250,
     "model_context_tokens": 8192,

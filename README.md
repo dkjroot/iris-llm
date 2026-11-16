@@ -196,11 +196,10 @@ check command lists the IDs advertised by servers that support `/v1/models`.
 Use the appropriate ID and rerun configuration if necessary. A server without
 that listing route can still work; try the [client text test](#3-test-the-connection-with-text) once the server is running.
 
-By default, Iris is happy to let a reply stand on its own. She can still ask if
-she needs to clear something up or if the answer would add something to what
-you're talking about. If you'd like to change that, you can edit
-`conversation_style_prompt` in advanced configuration, or enter `""` to remove
-the guidance. Restart the server after changing it.
+By default, Iris is told to ask a follow-up question only when she needs more
+information to respond. Once she's answered, she can let the reply stand. You
+can edit `conversation_style_prompt` in advanced configuration, or enter `""`
+to remove the guidance. Restart the server after changing it.
 
 These are the normal choices for a local setup:
 

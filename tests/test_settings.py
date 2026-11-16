@@ -123,6 +123,13 @@ def test_distributed_default_and_template_match_model_defaults() -> None:
             "asking for clarification when needed.",
             Settings.model_fields["conversation_style_prompt"].default,
         ),
+        (
+            "When your reply feels complete, let it stand. Ask a question when you need to clarify "
+            "something or when the answer would add something meaningful to the topic at hand. "
+            "Skip generic follow-ups and questions whose only purpose is to keep the conversation "
+            "going.",
+            Settings.model_fields["conversation_style_prompt"].default,
+        ),
         ("Keep the chat relaxed.", "Keep the chat relaxed."),
         ("", ""),
     ],
