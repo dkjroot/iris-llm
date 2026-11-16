@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from iris_droid.expression import FaceExpression
 from iris_droid.volume import VolumeCommand
 
 MAX_BODY = 10_000_000
@@ -64,6 +65,7 @@ class TurnReply(BaseModel):
     finished: bool = False
     companion_mode: bool = False
     volume: VolumeCommand | None = None
+    expression: FaceExpression | None = None
     _voice_timing: VoiceTiming | None = PrivateAttr(default=None)
     _streamed: bool = PrivateAttr(default=False)
 

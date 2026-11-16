@@ -1,0 +1,21 @@
+[Unit]
+Description=Iris direct display for %i
+After=systemd-user-sessions.service getty@tty1.service
+Conflicts=getty@tty1.service
+
+[Service]
+User=%i
+SupplementaryGroups=video render
+WorkingDirectory=/home/%i/iris-llm
+ExecStart=/usr/bin/python3 -m iris_droid.face_console
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVTDisallocate=yes
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

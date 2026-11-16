@@ -34,21 +34,45 @@ def detector_for(probabilities):
 def test_loud_non_speech_and_short_false_starts_expire_without_a_turn():
     source = source_for(b"\xff\x7f" * RATE * 2)
     detector = detector_for([0.1, 0.9, 0.1, 0.9] * 20)
+    heard_speech = Mock()
     with pytest.raises(sr.WaitTimeoutError):
-        listen_for_speech(source, detector, timeout=1, limit=30, pause=0.5, clock=lambda: 0)
+        listen_for_speech(
+            source,
+            detector,
+            timeout=1,
+            limit=30,
+            pause=0.5,
+            clock=lambda: 0,
+            on_speech=heard_speech,
+        )
     assert detector.probability.call_count <= 32
     detector.reset.assert_called_once()
+    heard_speech.assert_not_called()
 
 
 def test_speech_keeps_pre_roll_and_ends_despite_loud_non_speech():
     frames = [np.full(512, i, dtype="<i2").tobytes() for i in range(50)]
     source = source_for(b"".join(frames))
     detector = detector_for([0.1] * 20 + [0.9] * 5 + [0.1] * 25)
-    result = listen_for_speech(source, detector, timeout=5, limit=30, pause=0.5, clock=lambda: 0)
+
+    def on_speech() -> None:
+        assert detector.probability.call_count == 23
+
+    heard_speech = Mock(side_effect=on_speech)
+    result = listen_for_speech(
+        source,
+        detector,
+        timeout=5,
+        limit=30,
+        pause=0.5,
+        clock=lambda: 0,
+        on_speech=heard_speech,
+    )
     # Confirmed speech begins at frame 20; retain seven preceding frames, all
     # speech, and the 16 windows that establish a half-second non-speech pause.
     assert result == b"".join(frames[13:41])
     assert source.stream.read.call_count == 41
+    heard_speech.assert_called_once_with()
 
 
 def test_brief_pauses_and_quieter_speech_do_not_split_a_turn():

@@ -1370,6 +1370,12 @@ systemd-run --user --wait --unit=iris-journal-test /bin/echo "Iris journal test"
 journalctl --user -b -u iris-journal-test.service -n 10
 ```
 
+### Optional face display
+
+If you have a screen on the Pi, Iris can show a face as she listens, thinks and
+talks, then go back to a quiet black screen with a little snowfall.
+[Pick a face and set up the display](docs/face-display.md).
+
 ### Optional home automation
 
 Iris can switch a Matter plug, read its meters and edit its weekly schedule.
@@ -2086,7 +2092,7 @@ For development, install `python -m pip install -e ".[dev]"`, then run:
 ruff check .
 ruff format --check .
 mypy
-pytest
+python scripts/check.py
 ```
 
 The tests use fake devices and models, plus local HTTP tests. They don't need a

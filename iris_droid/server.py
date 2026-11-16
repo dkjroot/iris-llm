@@ -30,6 +30,7 @@ from pydantic import BaseModel
 
 from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
+from iris_droid.expression import FACE_HEADER, FaceExpression
 from iris_droid.protocol import (
     MAX_BODY,
     VOICE_STREAM_TYPE,
@@ -198,10 +199,21 @@ class Brain:
             self._reset_sessions()
 
     def _reply(
-        self, heard: str, text: str, *, text_only: bool, companion: bool, finished: bool = False
+        self,
+        heard: str,
+        text: str,
+        *,
+        text_only: bool,
+        companion: bool,
+        finished: bool = False,
+        expression: FaceExpression | None = None,
     ) -> TurnReply:
         result = TurnReply(
-            heard=heard, text=text, finished=finished, companion_mode=companion and not finished
+            heard=heard,
+            text=text,
+            finished=finished,
+            companion_mode=companion and not finished,
+            expression=expression,
         )
         stream_reply = STREAM_REPLY.get()
         if not text_only and stream_reply is not None:
@@ -543,6 +555,7 @@ class Brain:
         wake_conversation: bool = False,
         companion_idle: bool = False,
         volume_supported: bool = False,
+        face: bool = False,
     ) -> TurnReply:
         self._sync_policy()
         if companion_idle:
@@ -665,6 +678,7 @@ class Brain:
         detail_labels: tuple[str, ...] = ()
         followup_conversation: str | None = None
         hierarchy_plan = None
+        expression: FaceExpression | None = None
         try:
             command = companion_command(heard)
             if command is not None:
@@ -687,7 +701,8 @@ class Brain:
                             chat.memory_sources.add(followup_conversation)
                     except (sqlite3.Error, ValueError, KeyError, IndexError) as error:
                         LOGGER.warning("Companion memory unavailable (%s).", type(error).__name__)
-                text = chat.get_companion_opener()
+                opener = chat.generate_companion_opener(face=face)
+                text, expression = opener.text, opener.expression
             else:
                 recall_reply: str | None = None
                 recalled = None
@@ -783,7 +798,7 @@ class Brain:
                             conversation,
                             heard,
                             chat.history,
-                            chat._system_prompt(),
+                            chat._system_prompt(face=face),
                             chat.tools.definitions(),
                             recalled,
                             core_context,
@@ -812,10 +827,18 @@ class Brain:
                 if recall_reply is not None:
                     text = recall_reply
                     chat.remember_reply(heard, text)
+                elif finished:
+                    text = "Shutting down"
                 else:
-                    text = "Shutting down" if finished else chat.get_response(heard)
+                    generated = chat.generate_reply(heard, face=face)
+                    text, expression = generated.text, generated.expression
             result = self._reply(
-                heard, text, text_only=text_only, companion=chat.companion_mode, finished=finished
+                heard,
+                text,
+                text_only=text_only,
+                companion=chat.companion_mode,
+                finished=finished,
+                expression=expression,
             )
             if (
                 self.memory is not None
@@ -1032,6 +1055,7 @@ def handler_for(
                         wake_conversation=self.headers.get("X-Iris-Wake-Conversation") == "1",
                         companion_idle=companion_idle,
                         volume_supported=self.headers.get("X-Iris-Volume") == "1",
+                        face=self.headers.get(FACE_HEADER) == "1",
                     )
             except (ValueError, EOFError):
                 if self._stream_started:

@@ -94,6 +94,7 @@ def listen_for_speech(
     pause: float,
     threshold: float = 0.5,
     clock: Callable[[], float] = monotonic,
+    on_speech: Callable[[], None] | None = None,
 ) -> bytes:
     """Return bounded 16 kHz PCM; rejected noises don't restart the waiting timeout.
 
@@ -136,6 +137,8 @@ def listen_for_speech(
                 if consecutive < 3:
                     continue
                 frames = list(history)
+                if on_speech is not None:
+                    on_speech()
             else:
                 frames.append(frame)
                 # Hysteresis avoids fragmenting a quiet word around the start threshold.

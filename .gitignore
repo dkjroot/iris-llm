@@ -192,3 +192,6 @@ agent_docs/
 /prepared-voices/
 /.venv-chatterbox/
 /.venv-pocket/
+
+# Local Iris face prototypes
+/face-experiments/

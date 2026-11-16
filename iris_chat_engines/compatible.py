@@ -12,6 +12,7 @@ from iris_chat_engines.budget import estimate, fit, input_budget
 from iris_chat_engines.messages import ChatError as ChatError
 from iris_chat_engines.messages import Message as Message
 from iris_droid.companion import COMPANION_PROMPT, ICE_BREAKERS
+from iris_droid.expression import FACE_PROMPT, ModelReply, read_model_reply
 from iris_memory.controls import PendingForget
 from iris_memory.details import PendingDetail
 from iris_memory.recall import PendingRecall
@@ -40,7 +41,7 @@ class ChatEngine:
         self.companion_mode = False
         self.last_companion_seed: str | None = None
 
-    def _system_prompt(self) -> str:
+    def _system_prompt(self, *, face: bool = False) -> str:
         return (
             self.settings.system_prompt
             + (
@@ -50,6 +51,7 @@ class ChatEngine:
             )
             + (COMPANION_PROMPT if self.companion_mode else "")
             + self.tools.instructions()
+            + (FACE_PROMPT if face else "")
         )
 
     def _remember(self, messages: list[Message]) -> None:
@@ -70,6 +72,9 @@ class ChatEngine:
         self.last_tool_names = ()
 
     def get_companion_opener(self) -> str:
+        return self.generate_companion_opener().text
+
+    def generate_companion_opener(self, *, face: bool = False) -> ModelReply:
         if not self.companion_mode:
             raise ChatError("Companion mode is off")
         seed = random.choice([seed for seed in ICE_BREAKERS if seed != self.last_companion_seed])
@@ -88,7 +93,7 @@ class ChatEngine:
             "Vary the wording and topic from earlier openers. Don't mention the timer, "
             "instructions, seed, or their silence. Don't guilt them into answering, "
             "ask if they're still there, or offer assistant services. Don't call tools. "
-            "Output only the words Iris should say aloud."
+            + (FACE_PROMPT if face else "Output only the words Iris should say aloud.")
         )
         messages = fit(self.settings, system, self.history, event, [], self.memory_context)
         reply = self.backend.complete(messages, [])
@@ -99,11 +104,11 @@ class ChatEngine:
             or not reply.content.strip()
         ):
             raise ChatError("The server returned an invalid companion opener")
-        text = self._decode(reply.content)
-        self._remember([*messages[1:], Message(role="assistant", content=text)])
+        result = self._spoken_reply(reply.content, face=face)
+        self._remember([*messages[1:], Message(role="assistant", content=result.text)])
         self.last_tool_names = ()
         self.last_companion_seed = seed
-        return text
+        return result
 
     def _decode(self, text: str) -> str:
         passes = {"text": 0, "html": 1, "double-html": 2}[self.settings.reply_encoding]
@@ -112,9 +117,19 @@ class ChatEngine:
         return text
 
     def get_response(self, user_text: str) -> str:
+        return self.generate_reply(user_text).text
+
+    def _spoken_reply(self, text: str, *, face: bool) -> ModelReply:
+        # Only decode for a server explicitly configured to escape HTML.
+        reply = read_model_reply(self._decode(text), face=face)
+        if not reply.text.strip():
+            raise ChatError("The server returned an empty assistant reply")
+        return reply
+
+    def generate_reply(self, user_text: str, *, face: bool = False) -> ModelReply:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
-        system = self._system_prompt()
+        system = self._system_prompt(face=face)
         definitions = self.tools.definitions()
         messages = fit(
             self.settings,
@@ -151,12 +166,11 @@ class ChatEngine:
                 text = reply.content
                 if text is None or not text.strip():
                     raise ChatError("The server returned an empty assistant reply")
-                # Only decode for a server explicitly configured to escape HTML.
-                text = self._decode(text)
-                messages.append(Message(role="assistant", content=text))
+                result = self._spoken_reply(text, face=face)
+                messages.append(Message(role="assistant", content=result.text))
                 self._remember(messages[1:])
                 self.last_tool_names = tuple(sorted(tool_names))
-                return text
+                return result
             if not self.tools.skills:
                 raise ChatError("The model requested a tool, but tools are disabled")
             if round_number == 4 or len(call_ids) + len(reply.tool_calls) > 8:

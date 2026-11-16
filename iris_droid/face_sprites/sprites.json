@@ -1,0 +1,58 @@
+{
+  "size": [
+    560,
+    536
+  ],
+  "crop": [
+    96,
+    120,
+    368,
+    272
+  ],
+  "expressions": [
+    "neutral",
+    "curious",
+    "amused",
+    "concerned",
+    "focused"
+  ],
+  "frames": [
+    "rest",
+    "half-blink",
+    "blink",
+    "jaw-small",
+    "jaw-medium",
+    "jaw-wide",
+    "thinking"
+  ],
+  "tilts": {
+    "humanoid-android": {
+      "neutral": 0,
+      "curious": 2.9793805346802804,
+      "amused": -2.4637185190625397,
+      "concerned": 1.604281826366305,
+      "focused": -0.6875493541569879
+    },
+    "sprout": {
+      "neutral": 0,
+      "curious": 4.051957527165182,
+      "amused": -3.350657185925054,
+      "concerned": 2.181823283858175,
+      "focused": -0.9350671216535036
+    },
+    "signal": {
+      "neutral": 0,
+      "curious": 1.6386592940741544,
+      "amused": -1.3550451854843972,
+      "concerned": 0.8823550045014679,
+      "focused": -0.3781521447863434
+    },
+    "rivet": {
+      "neutral": 0,
+      "curious": 3.4262876148823227,
+      "amused": -2.833276296921921,
+      "concerned": 1.8449241003212509,
+      "focused": -0.790681757280536
+    }
+  }
+}

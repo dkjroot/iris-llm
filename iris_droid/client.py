@@ -31,6 +31,8 @@ from iris_droid.capture import (
 )
 from iris_droid.companion import CompanionTimer, ConsoleInput
 from iris_droid.conversation import WakeConversation
+from iris_droid.expression import FACE_HEADER
+from iris_droid.face_display import DEFAULT_FACE_PORT, FACE_HEADS, FACE_IDLE_MODES, FaceDisplay
 from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import (
     MAX_BODY,
@@ -56,6 +58,12 @@ if TYPE_CHECKING:
     from iris_droid.vad import SpeechDetector
 
 
+class CaptureOptions(TypedDict, total=False):
+    vad: SpeechDetector
+    vad_threshold: float
+    on_listening: Callable[[], None]
+
+
 class DroidClient:
     def __init__(
         self,
@@ -67,6 +75,7 @@ class DroidClient:
         volume_backend: VolumeBackend | None = None,
         trace_voice: bool = False,
         stream_player: Callable[[VoiceStreamStart, Iterator[bytes]], int | None] | None = None,
+        face: bool = False,
     ) -> None:
         parts = urlsplit(url)
         _ = parts.port
@@ -93,6 +102,8 @@ class DroidClient:
         self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
             self.headers["X-Iris-Wake-Conversation"] = "1"
+        if face:
+            self.headers[FACE_HEADER] = "1"
 
     def turn(
         self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
@@ -539,6 +550,7 @@ def record_turn(
     vad: SpeechDetector | None = None,
     vad_threshold: float = 0.5,
     quiet: bool = False,
+    on_listening: Callable[[], None] | None = None,
 ) -> bytes:
     import speech_recognition as sr
 
@@ -576,6 +588,9 @@ def record_turn(
             wake.wait(source)
         if conversation is not None:
             conversation.activate()
+    if on_listening is not None and (wake is not None or not quiet):
+        on_listening()
+        on_listening = None
     if feedback is None and (not quiet or wake is not None):
         play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
     elif feedback is not None and (not quiet or wake is not None):
@@ -607,6 +622,7 @@ def record_turn(
                 limit=limit,
                 pause=pause_threshold,
                 threshold=vad_threshold,
+                on_speech=on_listening,
             )
         else:
             audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
@@ -689,6 +705,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--list-microphones", action="store_true", help="List microphone indices")
     parser.add_argument("--text", action="store_true", help="Test transport without any audio")
+    parser.add_argument("--face", choices=FACE_HEADS, help="Serve a face for the droid's display")
+    parser.add_argument(
+        "--face-idle", choices=FACE_IDLE_MODES, default="snow", help="Idle display (default: snow)"
+    )
+    parser.add_argument(
+        "--face-port",
+        type=int,
+        default=DEFAULT_FACE_PORT,
+        help=f"Loopback port for the face display (default: {DEFAULT_FACE_PORT})",
+    )
     parser.add_argument(
         "--volume-backend",
         choices=["none", "alsa"],
@@ -834,6 +860,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Speech lead-in must be between 0 and 2 seconds")
         if not 0 < args.vad_threshold < 1:
             raise ValueError("--vad-threshold must be between 0 and 1, exclusive")
+        if args.face and not 1 <= args.face_port <= 65535:
+            raise ValueError("--face-port must be between 1 and 65535")
         wake_window = WakeConversation(args.conversation_timeout)
         companion = CompanionTimer(args.companion_idle_min, args.companion_idle_max)
         console = ConsoleInput()
@@ -908,19 +936,39 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 play_wav(body, args.speaker)
                 return 0
-            with httpx.Client(
-                trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
-            ) as transport:
+            display = FaceDisplay(args.face, args.face_idle)
+            with (
+                httpx.Client(
+                    trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
+                ) as transport,
+                display.serve(args.face_port) as face_port,
+            ):
+                if face_port is not None:
+                    print(
+                        f"Iris face: open http://127.0.0.1:{face_port}/ on this display.",
+                        flush=True,
+                    )
+
+                def show_listening() -> None:
+                    display.show("listening")
+
+                capture_options: CaptureOptions = {}
+                if vad is not None:
+                    capture_options["vad"] = vad
+                    capture_options["vad_threshold"] = args.vad_threshold
+                if face_port is not None:
+                    capture_options["on_listening"] = show_listening
 
                 def stream_player(start: VoiceStreamStart, chunks: Iterator[bytes]) -> int | None:
                     feedback.stop_working()
-                    return play_stream(
-                        chunks,
-                        start.rate,
-                        args.speaker,
-                        lead_in=args.speech_lead_in,
-                        primer=args.speech_primer,
-                    )
+                    with display.speaking(start.reply.expression):
+                        return play_stream(
+                            chunks,
+                            start.rate,
+                            args.speaker,
+                            lead_in=args.speech_lead_in,
+                            primer=args.speech_primer,
+                        )
 
                 stream_replies = not (args.text or args.no_speech_stream or args.save_reply)
                 client = DroidClient(
@@ -930,6 +978,7 @@ def main(argv: list[str] | None = None) -> int:
                     wake_conversation=args.activation == "wake" and not args.text,
                     trace_voice=args.trace_voice,
                     stream_player=stream_player if stream_replies else None,
+                    face=face_port is not None,
                     volume_backend=make_volume_backend(
                         args.volume_backend, card=args.alsa_card, control=args.alsa_control
                     ),
@@ -947,6 +996,8 @@ def main(argv: list[str] | None = None) -> int:
                 first_capture = True
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
+                    if not args.text:
+                        display.show("idle")
                     if (
                         conversation is not None
                         and not companion.enabled
@@ -1001,9 +1052,7 @@ def main(argv: list[str] | None = None) -> int:
                                 feedback=feedback,
                                 announce_ready=announce_ready,
                                 quiet=quiet,
-                                **(
-                                    {"vad": vad, "vad_threshold": args.vad_threshold} if vad else {}
-                                ),
+                                **capture_options,
                                 conversation=None if companion.enabled else conversation,
                                 calibration=companion_calibration
                                 if companion.enabled
@@ -1034,6 +1083,7 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             play_wav(body, args.speaker)
                     try:
+                        display.show("thinking")
                         with nullcontext() if proactive else feedback.working():
                             reply = client.turn(
                                 body,
@@ -1041,6 +1091,7 @@ def main(argv: list[str] | None = None) -> int:
                                 **({"companion_idle": True} if proactive else {}),
                             )
                     except httpx.HTTPError as error:
+                        display.show("idle")
                         # Failed input hasn't confirmed intelligible speech. Keep
                         # its deadline and unanswered-opener backoff intact, but
                         # pace failed proactive requests so they don't spin.
@@ -1105,13 +1156,17 @@ def main(argv: list[str] | None = None) -> int:
                                 playback_trace["on_speech_start"] = partial(
                                     report_voice_timing, reply._voice_timing
                                 )
-                        play_wav(
-                            reply_audio,
-                            args.speaker,
-                            lead_in=args.speech_lead_in,
-                            primer=args.speech_primer,
-                            **playback_trace,
-                        )
+                        cue = reply.expression if face_port is not None else None
+                        with display.speaking(cue):
+                            play_wav(
+                                reply_audio,
+                                args.speaker,
+                                lead_in=args.speech_lead_in,
+                                primer=args.speech_primer,
+                                **playback_trace,
+                            )
+                    elif face_port is not None and args.text and reply.text:
+                        display.show("listening", reply.expression, seconds=3)
                     if reply.finished:
                         return 0
                     companion.update(reply.companion_mode, proactive=proactive)
