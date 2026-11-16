@@ -123,6 +123,20 @@ def test_natural_correction_supersedes_before_reply_preserves_originals_and_rest
     assert restarted.facts("default")[0]["value"] == "David"
 
 
+def test_delete_previous_restores_the_status_of_a_fact_it_superseded(setup):
+    _, archive, _, hierarchy, _ = setup
+    keep = commit(setup, "My name is Dave", {"facts": [fact()]})
+    old = hierarchy.facts("default")[0]
+    text = "Actually, my name is David, not Dave"
+    wrong = commit(setup, text, {"facts": [fact("David", supersedes=old["id"], evidence=text)]})
+
+    assert archive.delete_previous("default", expected_epoch=0) == wrong.id
+    facts = hierarchy.facts("default")
+    assert [(row["source"], row["value"], row["status"]) for row in facts] == [
+        (keep.id, "Dave", "confirmed")
+    ]
+
+
 def test_labelled_name_natural_correction_resolves_without_broad_deletion(setup):
     _, archive, conversation, hierarchy, _ = setup
     details = Details(archive)
@@ -333,7 +347,7 @@ def test_schema_five_upgrade_preserves_sources_and_private_policy(tmp_path):
     upgraded = SQLiteMemory(path)
     assert upgraded.policy("default") == (True, 1)
     assert upgraded.revision("default", conversation) == "source"
-    assert upgraded.export("default")["schema_version"] == 6
+    assert upgraded.export("default")["schema_version"] == 7
 
 
 @pytest.fixture
@@ -543,7 +557,7 @@ def test_schema_migration_failure_is_atomic_and_retryable(setup):
         assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_facts'").fetchone()
         db.execute("DROP TABLE memory_topics")
-    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 6
+    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 7
 
 
 def test_uncertain_correction_cannot_resurrect_original_explicit_value(setup):

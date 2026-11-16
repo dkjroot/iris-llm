@@ -239,7 +239,7 @@ def test_migration_indexes_phase_one_sources_atomically(tmp_path):
     assert MemoryIndex(migrated).search("default", conversation, "Sapphire", "")
     assert len(migrated.export("default")["exchanges"]) == 1
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
     assert len(MemoryIndex(SQLiteMemory(path)).search("default", conversation, "Sapphire", "")) == 1
 
 
@@ -376,7 +376,7 @@ def test_retry_cli_and_export_include_derived_data(setup, tmp_path, capsys):
     capsys.readouterr()
     assert iris.main(["memory", "--config", str(config), "export"]) == 0
     exported = json.loads(capsys.readouterr().out)
-    assert exported["summaries"] and exported["notes"] and exported["schema_version"] == 6
+    assert exported["summaries"] and exported["notes"] and exported["schema_version"] == 7
 
 
 def test_budget_settings_and_environment_validation(monkeypatch):

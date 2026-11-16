@@ -5,6 +5,7 @@ from http.server import ThreadingHTTPServer
 from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
+from uuid import uuid4
 
 import httpx
 import numpy as np
@@ -167,6 +168,40 @@ def test_cancellation_prevents_tool_dispatch(voice_server):
     chat.tools.execute.assert_not_called()
     brain.tts.synthesize.assert_not_called()
     assert brain.memory.current_conversation("default") is None
+
+
+def test_delete_previous_voice_command_can_itself_be_cancelled(voice_server):
+    brain, _, client, url = voice_server
+    droid = DroidClient(url, TOKEN, client)
+    droid.turn(b"Keep until deletion is accepted", text_only=True)
+    brain.stt.recognize.return_value = "Delete previous"
+    droid.cancel_listener = lambda stop: stop.wait(3)
+    with pytest.raises(TurnCancelled):
+        droid.turn(RECORDING)
+    assert len(brain.memory.export("default")["exchanges"]) == 1
+
+    def accept(stop):
+        assert stop.wait(3)
+        return False
+
+    droid.cancel_listener = accept
+    assert droid.turn(RECORDING).text == "Previous exchange deleted."
+    assert brain.memory.export("default")["exchanges"] == []
+
+
+def test_delete_previous_response_identifies_the_browser_messages_to_remove(voice_server):
+    _, _, client, url = voice_server
+    headers = {
+        "Authorization": f"Bearer {TOKEN}",
+        "X-Iris-Session": str(uuid4()),
+        "Content-Type": "text/plain",
+    }
+    saved = client.post(f"{url}/v1/text", headers=headers, content=b"An exchange")
+    saved.raise_for_status()
+    deleted = client.post(f"{url}/v1/text", headers=headers, content=b"delete previous")
+    deleted.raise_for_status()
+    assert deleted.headers["X-Iris-Deleted-Exchange"] == saved.headers["X-Iris-Exchange"]
+    assert "X-Iris-Exchange" not in deleted.headers
 
 
 def test_local_listener_requires_both_words_and_checks_buffered_audio(monkeypatch, tmp_path):

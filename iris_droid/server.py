@@ -43,6 +43,7 @@ from iris_droid.protocol import (
     VoiceTiming,
     companion_command,
     is_clear_context,
+    is_delete_previous,
     is_stop_listening,
     read_wav,
     validate_token,
@@ -573,6 +574,47 @@ class Brain:
             except sqlite3.Error as error:
                 LOGGER.warning("Memory checkpoint deferred (%s).", type(error).__name__)
 
+    def _delete_previous(self, heard: str, chat: ChatEngine | None) -> TurnReply:
+        companion = chat is not None and chat.companion_mode
+        deleted: str | None = None
+        removed = False
+        if self.memory is not None and not self.private_mode:
+            deleted = self.memory.delete_previous(
+                self.settings.memory_owner, expected_epoch=self.policy_epoch
+            )
+            if deleted is not None:
+                self._sync_policy()
+                chat = None
+                removed = True
+        elif chat is not None:
+            for index in range(len(chat.history) - 1, -1, -1):
+                if chat.history[index].role == "user":
+                    deleted = chat.history[index]._exchange_id
+                    del chat.history[index:]
+                    removed = True
+                    break
+
+        if chat is not None:
+            chat.pending_detail = None
+            chat.selected_detail = None
+            chat.pending_forget = None
+            chat.pending_recall = None
+            chat.memory_context = ""
+            chat.memory_sources = set()
+            chat.last_tool_names = ()
+            chat.last_followup = None
+        result = TurnReply(
+            heard=heard,
+            text=(
+                "Previous exchange deleted."
+                if removed
+                else "There's no previous exchange to delete."
+            ),
+            companion_mode=companion,
+        )
+        result._deleted_exchange_id = deleted
+        return result
+
     def _restore(self, chat: ChatEngine, *, provisional: bool = False) -> str | None:
         if self.memory is None or self.private_mode:
             return None
@@ -653,6 +695,7 @@ class Brain:
         companion = existing is not None and existing.companion_mode
         volume = volume_command(heard) if not companion_idle else None
         clear_context = is_clear_context(heard)
+        delete_previous = is_delete_previous(heard)
         stop_listening = (companion or (wake_conversation and not text_only)) and is_stop_listening(
             heard
         )
@@ -664,11 +707,14 @@ class Brain:
             or action is not None
             or volume is not None
             or clear_context
+            or delete_previous
             or stop_listening
             or finished
             or command is not None
         ):
             decision.require_acceptance()
+        if delete_previous:
+            return self._delete_previous(heard, existing)
         if detail is not None:
             return self._detail_control(session, heard, detail, text_only=text_only)
         if block_followup:
@@ -944,12 +990,7 @@ class Brain:
                 decision.require_acceptance()
                 if new_conversation and self.memory is not None and command is None:
                     conversation = self.memory.active_conversation(self.settings.memory_owner)
-            if (
-                self.memory is not None
-                and conversation is not None
-                and command is None
-                and not finished
-            ):
+            if command is None and not finished:
                 exchange = Exchange(
                     str(uuid4()),
                     "automatic" if companion_idle else "human",
@@ -957,19 +998,26 @@ class Brain:
                     text,
                     chat.last_tool_names,
                 )
-                self.memory.append(
-                    self.settings.memory_owner,
-                    conversation,
-                    exchange,
-                    expected_epoch=self.policy_epoch,
-                    detail_labels=detail_labels,
-                    source_conversations=tuple(chat.memory_sources),
-                    followup_conversation=followup_conversation,
-                    hierarchy=hierarchy_plan,
-                )
+                if self.memory is not None and conversation is not None:
+                    self.memory.append(
+                        self.settings.memory_owner,
+                        conversation,
+                        exchange,
+                        expected_epoch=self.policy_epoch,
+                        detail_labels=detail_labels,
+                        source_conversations=tuple(chat.memory_sources),
+                        followup_conversation=followup_conversation,
+                        hierarchy=hierarchy_plan,
+                    )
+                    chat.memory_revision = (conversation, exchange.id)
                 if followup_conversation is not None:
                     chat.last_followup = followup_conversation
-                chat.memory_revision = (conversation, exchange.id)
+                result._exchange_id = exchange.id
+                if chat.history:
+                    for message in reversed(chat.history):
+                        if message.role == "user":
+                            message._exchange_id = exchange.id
+                            break
         except Exception:
             chat.history = previous
             chat.companion_mode = previous_mode
@@ -1010,6 +1058,7 @@ def handler_for(
             private: bool | None = None,
             content_type: str = "application/json",
             voice_timing: VoiceTiming | None = None,
+            reply: TurnReply | None = None,
         ) -> None:
             if self._decision is not None:
                 self._decision.check()
@@ -1039,6 +1088,11 @@ def handler_for(
                 self.send_header("X-Iris-Private", "1" if private else "0")
             if voice_timing is not None:
                 self.send_header(VOICE_TIMING_HEADER, voice_timing.model_dump_json())
+            if reply is not None:
+                if reply._exchange_id is not None:
+                    self.send_header("X-Iris-Exchange", reply._exchange_id)
+                if reply._deleted_exchange_id is not None:
+                    self.send_header("X-Iris-Deleted-Exchange", reply._deleted_exchange_id)
             self.end_headers()
             if body:
                 self.wfile.write(body)
@@ -1275,6 +1329,7 @@ def handler_for(
                 200,
                 reply.model_dump_json(exclude_none=True).encode(),
                 private=brain.private_mode,
+                reply=reply,
                 voice_timing=(
                     reply._voice_timing if self.headers.get(VOICE_TIMING_HEADER) == "1" else None
                 ),

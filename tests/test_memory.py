@@ -14,6 +14,7 @@ import pytest
 
 import configure
 import iris
+from iris_droid.protocol import write_wav
 from iris_droid.server import Brain, handler_for
 from iris_memory import (
     AUTOMATIC_EVENT,
@@ -22,6 +23,8 @@ from iris_memory import (
     database_path,
     default_database_path,
 )
+from iris_memory.index import MemoryIndex
+from iris_memory.models import Note, Summary
 from iris_settings import Settings
 
 
@@ -70,6 +73,75 @@ def exchanges(settings):
     return store(settings).export(settings.memory_owner)["exchanges"]
 
 
+def test_delete_previous_removes_source_and_summary_and_refreshes_all_clients(settings):
+    settings = settings.model_copy(update={"memory_hierarchy_enabled": False})
+    requests = []
+    brain, client = make_brain(settings, requests)
+    with client:
+        saved = brain.turn("phone", b"Kept earlier sentence", text_only=True)
+        wrong = brain.turn("phone", b"Accidental marmalade", text_only=True)
+        archive = brain.memory
+        owner = settings.memory_owner
+        conversation = archive.current_conversation(owner)
+        index = MemoryIndex(archive)
+        with archive.connect() as db:
+            sequence = db.execute("SELECT max(sequence) FROM exchanges").fetchone()[0]
+        note = Note(
+            text="Accidental marmalade",
+            kind="user_assertion",
+            scope="real",
+            status="confirmed",
+            sources=[wrong._exchange_id],
+        )
+        assert index.save(
+            owner, conversation, wrong._exchange_id, 0, sequence, Summary(notes=[note])
+        )
+
+        deleted = brain.turn("pi", b" DELETE   PREVIOUS! ", text_only=True)
+        assert deleted._deleted_exchange_id == wrong._exchange_id
+        assert brain.memory.current_conversation(owner) == conversation
+        exported = archive.export(owner)
+        assert [row["id"] for row in exported["exchanges"]] == [saved._exchange_id]
+        assert not exported["summaries"] and not exported["notes"]
+        assert index.pending(owner, conversation) is not None
+        assert index.search(owner, conversation, "marmalade", "") == []
+
+        brain.turn("phone", b"Retry this message", text_only=True)
+        prompt = requests[-1]["messages"]
+        assert [row["content"] for row in prompt if row["role"] == "user"] == [
+            "Kept earlier sentence",
+            "Retry this message",
+        ]
+
+
+@pytest.mark.parametrize("private", [True, False])
+def test_delete_previous_live_history_is_limited_to_issuing_session(settings, private):
+    if not private:
+        settings = settings.model_copy(update={"memory_enabled": False})
+    brain, client = make_brain(settings)
+    with client:
+        if private:
+            brain.turn("pi", b"Previously saved", text_only=True)
+            brain.turn("pi", b"private mode on", text_only=True)
+        brain.turn("pi", b"First live turn", text_only=True)
+        other = brain.turn("phone", b"Another client's turn", text_only=True)
+        brain.turn("pi", b"Please describe the words delete previous", text_only=True)
+        brain.stt.recognize.return_value = "Delete previous."
+        deleted = brain.turn("pi", write_wav(b"\0\0" * 160, 16000))
+        assert deleted.text == "Previous exchange deleted." and not deleted.audio
+        assert [m.content for m in brain.sessions["pi"].history if m.role == "user"] == [
+            "First live turn"
+        ]
+        assert brain.sessions["phone"].history[0]._exchange_id == other._exchange_id
+        brain.turn("pi", b"delete previous", text_only=True)
+        empty = brain.turn("pi", b"delete previous", text_only=True)
+        assert "no previous exchange" in empty.text
+        if private:
+            assert [exchange["user_text"] for exchange in exchanges(settings)] == [
+                "Previously saved"
+            ]
+
+
 def test_schema_idempotency_order_ownership_and_deletion(settings):
     memory = SQLiteMemory(database_path(settings))
     conversation = memory.active_conversation("dave")
@@ -88,7 +160,7 @@ def test_schema_idempotency_order_ownership_and_deletion(settings):
         memory.delete("other", conversation)
     assert memory.conversations("dave")[0]["turns"] == 2
     with memory.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     memory.delete("dave", conversation)
     assert memory.export("dave")["exchanges"] == []

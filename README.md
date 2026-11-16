@@ -932,7 +932,29 @@ This command works in PowerShell and Bash. Replace the address and the quoted na
 python iris.py client --server http://192.168.1.10:8765 --microphone 'USB Microphone' --speaker 'USB Speaker'
 ```
 
-Iris looks up the current indices at launch. A full name takes precedence, and part of a name works if it identifies one device in the right direction. On Linux the card number in a suffix such as `(hw:3,0)` can change, so Iris ignores that part of the suffix when matching names. If several devices match, use a more specific name. Indices still work, and leaving out either option uses the corresponding default. The speaker plays both the listening cue and Iris's reply. Put these options in the client command, including when launching it as a service.
+Iris looks up the current indices at launch. A full name takes precedence, and part of a name works if it identifies one device in the right direction. On Linux the card number in a suffix such as `(hw:3,0)` can change, so Iris ignores that part of the suffix when matching names. If several devices match, use a more specific name. Indices still work, and leaving out either option uses the corresponding default. The speaker plays both the listening cue and Iris's reply.
+
+#### Save the client settings
+
+Once you've got the client working, you can save its settings so you don't have
+to keep typing the same switches. Run these from the Iris checkout on the client.
+
+```sh
+python configure_client.py
+python iris.py client
+```
+
+The first command creates `client_config.json` in the current directory. You can
+run it again to change settings, or edit the JSON yourself. The names match the
+switches with underscores in place of hyphens, so `--pause-threshold 2.5` becomes
+`"pause_threshold": 2.5` and `--no-speech-stream` becomes `"no_speech_stream": true`.
+Git ignores this file. Keep the connection key in `IRIS_DROID_TOKEN`.
+
+The client checks for this file in the directory you launch it from. Use
+`python iris.py client --config /path/to/client_config.json` to pick another file.
+Relative model paths are resolved from the launch directory. You can still pass
+switches like `--server` or `--microphone` to override a saved value for one run.
+One-off commands like `--text` and `--test-microphone` still go on the command line.
 
 #### Control the speaker volume by voice
 
@@ -1679,6 +1701,18 @@ Private mode controls Iris's own memory and these diagnostics. The configured ch
 and speech services still receive the live requests, so their own logging settings
 matter too. Existing terminal logs, exports, recordings made outside Iris and
 backups aren't erased by entering private mode.
+
+If Iris picks up something by mistake, or gets the wrong end of the stick, say
+or type **“delete previous”** on its own. This immediately removes the latest
+completed exchange from the current conversation, including what you said and
+Iris's reply. Then you can give her the message again. With memory on, the
+current saved conversation is shared across clients. In private mode or with
+memory off, the command works on this client's live conversation.
+
+When there's a saved copy, Iris removes it from her archive and search, and
+rebuilds any affected summaries from the exchanges that remain. A command you
+gave Iris may already have done something outside the conversation, such as
+switching a light on. Old logs, exports and backups also keep their own copies.
 
 To delete the **current saved conversation**, say **“forget this conversation”**.
 Iris tells you how many exchanges it contains, then waits for **“confirm forget

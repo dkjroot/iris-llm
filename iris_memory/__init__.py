@@ -118,6 +118,10 @@ class SQLiteMemory:
                 for statement in HIERARCHY_SCHEMA:
                     db.execute(statement)
                 version = 6
+            if version == 6 and create:
+                db.execute("ALTER TABLE memory_facts ADD COLUMN status_before_supersession TEXT")
+                db.execute("PRAGMA user_version=7")
+                version = 7
             if version >= 2 and create:
                 try:
                     db.execute("SELECT rowid FROM chunks_fts LIMIT 0")
@@ -126,7 +130,7 @@ class SQLiteMemory:
                         "Conversation memory needs a working SQLite FTS5 index. "
                         "Check your Python installation and archive."
                     ) from error
-            if version not in {1, 2, 3, 4, 5, 6}:
+            if version not in {1, 2, 3, 4, 5, 6, 7}:
                 raise ValueError("Unsupported Iris memory schema version")
 
     @contextmanager
@@ -542,6 +546,52 @@ class SQLiteMemory:
             ).fetchone():
                 self._new_conversation(db, owner)
             self._bump_policy(db, owner)
+
+    def delete_previous(self, owner: str, *, expected_epoch: int) -> str | None:
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            private, epoch = self._policy(db, owner)
+            if private or epoch != expected_epoch:
+                raise MemoryPolicyError("Conversation memory policy changed; please try again")
+            previous = db.execute(
+                "SELECT e.id,e.sequence,e.conversation FROM active_conversations a "
+                "JOIN exchanges e ON e.owner=a.owner AND e.conversation=a.conversation "
+                "WHERE a.owner=? ORDER BY e.sequence DESC LIMIT 1",
+                (owner,),
+            ).fetchone()
+            if previous is None:
+                return None
+            exchange, sequence, conversation = previous
+
+            from iris_memory.hierarchy import Hierarchy
+
+            Hierarchy.undo_supersession(db, owner, exchange)
+            db.execute("DELETE FROM exchanges WHERE owner=? AND id=?", (owner, exchange))
+            if db.execute(
+                "SELECT 1 FROM summaries WHERE owner=? AND conversation=? AND through_sequence>=?",
+                (owner, conversation, sequence),
+            ).fetchone():
+                # Notes can suppress chunks from earlier summary passes. Rebuild
+                # this conversation's summaries from its remaining source exchanges.
+                db.execute(
+                    "DELETE FROM summaries WHERE owner=? AND conversation=?", (owner, conversation)
+                )
+                db.execute(
+                    "UPDATE chunks SET superseded=0 WHERE owner=? AND conversation=?",
+                    (owner, conversation),
+                )
+            db.execute(
+                "DELETE FROM summary_jobs WHERE owner=? AND conversation=?", (owner, conversation)
+            )
+            db.execute(
+                "INSERT INTO summary_jobs(conversation,owner) SELECT ?,? WHERE EXISTS "
+                "(SELECT 1 FROM exchanges WHERE owner=? AND conversation=? AND sequence>"
+                "COALESCE((SELECT MAX(through_sequence) FROM summaries WHERE conversation=?),0)) "
+                "AND (SELECT count(*) FROM summary_jobs)<64",
+                (conversation, owner, owner, conversation, conversation),
+            )
+            self._bump_policy(db, owner)
+            return str(exchange)
 
     def delete(self, owner: str, conversation: str | None) -> None:
         with self.connect() as db:

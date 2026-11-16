@@ -429,6 +429,23 @@ class Hierarchy:
                 topic.engaged = False
 
     @staticmethod
+    def undo_supersession(db: sqlite3.Connection, owner: str, source: str) -> None:
+        db.execute(
+            "UPDATE memory_facts SET status=COALESCE(status_before_supersession,'tentative'), "
+            "status_before_supersession=NULL WHERE owner=? AND status='superseded' AND id IN "
+            "(SELECT supersedes FROM memory_facts WHERE source=?) AND NOT EXISTS "
+            "(SELECT 1 FROM memory_facts f WHERE f.supersedes=memory_facts.id AND f.source!=?)",
+            (owner, source, source),
+        )
+        db.execute(
+            "DELETE FROM detail_supersessions WHERE owner=? AND label IN "
+            "(SELECT detail_label FROM memory_facts WHERE source=?) AND NOT EXISTS "
+            "(SELECT 1 FROM memory_facts f WHERE f.owner=detail_supersessions.owner "
+            "AND f.detail_label=detail_supersessions.label AND f.source!=?)",
+            (owner, source, source),
+        )
+
+    @staticmethod
     def commit(db: sqlite3.Connection, owner: str, source: str, prepared: Prepared) -> None:
         # Called inside the successful source-exchange transaction.
         from iris_memory import SQLiteMemory
@@ -479,7 +496,8 @@ class Hierarchy:
             )
             if supersedes:
                 db.execute(
-                    "UPDATE memory_facts SET status='superseded' WHERE owner=? AND id=?",
+                    "UPDATE memory_facts SET status_before_supersession=status, "
+                    "status='superseded' WHERE owner=? AND id=?",
                     (owner, supersedes),
                 )
             if detail_label is not None:
@@ -491,7 +509,9 @@ class Hierarchy:
                     (owner, detail_label, row["conversation"]),
                 )
             db.execute(
-                "INSERT INTO memory_facts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO memory_facts(id,owner,fact_key,value,kind,scope,lifetime,importance,"
+                "status,source,evidence,supersedes,detail_label) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(uuid4()),
                     owner,

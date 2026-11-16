@@ -37,6 +37,10 @@ def is_clear_context(text: str) -> bool:
     return " ".join(text.casefold().split()).strip(" .!?,") == "clear context"
 
 
+def is_delete_previous(text: str) -> bool:
+    return " ".join(text.casefold().split()).strip(" .!?,") == "delete previous"
+
+
 def validate_token(token: str) -> None:
     if (
         not token.strip()
@@ -75,6 +79,8 @@ class TurnReply(BaseModel):
     expression: FaceExpression | None = None
     _voice_timing: VoiceTiming | None = PrivateAttr(default=None)
     _streamed: bool = PrivateAttr(default=False)
+    _exchange_id: str | None = PrivateAttr(default=None)
+    _deleted_exchange_id: str | None = PrivateAttr(default=None)
 
 
 class VoiceStreamStart(BaseModel):

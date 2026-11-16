@@ -74,11 +74,12 @@ function show(text) {
   status.textContent = privateMode ? `Private mode · ${text}` : text;
 }
 
-function addMessage(speaker, text) {
+function addMessage(speaker, text, exchange) {
   const entry = document.createElement("article");
   const name = document.createElement("strong");
   const body = document.createElement("p");
   entry.dataset.speaker = speaker;
+  if (exchange) entry.dataset.exchange = exchange;
   name.textContent = speaker;
   body.textContent = text;
   entry.append(name, body);
@@ -159,8 +160,16 @@ async function turn(body, active = null) {
         showRememberStatus("Couldn’t save the key. You can still chat in this tab.");
       }
     }
-    addMessage("You", reply.heard);
-    addMessage("Iris", reply.text);
+    const deletedExchange = response.headers.get("X-Iris-Deleted-Exchange");
+    const exchange = response.headers.get("X-Iris-Exchange");
+    if (deletedExchange) {
+      for (const entry of messages.querySelectorAll("[data-exchange]")) {
+        if (entry.dataset.exchange === deletedExchange) entry.remove();
+      }
+    } else {
+      addMessage("You", reply.heard, exchange);
+    }
+    addMessage("Iris", reply.text, exchange);
     if (!spoken && message.value.trim() === body) message.value = "";
     if (reply.finished) session = newSession();
     if (spoken && reply.audio && voice === active) {
