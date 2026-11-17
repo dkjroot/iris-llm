@@ -19,6 +19,7 @@ from iris_memory.details import PendingDetail
 from iris_memory.recall import PendingRecall
 from iris_settings import Settings
 from iris_tools import ToolRegistry
+from iris_turn import check_deadline
 
 
 class ChatEngine:
@@ -111,7 +112,9 @@ class ChatEngine:
             + (FACE_PROMPT if face else "Output only the words Iris should say aloud.")
         )
         messages = fit(self.settings, system, self.history, event, [], self.memory_context)
+        check_deadline()
         reply = self.backend.complete(messages, [])
+        check_deadline()
         if (
             reply.role != "assistant"
             or reply.tool_calls
@@ -184,7 +187,9 @@ class ChatEngine:
                     )
             if check_cancelled is not None:
                 check_cancelled()
+            check_deadline()
             reply = self.backend.complete(messages, definitions)
+            check_deadline()
             if check_cancelled is not None:
                 check_cancelled()
             if reply.role != "assistant":

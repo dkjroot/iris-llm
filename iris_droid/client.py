@@ -13,7 +13,7 @@ from importlib.resources import files
 from math import isfinite
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from time import time_ns
 from typing import TYPE_CHECKING, Protocol, TypedDict
 from urllib.parse import urlsplit
@@ -36,6 +36,7 @@ from iris_droid.face_display import FaceDisplay
 from iris_droid.feedback import ClientFeedback
 from iris_droid.personalities import PERSONALITY_HEADER, load_personalities, personality_command
 from iris_droid.protocol import (
+    COMPLETION_HEADER,
     MAX_BODY,
     VOICE_CANCEL_PATH,
     VOICE_DECISION_PATH,
@@ -43,6 +44,7 @@ from iris_droid.protocol import (
     VOICE_TIMING_HEADER,
     VOICE_TURN_HEADER,
     TurnCancelled,
+    TurnCompletion,
     TurnReply,
     VoiceStreamStart,
     VoiceTiming,
@@ -55,6 +57,7 @@ from iris_droid.protocol import (
 )
 from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
 from iris_droid.wake import WakeDetector
+from iris_frames import ndjson_lines
 
 if TYPE_CHECKING:
     import numpy as np
@@ -114,6 +117,8 @@ class DroidClient:
             for name, context in load_personalities(personalities_file).items()
         }
         self.personality = next(iter(self.personality_headers), None)
+        self._personality_revision = 0
+        self._personality_lock = Lock()
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
@@ -124,7 +129,9 @@ class DroidClient:
     def select_personality(self, name: str) -> bool:
         if name not in self.personality_headers:
             return False
-        self.personality = name
+        with self._personality_lock:
+            self.personality = name
+            self._personality_revision += 1
         return True
 
     def turn(
@@ -136,7 +143,10 @@ class DroidClient:
             **self.headers,
             "Content-Type": "text/plain" if text_only or companion_idle else "audio/wav",
         }
-        if (personality := self.personality) is not None:
+        with self._personality_lock:
+            personality = self.personality
+            personality_revision = self._personality_revision
+        if personality is not None:
             headers[PERSONALITY_HEADER] = self.personality_headers[personality]
         if companion_idle:
             headers["X-Iris-Companion-Idle"] = "1"
@@ -154,9 +164,13 @@ class DroidClient:
             if (
                 companion_idle
                 or personality_command(reply.heard) != selected.casefold()
-                or not self.select_personality(selected)
+                or selected not in self.personality_headers
             ):
                 raise ValueError("Unexpected personality switch in server reply")
+            with self._personality_lock:
+                if self._personality_revision == personality_revision:
+                    self.personality = selected
+                    self._personality_revision += 1
         if reply.volume is not None:
             if companion_idle or reply.volume != volume_command(reply.heard):
                 raise ValueError("Unexpected speaker volume action")
@@ -180,6 +194,7 @@ class DroidClient:
         return reply
 
     def _request(self, path: str, body: bytes, headers: dict[str, str]) -> TurnReply:
+        headers = {**headers, COMPLETION_HEADER: "1", "Accept-Encoding": "identity"}
         if self.trace_voice:
             headers = {**headers, VOICE_TIMING_HEADER: "1"}
         if path != "/v1/text" and self.stream_player is not None:
@@ -188,14 +203,19 @@ class DroidClient:
             "POST", f"{self.url}{path}", content=body, headers=headers
         ) as response:
             response.raise_for_status()
+            if response.headers.get("Content-Encoding", "identity") != "identity":
+                raise httpx.RemoteProtocolError("Unexpected encoded Iris response")
             private = response.headers.get("X-Iris-Private")
             if private in {"0", "1"}:
                 self.private_mode = private == "1"
             if path == VOICE_CANCEL_PATH:
                 return self._cancellable_reply(response, headers[VOICE_TURN_HEADER])
             if response.headers.get("Content-Type") == VOICE_STREAM_TYPE:
-                lines = response.iter_lines()
-                return self._stream_reply(response, next(lines, ""), lines)
+                lines = self._frames(response)
+                try:
+                    return self._stream_reply(response, next(lines, ""), lines)
+                except ValueError as error:
+                    raise httpx.RemoteProtocolError(str(error), request=response.request) from error
             timing = response.headers.get(VOICE_TIMING_HEADER)
             data = bytearray()
             for chunk in response.iter_bytes():
@@ -203,6 +223,21 @@ class DroidClient:
                 if len(data) > MAX_BODY:
                     raise ValueError("Server response exceeds the transport size limit")
         reply = TurnReply.model_validate_json(bytes(data))
+        reply._exchange_id = response.headers.get("X-Iris-Exchange")
+        reply._deleted_exchange_id = response.headers.get("X-Iris-Deleted-Exchange")
+        if response.headers.get(COMPLETION_HEADER) == "1":
+            self._complete(
+                reply,
+                {
+                    "completion": {
+                        "outcome": "committed",
+                        "private": private == "1" if private in {"0", "1"} else None,
+                        "exchange_id": reply._exchange_id,
+                        "deleted_exchange_id": reply._deleted_exchange_id,
+                    }
+                },
+                response,
+            )
         if self.trace_voice and timing is not None:
             try:
                 reply._voice_timing = VoiceTiming.model_validate_json(timing)
@@ -210,8 +245,29 @@ class DroidClient:
                 print("Voice timing unavailable: invalid server timing.", flush=True)
         return reply
 
+    @staticmethod
+    def _frames(response: httpx.Response) -> Iterator[str]:
+        return ndjson_lines(
+            response.iter_bytes(),
+            max_frame=MAX_BODY * 3 + 1024,
+            max_total=MAX_BODY * 4 + 65536,
+            max_frames=8192,
+        )
+
+    def _complete(
+        self, reply: TurnReply, frame: dict[str, object], response: httpx.Response
+    ) -> None:
+        value = frame.get("completion")
+        if value is None and response.headers.get(COMPLETION_HEADER) != "1":
+            return  # Older servers do not promise authoritative final metadata.
+        completion = TurnCompletion.model_validate(value)
+        self.private_mode = completion.private
+        reply._completion = completion
+        reply._exchange_id = completion.exchange_id
+        reply._deleted_exchange_id = completion.deleted_exchange_id
+
     def _cancellable_reply(self, response: httpx.Response, turn_id: str) -> TurnReply:
-        lines = response.iter_lines()
+        lines = self._frames(response)
         if response.headers.get("Content-Type") != VOICE_STREAM_TYPE:
             raise httpx.RemoteProtocolError("Expected a cancellable voice stream")
         try:
@@ -306,11 +362,14 @@ class DroidClient:
                         return self._stream_reply(response, line, lines)
                     elif event == "result" and accepted:
                         reply = TurnReply.model_validate(frame.get("reply"))
+                        if next(lines, None) is not None:
+                            raise ValueError("Voice stream continued after completion")
                         private = frame.get("private")
                         if isinstance(private, bool):
                             self.private_mode = private
                         if self.trace_voice and frame.get("timing") is not None:
                             reply._voice_timing = VoiceTiming.model_validate(frame["timing"])
+                        self._complete(reply, frame, response)
                         return reply
                     else:
                         raise ValueError("Unexpected cancellable voice event")
@@ -327,9 +386,10 @@ class DroidClient:
         self, response: httpx.Response, first: str, lines: Iterator[str]
     ) -> TurnReply:
         timing: VoiceTiming | None = None
+        completion: dict[str, object] | None = None
 
         def chunks() -> Iterator[bytes]:
-            nonlocal timing
+            nonlocal timing, completion
             size = 0
             for line in lines:
                 if len(line) > MAX_BODY:
@@ -340,6 +400,9 @@ class DroidClient:
                 event = frame.get("event")
                 if event == "done":
                     timing = VoiceTiming.model_validate(frame.get("timing"))
+                    if next(lines, None) is not None:
+                        raise ValueError("Voice stream continued after completion")
+                    completion = frame
                     return
                 if event != "audio" or not isinstance(frame.get("pcm"), str):
                     raise ValueError("Voice stream stopped before the reply finished")
@@ -360,6 +423,8 @@ class DroidClient:
             completed = timing
             if completed is None:
                 raise ValueError("Incomplete voice stream")
+            assert completion is not None
+            self._complete(start.reply, completion, response)
         except ValueError as error:
             raise httpx.RemoteProtocolError(str(error), request=response.request) from error
         if self.trace_voice:

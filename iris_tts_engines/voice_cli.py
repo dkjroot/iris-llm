@@ -4,9 +4,10 @@ import argparse
 import re
 from pathlib import Path
 
+from iris_paths import server_config
 from iris_settings import ChatterboxSettings, PocketSettings, read_config
 from iris_tts_engines import pocket
-from iris_tts_engines.chatterbox import ROOT, VOICE_DIRECTORY, run_setup
+from iris_tts_engines.chatterbox import VOICE_DIRECTORY, run_setup
 
 VOICE_NAME = re.compile(r"[a-zA-Z0-9_-]{1,64}")
 
@@ -22,8 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("name", help="Name to show in the Iris voice picker")
     args = parser.parse_args(argv)
     try:
-        default = ROOT / "local-config.json"
-        config = read_config(args.config or (default if default.is_file() else None))
+        config = read_config(server_config(args.config))
 
         def setup(action: str, *options: str) -> None:
             if args.engine == "pocket":

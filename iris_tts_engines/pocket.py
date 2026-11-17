@@ -6,12 +6,14 @@ import subprocess
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from time import monotonic
 
 import numpy as np
 import numpy.typing as npt
 
 from iris_settings import PocketSettings
-from iris_tts_engines.chatterbox import ROOT, VOICE_DIRECTORY, SpeechWorker, open_worker
+from iris_tts_engines.chatterbox import ROOT, VOICE_DIRECTORY, Response, SpeechWorker, open_worker
+from iris_turn import TurnExpired
 
 MODEL_DIRECTORY = ROOT / ".cache" / "pocket-tts"
 WORKER = Path(__file__).with_name("pocket_worker.py")
@@ -49,9 +51,19 @@ class Pocket(SpeechWorker):
     def stream(self, text: str) -> Generator[bytes]:
         self.send(text)
         complete = False
+        expires = monotonic() + 180
+        size = 0
+
+        def receive() -> Response:
+            remaining = expires - monotonic()
+            if remaining <= 0:
+                self.process.kill()
+                raise TurnExpired("Pocket TTS response deadline expired")
+            return self.receive(timeout=remaining)
+
         try:
             while True:
-                reply = self.receive(timeout=180)
+                reply = receive()
                 if reply.status in {"done", "error"}:
                     complete = True
                     if reply.status == "error":
@@ -60,6 +72,10 @@ class Pocket(SpeechWorker):
                 if reply.status != "audio":
                     raise RuntimeError("Pocket TTS returned an unexpected response.")
                 pcm = base64.b64decode(reply.samples, validate=True)
+                size += len(pcm)
+                if size > 10_000_000:
+                    self.process.kill()
+                    raise RuntimeError("Pocket TTS reply exceeds the transport limit")
                 if not pcm or len(pcm) % 2:
                     raise RuntimeError("Pocket TTS returned invalid PCM.")
                 yield pcm
@@ -67,7 +83,7 @@ class Pocket(SpeechWorker):
             # A disconnected HTTP client stops receiving audio. Drain this request
             # before reusing the pipe so its remaining frames can't reach the next turn.
             if not complete and self.process.poll() is None:
-                while self.receive(timeout=180).status not in {"done", "error"}:
+                while receive().status not in {"done", "error"}:
                     pass
 
     def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:

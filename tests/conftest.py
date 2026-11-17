@@ -63,4 +63,5 @@ def isolated_client_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> P
     """Keep the checkout's local devices and server out of tests."""
     path = tmp_path / "client_config.json"
     monkeypatch.setattr("iris_droid.client_settings.DEFAULT_CLIENT_CONFIG", path)
+    monkeypatch.setattr("iris_paths.PROJECT_ROOT", tmp_path)
     return path

@@ -85,6 +85,28 @@ def test_schedule_uses_local_time_and_one_occurrence_in_repeated_hour():
     assert all(instant.date() != spring.date() for instant, _ in occurrences([rule], spring, zone))
 
 
+def test_long_downtime_chooses_latest_rule_and_manual_switch_supersedes_it(tmp_path):
+    switch = Switch()
+    clock = datetime(2026, 1, 1, tzinfo=UTC)
+    scheduler = Scheduler(
+        tmp_path / "home.sqlite3",
+        ZoneInfo("Europe/London"),
+        {"lamp": Device(switch, {})},
+        clock=lambda: clock,
+    )
+    try:
+        scheduler.save("lamp", plan())
+        clock = datetime(2026, 11, 8, tzinfo=UTC)
+        scheduler._next_delay(clock)
+        assert switch.commands == ["off"]
+        clock = datetime(2026, 11, 15, tzinfo=UTC)
+        scheduler.switch("lamp", "on")
+        scheduler._next_delay(clock)
+        assert switch.commands == ["off", "on"]
+    finally:
+        scheduler.db.close()
+
+
 def test_conversation_tools_reach_authenticated_home_service(tmp_path):
     lamp = Switch()
     devices = {"Living room lamp": Device(lamp, {})}

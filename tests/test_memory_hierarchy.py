@@ -347,7 +347,7 @@ def test_schema_five_upgrade_preserves_sources_and_private_policy(tmp_path):
     upgraded = SQLiteMemory(path)
     assert upgraded.policy("default") == (True, 1)
     assert upgraded.revision("default", conversation) == "source"
-    assert upgraded.export("default")["schema_version"] == 7
+    assert upgraded.export("default")["schema_version"] == 8
 
 
 @pytest.fixture
@@ -557,7 +557,7 @@ def test_schema_migration_failure_is_atomic_and_retryable(setup):
         assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_facts'").fetchone()
         db.execute("DROP TABLE memory_topics")
-    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 7
+    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 8
 
 
 def test_uncertain_correction_cannot_resurrect_original_explicit_value(setup):

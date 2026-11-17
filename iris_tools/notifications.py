@@ -9,6 +9,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from iris_settings import Settings
+from iris_turn import remaining_timeout
 
 
 class NotificationArguments(BaseModel):
@@ -64,7 +65,7 @@ class NotificationSender:
                 response = self.client.post(
                     "https://api.pushover.net/1/messages.json",
                     data=data,
-                    timeout=10,
+                    timeout=remaining_timeout(10),
                     follow_redirects=False,
                 )
                 if 400 <= response.status_code < 500:

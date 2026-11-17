@@ -6,6 +6,7 @@ import httpx
 from pydantic import BaseModel
 
 from iris_settings import Settings
+from iris_turn import remaining_timeout
 
 HOME_TOOLS = {
     "list_home_devices": ("list", "List the configured home devices and their configured meters."),
@@ -36,7 +37,9 @@ class HomeClient:
             return {"error": "The home service is not configured."}
         try:
             verify = ssl.create_default_context(cafile=str(self.ca)) if self.ca else True
-            with httpx.Client(verify=verify, trust_env=False, timeout=20) as client:
+            with httpx.Client(
+                verify=verify, trust_env=False, timeout=remaining_timeout(20)
+            ) as client:
                 response = client.post(
                     f"{self.url}/v1/{operation}",
                     json=args.model_dump(),

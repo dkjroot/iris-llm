@@ -1,8 +1,4 @@
-"""Desired outcomes for confirmed defects, kept separate from characterization.
-
-Remove each strict xfail when its fix lands. --runxfail demonstrates the current
-failure; only KnownReviewDefect can be expected, never a setup/transport error.
-"""
+"""Passing regressions for the defects reproduced during the initial review."""
 
 import json
 import sqlite3
@@ -24,33 +20,26 @@ from iris_memory.index import MemoryIndex
 from iris_memory.models import Note, Summary
 from iris_settings import Settings
 from iris_stt_engines.google_online import STT
-from tests.support import KnownReviewDefect, require_resolution
+from tests.support import require_resolution
 
 pytestmark = pytest.mark.review_regression
 
 
-@pytest.mark.parametrize(
-    "streaming",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                raises=KnownReviewDefect,
-                strict=True,
-                reason="R01: streamed confirmation precedes commit",
-            ),
-        ),
-    ],
-)
-@pytest.mark.parametrize("command", ["private", "detail", "forget"])
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("command", ["private", "private_off", "detail", "forget"])
 def test_failed_control_commit_never_delivers_success(brain_factory, streaming, command):
     harness = brain_factory(memory_enabled=True, replies=[])
     brain = harness.brain
     memory = brain.memory
     assert memory is not None
-    if command == "private":
-        utterance, target, operation = "private mode on", brain, "_set_private"
+    if command in {"private", "private_off"}:
+        if command == "private_off":
+            brain.turn("client", b"private mode on", text_only=True)
+        utterance, target, operation = (
+            "private mode off" if command == "private_off" else "private mode on",
+            brain,
+            "_set_private",
+        )
     elif command == "detail":
         brain.turn("client", b"remember colour as blue", text_only=True)
         utterance, target, operation = "confirm memory change", brain.details, "apply"
@@ -74,15 +63,12 @@ def test_failed_control_commit_never_delivers_success(brain_factory, streaming, 
                 brain.turn("client", write_wav(b"\1\0" * 1600, 16000))
     finally:
         STREAM_REPLY.reset(token)
-    assert not brain.private_mode
+    assert brain.private_mode is (command == "private_off")
     require_resolution(
         not delivered, f"R01: successful {command} confirmation escaped failed commit"
     )
 
 
-@pytest.mark.xfail(
-    raises=KnownReviewDefect, strict=True, reason="R08: full queue strands unqueued conversations"
-)
 def test_summary_backlog_eventually_includes_sources_beyond_queue_capacity(tmp_path):
     memory = SQLiteMemory(tmp_path / "archive.sqlite3")
     index = MemoryIndex(memory)
@@ -115,9 +101,6 @@ def test_summary_backlog_eventually_includes_sources_beyond_queue_capacity(tmp_p
     require_resolution(remaining == 0, f"R08: {remaining} conversations have stranded summary work")
 
 
-@pytest.mark.xfail(
-    raises=KnownReviewDefect, strict=True, reason="R09: recovery window misses pre-DST occurrence"
-)
 def test_weekly_recovery_crosses_a_skipped_dst_occurrence(tmp_path, fake_clock, fake_switch):
     fake_clock.set_wall_time(datetime(2026, 3, 21, tzinfo=UTC))
     scheduler = Scheduler(
@@ -145,9 +128,6 @@ def test_weekly_recovery_crosses_a_skipped_dst_occurrence(tmp_path, fake_clock, 
         scheduler.db.close()
 
 
-@pytest.mark.xfail(
-    raises=KnownReviewDefect, strict=True, reason="R10: older acknowledgement replaces newer choice"
-)
 def test_newer_touch_selection_survives_older_voice_acknowledgement(tmp_path):
     path = tmp_path / "personalities.json"
     path.write_text(json.dumps({"A": "Personality A", "B": "Personality B"}), encoding="utf-8")
@@ -167,9 +147,6 @@ def test_newer_touch_selection_survives_older_voice_acknowledgement(tmp_path):
         require_resolution(client.personality == "B", "R10: newer touch selection was overwritten")
 
 
-@pytest.mark.xfail(
-    raises=KnownReviewDefect, strict=True, reason="R04: Google recognition has no operation timeout"
-)
 def test_online_recognition_has_a_finite_network_timeout():
     import math
 
@@ -180,9 +157,6 @@ def test_online_recognition_has_a_finite_network_timeout():
     )
 
 
-@pytest.mark.xfail(
-    raises=KnownReviewDefect, strict=True, reason="R37: correction hides unrelated source evidence"
-)
 def test_correcting_one_claim_preserves_other_claims_in_the_same_exchange(tmp_path):
     memory = SQLiteMemory(tmp_path / "archive.sqlite3")
     index = MemoryIndex(memory)

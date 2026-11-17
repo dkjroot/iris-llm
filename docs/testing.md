@@ -51,22 +51,23 @@ platform and optional features when judging a change. A covered branch can still
 be wrong, and native model workers run in separate interpreters: this report does
 not claim to measure their execution. Tests for those adapters use fake models.
 
-Confirmed defects have small regression tests marked as strict expected failures.
-They assert the desired result, and only the specific `KnownReviewDefect` assertion
-can be expected. A setup error still fails normally. If a fix makes one pass,
-pytest fails with `XPASS(strict)` until its marker is removed. That stops a repaired
-bug from remaining hidden in the expected-failure list.
-
-To see the actual failures while working on them:
+The review regressions now pass normally. Run that original set with:
 
 ```sh
-python scripts/check.py -m review_regression --runxfail --artifacts
+python scripts/check.py -m review_regression --artifacts
 ```
 
-That command is intentionally red until the corresponding defects are fixed.
-Use `-rx` without `--runxfail` to see the reasons in a normal test run. Finding IDs
-are stable labels; each test includes an explanation, so it doesn't depend on
-having the maintainer's local review notes.
+Include `--browser` to exercise the browser personality regression too. Additional
+failure checks live in `test_phase1_boundaries.py` and `test_phase1_persistence.py`.
+They cover upload/admission limits, deadlines, stream completion and framing,
+archive backlog recovery, migration rollback and interrupted configuration writes.
+
+If a future confirmed defect temporarily needs an expected-failure test, use a
+strict marker restricted to its specific defect assertion. Setup errors must
+still fail normally. An unexpected pass must fail CI until the marker is removed.
+Use `--runxfail` to check the actual failure and `-rx` to see recorded reasons.
+Finding IDs are stable labels; each regression explains the behaviour without
+depending on the maintainer's local review notes.
 
 ## Check the installed wheel
 
@@ -82,9 +83,8 @@ the working directory and `PYTHONPATH`. Third-party dependencies come from the
 prepared test environment; Iris itself must come from the new installation.
 
 This catches missing files that an editable install can hide. It isn't a test of
-dependency resolution on a completely clean machine. The missing client wizard
-is currently recorded as a strict expected failure; the remaining installed
-entry points and selected resources must pass.
+dependency resolution on a completely clean machine. The server and client
+wizards, other installed entry points and selected resources must all pass.
 
 ## JavaScript and browser checks
 

@@ -75,3 +75,24 @@ for number, line in enumerate(sys.stdin, start=1):
     assert rate == 24000
     np.testing.assert_array_equal(first, [0.25])
     np.testing.assert_array_equal(second, [0.5])
+
+
+@pytest.mark.parametrize(
+    "bad_reply", ["'x' * 129", "'not-json\\n'", '\'{\\"status\\":\\"audio\\"}\'']
+)
+def test_worker_invalid_or_unterminated_frame_fails_and_closes(tmp_path, monkeypatch, bad_reply):
+    worker = tmp_path / "broken_worker.py"
+    worker.write_text(
+        "import sys\n"
+        'print(\'{"status":"ready"}\', flush=True)\n'
+        "sys.stdin.readline()\n"
+        f"sys.stdout.write({bad_reply})\n"
+        "sys.stdout.flush()\n"
+    )
+    monkeypatch.setattr(chatterbox, "MAX_WORKER_FRAME", 128)
+    with chatterbox.open_worker(
+        [sys.executable, "-I", "-u", str(worker)], chatterbox.Chatterbox, "Synthetic", {}
+    ) as tts:
+        with pytest.raises(RuntimeError):
+            tts.synthesize("Hello")
+    assert tts.process.poll() is not None

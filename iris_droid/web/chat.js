@@ -15,12 +15,14 @@ const rememberOption = document.querySelector("#remember-option");
 const rememberStatus = document.querySelector("#remember-status");
 const storageKey = "iris.droid.connection-key";
 const phraseLimit = Number(document.body.dataset.phraseLimit);
+const turnTimeout = Number(document.body.dataset.turnTimeout);
 let session = newSession();
 let voice = null;
 let pending = false;
 let privateMode = false;
 let savedToken = null;
 let personality = null;
+let personalityRevision = 0;
 let faceTimer;
 const face = { head: savedFace(), activity: "idle", expression: "neutral", showIdle: true };
 
@@ -52,6 +54,7 @@ const menu = mountMenu({
   },
   selectPersonality(name) {
     personality = name;
+    personalityRevision += 1;
   },
 });
 
@@ -168,6 +171,7 @@ async function playReply(active, wav) {
 async function turn(body, active = null) {
   const spoken = active !== null;
   const token = key.value;
+  const selectionRevision = personalityRevision;
   pending = true;
   send.disabled = true;
   key.readOnly = true;
@@ -190,6 +194,7 @@ async function turn(body, active = null) {
       },
       body,
       redirect: "error",
+      signal: AbortSignal.timeout(turnTimeout * 1000),
     });
     const reply = await response.json();
     if (!response.ok) {
@@ -204,8 +209,9 @@ async function turn(body, active = null) {
       throw new Error(reply.error || "Iris couldn’t answer.");
     }
     privateMode = response.headers.get("X-Iris-Private") === "1";
-    if (reply.selected_personality) {
+    if (reply.selected_personality && personalityRevision === selectionRevision) {
       personality = reply.selected_personality;
+      personalityRevision += 1;
       menu.setActive(personality);
     }
     connection.open = false;
@@ -244,7 +250,9 @@ async function turn(body, active = null) {
     }
   } catch (error) {
     disableMic();
-    feedback = error instanceof TypeError ? "Couldn’t reach Iris. Check the connection." : error.message;
+    feedback = error.name === "TimeoutError"
+      ? "Iris took too long. Check any device action before trying again."
+      : error instanceof TypeError ? "Couldn’t reach Iris. Check the connection." : error.message;
   } finally {
     const currentTrack = voice?.stream?.getAudioTracks()[0];
     if (currentTrack) currentTrack.enabled = true;

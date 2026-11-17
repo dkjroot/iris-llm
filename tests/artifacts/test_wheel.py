@@ -1,6 +1,6 @@
 import pytest
 
-from tests.support import KnownReviewDefect, require_resolution
+from tests.support import require_resolution
 
 pytestmark = pytest.mark.artifact
 
@@ -9,6 +9,7 @@ def test_installed_entrypoints_and_resources_work_without_the_checkout(installed
     assert set(installed_artifact["entrypoints"]) == {
         "iris",
         "iris-configure",
+        "iris-configure-client",
         "iris-droid",
         "iris-droid-server",
         "iris-home",
@@ -20,9 +21,6 @@ def test_installed_entrypoints_and_resources_work_without_the_checkout(installed
 
 
 @pytest.mark.review_regression
-@pytest.mark.xfail(
-    raises=KnownReviewDefect, strict=True, reason="R11: configure_client is missing from the wheel"
-)
 def test_client_wizard_is_available_in_the_installed_wheel(installed_artifact):
     require_resolution(
         installed_artifact["modules"]["configure_client"],

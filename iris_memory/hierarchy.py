@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from iris_chat_engines.budget import estimate
 from iris_chat_engines.messages import ChatError, Message
 from iris_memory.controls import MemoryPolicyError
+from iris_turn import check_deadline
 
 if TYPE_CHECKING:
     from iris_chat_engines.backends import ChatBackend
@@ -306,7 +307,9 @@ class Hierarchy:
             else:
                 return None
         try:
+            check_deadline()
             reply = self.backend.complete(messages, [])
+            check_deadline()
             if (
                 reply.role != "assistant"
                 or reply.tool_calls

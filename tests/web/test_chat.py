@@ -1,7 +1,7 @@
 import pytest
 
 from iris_droid.protocol import read_wav
-from tests.support import KnownReviewDefect, require_resolution
+from tests.support import require_resolution
 
 pytestmark = pytest.mark.browser
 
@@ -78,11 +78,6 @@ def test_authentication_failure_leaves_chat_usable(web_page):
 
 
 @pytest.mark.review_regression
-@pytest.mark.xfail(
-    raises=KnownReviewDefect,
-    strict=True,
-    reason="R10: browser applies an older personality acknowledgement",
-)
 def test_browser_keeps_newer_menu_selection_while_voice_switch_is_pending(web_page):
     from playwright.sync_api import expect
 
@@ -114,3 +109,32 @@ def test_browser_keeps_newer_menu_selection_while_voice_switch_is_pending(web_pa
         friend.get_attribute("aria-pressed") == "true",
         "R10: browser replaced the newer Friend selection",
     )
+
+
+def test_turn_timeout_restores_controls_without_retrying_or_displaying_success(web_page):
+    from playwright.sync_api import expect
+
+    page, _ = web_page
+    page.evaluate("""() => {
+      const timeout = AbortSignal.timeout.bind(AbortSignal);
+      AbortSignal.timeout = milliseconds => {
+        if (milliseconds <= 5000) return timeout(milliseconds);
+        const controller = new AbortController();
+        window.expireTurn = () => controller.abort(new DOMException('Timed out', 'TimeoutError'));
+        return controller.signal;
+      };
+    }""")
+    held = []
+    page.route("**/v1/text", lambda route: held.append(route))
+    page.locator("#message").fill("Turn on the lamp")
+    with page.expect_request("**/v1/text"):
+        page.locator("#send").click()
+    expect(page.locator("#send")).to_be_disabled()
+    page.evaluate("window.expireTurn()")
+    expect(page.locator("#status")).to_have_text(
+        "Iris took too long. Check any device action before trying again."
+    )
+    expect(page.locator("#send")).to_be_enabled()
+    expect(page.locator("#key")).to_be_editable()
+    expect(page.locator("#messages article")).to_have_count(0)
+    assert len(held) == 1

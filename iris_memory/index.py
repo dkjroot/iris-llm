@@ -1,4 +1,4 @@
-"""SQLite derived data and a bounded, restartable serial summarisation queue."""
+"""SQLite derived data and durable summary jobs processed in bounded serial steps."""
 
 from __future__ import annotations
 
@@ -72,6 +72,30 @@ def index_exchange(db: sqlite3.Connection, row: sqlite3.Row) -> None:
             )
 
 
+def repair_source_visibility(db: sqlite3.Connection) -> None:
+    """Schema 8 repair using a temporary index, without requiring SQLite JSON1."""
+    db.execute(
+        "CREATE TEMP TABLE repair_note_sources (owner TEXT, conversation TEXT, source TEXT, "
+        "superseded INTEGER, PRIMARY KEY(owner,conversation,source,superseded)) WITHOUT ROWID"
+    )
+    for row in db.execute("SELECT owner,conversation,sources,status FROM notes"):
+        db.executemany(
+            "INSERT OR IGNORE INTO repair_note_sources VALUES (?,?,?,?)",
+            (
+                (row["owner"], row["conversation"], source, row["status"] == "superseded")
+                for source in json.loads(row["sources"])
+            ),
+        )
+    db.execute(
+        "UPDATE chunks SET superseded=0 WHERE superseded=1 "
+        "AND EXISTS(SELECT 1 FROM repair_note_sources s WHERE s.owner=chunks.owner "
+        "AND s.conversation=chunks.conversation AND s.source=chunks.exchange AND s.superseded=0) "
+        "AND EXISTS(SELECT 1 FROM repair_note_sources s WHERE s.owner=chunks.owner "
+        "AND s.conversation=chunks.conversation AND s.source=chunks.exchange AND s.superseded=1)"
+    )
+    db.execute("DROP TABLE repair_note_sources")
+
+
 def migrate(db: sqlite3.Connection) -> None:
     try:
         db.execute("CREATE VIRTUAL TABLE temp.iris_fts_probe USING fts5(text)")
@@ -91,7 +115,7 @@ def migrate(db: sqlite3.Connection) -> None:
     )
     db.execute(
         "INSERT INTO summary_jobs(conversation,owner) SELECT DISTINCT conversation,owner "
-        "FROM exchanges ORDER BY sequence DESC LIMIT 64"
+        "FROM exchanges ORDER BY sequence"
     )
 
 
@@ -123,12 +147,23 @@ class MemoryIndex:
                 "SELECT id,owner FROM conversations c WHERE owner=? AND id=? "
                 "AND EXISTS (SELECT 1 FROM exchanges e WHERE e.conversation=c.id "
                 "AND e.sequence>COALESCE((SELECT MAX(through_sequence) FROM summaries "
-                "WHERE conversation=c.id),0)) AND (SELECT count(*) FROM summary_jobs)<64",
+                "WHERE conversation=c.id),0))",
                 (owner, conversation),
             )
 
     def next_conversation(self, owner: str, exclude: str) -> str | None:
         with self.archive.connect() as db:
+            # Older versions capped durable jobs at 64. Rediscover their omitted
+            # sources without resetting failed jobs or their explicit retry policy.
+            db.execute(
+                "INSERT OR IGNORE INTO summary_jobs(conversation,owner) "
+                "SELECT c.id,c.owner FROM conversations c WHERE c.owner=? AND c.id!=? "
+                "AND NOT EXISTS(SELECT 1 FROM summary_jobs j WHERE j.conversation=c.id) "
+                "AND EXISTS(SELECT 1 FROM exchanges e WHERE e.conversation=c.id "
+                "AND e.sequence>COALESCE((SELECT MAX(through_sequence) FROM summaries "
+                "WHERE conversation=c.id),0)) ORDER BY c.rowid",
+                (owner, exclude),
+            )
             row = db.execute(
                 "SELECT conversation FROM summary_jobs WHERE owner=? AND conversation!=? "
                 "AND attempts<3 AND retry_at<=? ORDER BY rowid LIMIT 1",
@@ -150,7 +185,7 @@ class MemoryIndex:
             db.execute(
                 "INSERT INTO summary_jobs(conversation,owner) SELECT conversation,owner "
                 "FROM exchanges WHERE owner=? GROUP BY conversation "
-                "ORDER BY MAX(sequence) DESC LIMIT MAX(0,64-(SELECT count(*) FROM summary_jobs))",
+                "ORDER BY MIN(sequence)",
                 (owner,),
             )
 
@@ -237,6 +272,7 @@ class MemoryIndex:
                 "VALUES (?,?,?,?,?)",
                 (sid, owner, conversation, through, summary.model_dump_json()),
             )
+            affected_sources: set[str] = set()
             for number, note in enumerate(summary.notes):
                 for old in note.supersedes:
                     previous = db.execute(
@@ -245,8 +281,7 @@ class MemoryIndex:
                     ).fetchone()
                     if previous:
                         db.execute("UPDATE notes SET status='superseded' WHERE id=?", (old,))
-                        for source in json.loads(previous[0]):
-                            db.execute("UPDATE chunks SET superseded=1 WHERE exchange=?", (source,))
+                        affected_sources.update(json.loads(previous[0]))
                 db.execute(
                     "INSERT INTO notes VALUES (?,?,?,?,?,?,?,?,?)",
                     (
@@ -259,6 +294,25 @@ class MemoryIndex:
                         note.scope,
                         note.status,
                         json.dumps(note.sources),
+                    ),
+                )
+            # A source can support several independent notes. Retire it only
+            # when none of those claims remains current, after all replacements
+            # have been inserted. Original exchanges are never changed here.
+            if affected_sources:
+                current_sources: set[str] = set()
+                for row in db.execute(
+                    "SELECT sources FROM notes WHERE owner=? AND conversation=? "
+                    "AND status!='superseded'",
+                    (owner, conversation),
+                ):
+                    current_sources.update(affected_sources.intersection(json.loads(row[0])))
+                db.executemany(
+                    "UPDATE chunks SET superseded=? WHERE owner=? AND conversation=? "
+                    "AND exchange=?",
+                    (
+                        (source not in current_sources, owner, conversation, source)
+                        for source in affected_sources
                     ),
                 )
             db.execute(

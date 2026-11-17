@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
 
 from pydantic import TypeAdapter
 
+from iris_paths import atomic_json, server_config
 from iris_settings import (
     DEFAULT_CHAT_BASE_URL,
     DEFAULT_CHAT_MODEL,
@@ -15,8 +17,6 @@ from iris_settings import (
     Settings,
     load_settings,
 )
-
-ROOT = Path(__file__).resolve().parent
 
 # Everything else in Settings is offered in the advanced section automatically.
 # New server settings must not silently become JSON-only knobs.
@@ -228,9 +228,13 @@ def configure_chat(data: dict[str, Any], previous: Settings) -> None:
         print("Enter the model ID you want Iris to use.")
 
 
-def main() -> int:
-    path = ROOT / "local-config.json"
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, help="Configuration file to create or update")
+    args = parser.parse_args(argv)
     try:
+        path = server_config(args.config, for_write=True)
+        assert path is not None
         print("Let's set up the PC server for Iris Droid.")
         print(
             "The laptop or Pi looks after the microphone, listening mode and speaker. "
@@ -386,11 +390,7 @@ def main() -> int:
         if choose("Configure advanced server settings", ["yes", "no"], "no") == "yes":
             configure_advanced(data)
         settings = Settings.model_validate(data)
-        path.write_text(
-            json.dumps(settings.model_dump(mode="json"), indent=4) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        atomic_json(path, settings.model_dump(mode="json"))
         print("Saved", path)
         for explanation in ENVIRONMENT_SETTINGS.values():
             print(explanation)

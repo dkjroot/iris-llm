@@ -18,6 +18,7 @@ VOICE_STREAM_TYPE = "application/x-iris-voice+ndjson"
 VOICE_CANCEL_PATH = "/v1/voice/cancellable"
 VOICE_DECISION_PATH = "/v1/voice/decision"
 VOICE_TURN_HEADER = "X-Iris-Turn"
+COMPLETION_HEADER = "X-Iris-Completion"
 
 
 class TurnCancelled(Exception):
@@ -68,6 +69,16 @@ class VoiceTiming(BaseModel):
     audio_seconds: float = Field(ge=0, allow_inf_nan=False)
 
 
+class TurnCompletion(BaseModel):
+    """Authoritative server outcome, not proof that the client played the audio."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    outcome: Literal["committed"]
+    private: bool
+    exchange_id: str | None = Field(default=None, min_length=1, max_length=128)
+    deleted_exchange_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class TurnReply(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     heard: str
@@ -82,6 +93,7 @@ class TurnReply(BaseModel):
     _streamed: bool = PrivateAttr(default=False)
     _exchange_id: str | None = PrivateAttr(default=None)
     _deleted_exchange_id: str | None = PrivateAttr(default=None)
+    _completion: TurnCompletion | None = PrivateAttr(default=None)
 
 
 class VoiceStreamStart(BaseModel):

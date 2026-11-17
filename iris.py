@@ -12,9 +12,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from iris_chat_engines.backends import chat_headers
 from iris_chat_engines.messages import ChatError
+from iris_paths import server_config
 from iris_settings import Settings, load_settings
-
-ROOT = Path(__file__).resolve().parent
 
 
 def download_models(settings: Settings) -> None:
@@ -120,10 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             return client_main(remaining)
         import configure
 
-        if remaining:
-            print("Usage: python iris.py configure")
-            return 2
-        return configure.main()
+        return configure.main(remaining)
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", nargs="?", choices=commands)
@@ -143,8 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     try:
-        default = ROOT / "local-config.json"
-        settings = load_settings(args.config or (default if default.exists() else None))
+        settings = load_settings(server_config(args.config))
         if args.list_voices:
             from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
 

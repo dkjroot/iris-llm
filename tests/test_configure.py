@@ -1,4 +1,5 @@
 import json
+from contextlib import chdir
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,10 +18,10 @@ def test_default_wizard_produces_droid_config_without_desktop_prompts(tmp_path: 
         return "koboldcpp/gemma-model" if prompt.startswith("Model name") else ""
 
     with (
-        patch.object(configure, "ROOT", tmp_path),
+        chdir(tmp_path),
         patch("builtins.input", side_effect=answer),
     ):
-        assert configure.main() == 0
+        assert configure.main([]) == 0
     path = tmp_path / "local-config.json"
     settings = load_settings(path)
     assert settings.base_url == "http://127.0.0.1:5001/v1"
@@ -38,8 +39,8 @@ def test_cancelled_configuration_preserves_existing_file(tmp_path: Path) -> None
     path = tmp_path / "local-config.json"
     original = '{"model": "existing"}\n'
     path.write_text(original, encoding="utf-8")
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=EOFError):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=EOFError):
+        assert configure.main([]) == 0
     assert path.read_text(encoding="utf-8") == original
 
 
@@ -60,11 +61,11 @@ def test_openrouter_preset_saves_connection_and_pocket_voice(tmp_path, monkeypat
             return "pocket"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path):
+    with chdir(tmp_path):
         with patch("builtins.input", side_effect=answer):
-            assert configure.main() == 0
+            assert configure.main([]) == 0
         with patch("builtins.input", return_value=""):
-            assert configure.main() == 0
+            assert configure.main([]) == 0
     saved = json.loads((tmp_path / "local-config.json").read_text())
     assert saved["base_url"] == OPENROUTER_BASE_URL
     assert saved["model"] == "example/model"
@@ -86,10 +87,10 @@ def test_kokoro_wizard_offers_named_voices_and_saves_selection(
         return ""
 
     with (
-        patch.object(configure, "ROOT", tmp_path),
+        chdir(tmp_path),
         patch("builtins.input", side_effect=answer),
     ):
-        assert configure.main() == 0
+        assert configure.main([]) == 0
     settings = load_settings(tmp_path / "local-config.json")
     assert settings.tts_engine == "kokoro" and settings.kokoro_voice == "bf_emma"
     assert settings.kokoro_speed == 1.3
@@ -123,8 +124,8 @@ def test_voice_wizard_lists_and_saves_prepared_voice(
             return "file:voice_sample"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     settings = load_settings(tmp_path / "local-config.json")
     assert settings.tts_engine == engine
     assert getattr(settings, f"{engine}_voice") == "voice_sample"
@@ -151,8 +152,8 @@ def test_existing_config_switches_to_droid_tts_and_preserves_other_settings(
         encoding="utf-8",
     )
     monkeypatch.setenv("IRIS_API_KEY", "test-secret-that-must-not-be-saved")
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", return_value=""):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", return_value=""):
+        assert configure.main([]) == 0
     settings = load_settings(path)
     assert settings.tts_engine == "kokoro"
     assert settings.kokoro_voice == "bf_emma" and settings.kokoro_speed == 1.3
@@ -179,8 +180,8 @@ def test_wizard_configures_optional_online_weather_without_enabling_remote_chat(
             return "Edinburgh"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     settings = load_settings(tmp_path / "local-config.json")
     assert settings.tools_enabled and settings.weather_enabled
     assert settings.weather_location == "Edinburgh" and settings.weather_country == "GB"
@@ -198,8 +199,8 @@ def test_wizard_configures_notifications_without_saving_keys(tmp_path, monkeypat
             return "iphone"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     path = tmp_path / "local-config.json"
     settings = load_settings(path)
     assert settings.notifications_enabled and settings.pushover_device == "iphone"
@@ -227,8 +228,8 @@ def test_memory_setup_offers_followups_and_search_and_preserves_defaults(tmp_pat
         prompts.append(prompt)
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     settings = load_settings(path)
     assert settings.memory_companion_followups is enabled
     assert settings.memory_search_tool is enabled
@@ -244,8 +245,8 @@ def test_memory_followups_can_be_enabled_in_wizard(tmp_path):
             return "no"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     settings = load_settings(tmp_path / "local-config.json")
     assert settings.memory_enabled and settings.memory_companion_followups
     assert not settings.memory_search_tool
@@ -276,8 +277,8 @@ def test_advanced_setup_exposes_all_remaining_server_fields_and_saves_typed_valu
             return "yes"
         return answers.get(prompt.split(" — ")[0], "")
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     offered = {p.split(" — ")[0] for p in prompts if " — " in p}
     assert (
         offered
@@ -310,8 +311,8 @@ def test_advanced_setup_reprompts_for_bad_types_bounds_and_json(tmp_path):
         name = prompt.split(" — ")[0]
         return next(values[name]) if name in values else ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     settings = load_settings(tmp_path / "local-config.json")
     assert settings.max_tokens == 500 and settings.device == "cpu"
     assert settings.chat_request_options == {"top_p": 0.8}
@@ -330,8 +331,8 @@ def test_disabling_memory_turns_off_followups_and_keeps_timezone_available_witho
             return "America/New_York"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     settings = load_settings(path)
     assert not settings.memory_enabled and not settings.memory_companion_followups
     assert not settings.tools_enabled and settings.local_timezone == "America/New_York"
@@ -350,6 +351,6 @@ def test_cancelling_advanced_configuration_keeps_file_unchanged(tmp_path):
             raise EOFError
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     assert path.read_text() == original

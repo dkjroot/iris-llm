@@ -69,13 +69,15 @@ from pathlib import Path
 target = Path(sys.argv[1]).resolve()
 sys.path[:0] = [str(target), *json.loads(sys.argv[2])]
 modules = {}
-for name in ("iris", "configure", "configure_client", "iris_droid.client", "iris_droid.server",
+for name in ("iris", "configure", "configure_client", "iris_paths", "iris_turn", "iris_frames",
+             "iris_droid.client", "iris_droid.server",
              "iris_home.service", "iris_memory.cli", "iris_tts_engines.pocket_worker"):
     spec = importlib.util.find_spec(name)
     modules[name] = spec is not None
     if spec is not None:
         module = importlib.import_module(name)
         assert Path(module.__file__).resolve().is_relative_to(target), module.__file__
+assert not importlib.import_module("iris_paths").runtime_data_root().is_relative_to(target)
 entries = []
 dist = importlib.metadata.distribution("iris-llm")
 for entry in dist.entry_points:
@@ -83,7 +85,8 @@ for entry in dist.entry_points:
         function = entry.load()
         assert callable(function)
         entries.append(entry.name)
-for module_name in ("iris", "iris_droid.client", "iris_droid.server", "iris_home.service"):
+for module_name in ("iris", "configure", "configure_client", "iris_droid.client",
+                    "iris_droid.server", "iris_home.service"):
     sys.argv = [module_name, "--help"]
     output = io.StringIO()
     with contextlib.redirect_stdout(output):

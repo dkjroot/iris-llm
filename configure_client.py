@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 from configure import choose
 from iris_droid import client_settings
@@ -17,6 +18,7 @@ from iris_droid.client_settings import (
 )
 from iris_droid.companion import CompanionTimer
 from iris_droid.conversation import WakeConversation
+from iris_paths import atomic_json
 from iris_settings import read_config
 
 BASIC_SETTINGS = (
@@ -58,8 +60,10 @@ def prompt_setting(action: argparse.Action, data: dict[str, object]) -> None:
             return
 
 
-def main() -> int:
-    path = client_settings.DEFAULT_CLIENT_CONFIG
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=client_settings.DEFAULT_CLIENT_CONFIG)
+    path = parser.parse_args(argv).config.expanduser()
     try:
         print("Let's set up the Iris client on this machine.")
         print("Press Enter to keep a value. Enter null to clear an optional setting.")
@@ -84,7 +88,7 @@ def main() -> int:
             raise ValueError(
                 "Wake activation and voice cancellation need a local Vosk model folder"
             )
-        path.write_text(json.dumps(data, indent=4, allow_nan=False) + "\n", encoding="utf-8")
+        atomic_json(path, data)
         print(f"Saved {path.resolve()}")
         print("Start Iris from this directory with python iris.py client.")
         return 0

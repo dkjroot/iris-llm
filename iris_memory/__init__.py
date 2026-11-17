@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from iris_memory.controls import MemoryPolicyError
 from iris_settings import Settings
+from iris_turn import check_deadline, remaining_timeout
 
 AUTOMATIC_EVENT = "[Automatic companion event, not human speech: offer a conversation opener.]"
 
@@ -122,6 +123,14 @@ class SQLiteMemory:
                 db.execute("ALTER TABLE memory_facts ADD COLUMN status_before_supersession TEXT")
                 db.execute("PRAGMA user_version=7")
                 version = 7
+            if version == 7 and create:
+                # Repair derived visibility from the old whole-exchange note
+                # invalidation. A current independent claim must retain its source.
+                from iris_memory.index import repair_source_visibility
+
+                repair_source_visibility(db)
+                db.execute("PRAGMA user_version=8")
+                version = 8
             if version >= 2 and create:
                 try:
                     db.execute("SELECT rowid FROM chunks_fts LIMIT 0")
@@ -130,20 +139,23 @@ class SQLiteMemory:
                         "Conversation memory needs a working SQLite FTS5 index. "
                         "Check your Python installation and archive."
                     ) from error
-            if version not in {1, 2, 3, 4, 5, 6, 7}:
+            if version not in {1, 2, 3, 4, 5, 6, 7, 8}:
                 raise ValueError("Unsupported Iris memory schema version")
 
     @contextmanager
     def connect(self, *, create: bool = False) -> Iterator[sqlite3.Connection]:
         # mode=rw avoids accidentally recreating a deleted archive during a running session.
         mode = "rwc" if create else "rw"
-        db = sqlite3.connect(f"{self.path.as_uri()}?mode={mode}", uri=True, timeout=2)
+        db = sqlite3.connect(
+            f"{self.path.as_uri()}?mode={mode}", uri=True, timeout=remaining_timeout(2)
+        )
         db.row_factory = sqlite3.Row
         try:
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA secure_delete=ON")
             with db:
                 yield db
+                check_deadline()  # Expired writes roll back before committing.
         finally:
             db.close()
 
@@ -298,8 +310,7 @@ class SQLiteMemory:
                 row = db.execute("SELECT * FROM exchanges WHERE id=?", (exchange.id,)).fetchone()
                 index_exchange(db, row)
                 db.execute(
-                    "INSERT OR IGNORE INTO summary_jobs(conversation,owner) "
-                    "SELECT ?,? WHERE (SELECT count(*) FROM summary_jobs)<64",
+                    "INSERT OR IGNORE INTO summary_jobs(conversation,owner) VALUES (?,?)",
                     (conversation, owner),
                 )
 

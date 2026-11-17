@@ -249,6 +249,12 @@ configuration files have their desktop-only fields removed when loaded, and
 old system/Google voice choices are switched to Kokoro. Run configuration again
 to save the cleaned-up file.
 
+Setup, diagnostics and server commands now use the same configuration-file
+selection rules. Both configuration wizards also accept `--config`. See
+[configuration, request limits and upgrade details](docs/runtime-contracts.md)
+if you run Iris from another directory, install a wheel, or update an existing
+conversation archive.
+
 #### Optional skills: the clock, local weather and phone notifications
 
 Iris can let the model choose when to use a skill during a conversation. There
@@ -2145,7 +2151,8 @@ continue on the next conversation turn.
 Summaries use the configured chat model with no tools, a separate
 `memory_summary_tokens` output allowance, and at most twelve original exchanges
 per request. Each turn or control checkpoint processes at most one batch. The
-persistent queue holds at most 64 conversations. Summary calls run serially with
+durable queue retains work for every pending conversation; the processing batch,
+rather than the archive or backlog, is bounded. Summary calls run serially with
 chat, so a checkpoint adds model latency; it doesn't generate simultaneously in
 the background. Enable `trace` temporarily to see their timings, remembering that
 trace also prints conversation text.
@@ -2156,8 +2163,11 @@ available, and normal chat falls back to recent text and whatever reference data
 still works. If a single source exchange is too large, the summary gets labelled
 beginning-and-end excerpts; notes from that partial view stay tentative. The full
 source is still stored and searchable. Corrections that the summariser identifies
-supersede older notes and exclude their source excerpts from normal search. This
-is model-assisted bookkeeping, so inspect the export if a recalled detail seems
+supersede older notes. A source excerpt is excluded from normal search only when
+none of its summary notes remains current; correcting one claim mustn't hide an
+unrelated claim from the same original exchange. Retained excerpts are historical
+text, not a declaration that every claim in them is still current. This is
+model-assisted bookkeeping, so inspect the export if a recalled detail seems
 wrong; it isn't a guarantee that the model recognises every contradiction.
 
 The database upgrades existing archives automatically when the enabled server

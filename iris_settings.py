@@ -77,6 +77,10 @@ class Settings(ChatterboxSettings, PocketSettings):
     memory_owner: str = Field(default="default", min_length=1, max_length=100, pattern=r"^\S+$")
     memory_context_chars: int = Field(default=24000, ge=0, le=200000)
     timeout: float = Field(default=120, gt=0, le=600)
+    turn_timeout: float = Field(default=600, gt=0, le=3600, allow_inf_nan=False)
+    upload_timeout: float = Field(default=15, gt=0, le=120, allow_inf_nan=False)
+    queue_timeout: float = Field(default=30, gt=0, le=600, allow_inf_nan=False)
+    max_pending_turns: int = Field(default=8, ge=1, le=32)
     trace: bool = False
     reply_encoding: Literal["text", "html", "double-html"] = "text"
     tools_enabled: bool = True

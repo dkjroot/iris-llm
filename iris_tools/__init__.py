@@ -17,6 +17,7 @@ from iris_home.protocol import OPERATIONS
 from iris_settings import Settings
 from iris_tools.home import HOME_TOOLS, HomeClient
 from iris_tools.notifications import NotificationArguments, NotificationSender
+from iris_turn import check_deadline, remaining_timeout
 
 
 class NoArguments(BaseModel):
@@ -205,6 +206,7 @@ class ToolRegistry:
         return instructions
 
     def execute(self, name: str, arguments: str) -> str:
+        check_deadline()
         started = time.monotonic()
         skill = self.skills.get(name)
         if skill is None:
@@ -219,6 +221,7 @@ class ToolRegistry:
             else:
                 try:
                     result = skill.run(parsed)
+                    check_deadline()
                 except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
                     result = {
                         "error": "The skill failed or returned invalid data. "
@@ -254,7 +257,7 @@ class ToolRegistry:
                     "language": "en",
                     "format": "json",
                 },
-                timeout=10,
+                timeout=remaining_timeout(10),
                 follow_redirects=False,
             )
             response.raise_for_status()
@@ -283,7 +286,7 @@ class ToolRegistry:
                 "daily": "weather_code,temperature_2m_max,temperature_2m_min,"
                 "precipitation_probability_max,precipitation_sum,wind_speed_10m_max",
             },
-            timeout=10,
+            timeout=remaining_timeout(10),
             follow_redirects=False,
         )
         response.raise_for_status()

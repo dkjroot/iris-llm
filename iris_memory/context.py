@@ -15,6 +15,7 @@ from iris_memory.hierarchy import Hierarchy
 from iris_memory.index import MemoryIndex
 from iris_memory.models import Summary
 from iris_settings import Settings
+from iris_turn import check_deadline
 
 LOGGER = logging.getLogger(__name__)
 
@@ -138,7 +139,9 @@ class MemoryContext:
         revision = self.index.archive.revision(owner, conversation)
         started = time.monotonic()
         try:
+            check_deadline()
             reply = self.backend.complete(messages, [])
+            check_deadline()
             if (
                 reply.role != "assistant"
                 or reply.tool_calls

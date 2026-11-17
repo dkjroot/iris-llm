@@ -14,7 +14,7 @@ def test_wizard_saves_settings_the_client_can_use(
         ["http://droid.local:8765", "continuous", "USB Mic", "7", ".cache/vad.onnx", "", "", "no"]
     )
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    assert configure_client.main() == 0
+    assert configure_client.main([]) == 0
 
     saved = json.loads(isolated_client_config.read_text(encoding="utf-8"))
     assert saved["microphone"] == "USB Mic"

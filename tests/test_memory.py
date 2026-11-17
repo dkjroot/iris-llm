@@ -3,6 +3,7 @@
 import json
 import sqlite3
 import threading
+from contextlib import chdir
 from http.server import HTTPServer
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -160,7 +161,7 @@ def test_schema_idempotency_order_ownership_and_deletion(settings):
         memory.delete("other", conversation)
     assert memory.conversations("dave")[0]["turns"] == 2
     with memory.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     memory.delete("dave", conversation)
     assert memory.export("dave")["exchanges"] == []
@@ -377,8 +378,8 @@ def test_wizard_memory_opt_in(tmp_path):
             return "dave"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     saved = json.loads((tmp_path / "local-config.json").read_text())
     assert saved["memory_enabled"] and saved["memory_owner"] == "dave"
     assert saved["memory_database"] == str(tmp_path / "archive.sqlite3")

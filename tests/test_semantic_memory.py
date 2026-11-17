@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import chdir
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -394,15 +395,15 @@ def test_wizard_can_enable_semantic_and_turn_memory_off(tmp_path):
             return "yes"
         return ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=answer):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=answer):
+        assert configure.main([]) == 0
     assert json.loads(config.read_text())["memory_semantic_enabled"]
 
     def disable(prompt):
         return "no" if prompt.startswith("Save conversation memory") else ""
 
-    with patch.object(configure, "ROOT", tmp_path), patch("builtins.input", side_effect=disable):
-        assert configure.main() == 0
+    with chdir(tmp_path), patch("builtins.input", side_effect=disable):
+        assert configure.main([]) == 0
     saved = json.loads(config.read_text())
     assert not saved["memory_enabled"] and not saved["memory_semantic_enabled"]
 

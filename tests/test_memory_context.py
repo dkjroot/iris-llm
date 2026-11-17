@@ -239,7 +239,7 @@ def test_migration_indexes_phase_one_sources_atomically(tmp_path):
     assert MemoryIndex(migrated).search("default", conversation, "Sapphire", "")
     assert len(migrated.export("default")["exchanges"]) == 1
     with migrated.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
     assert len(MemoryIndex(SQLiteMemory(path)).search("default", conversation, "Sapphire", "")) == 1
 
 
@@ -248,12 +248,12 @@ def test_fts_unavailable_has_actionable_error():
         migrate(Mock(execute=Mock(side_effect=sqlite3.OperationalError("no such module: fts5"))))
 
 
-def test_queue_is_bounded_and_jobs_cascade_with_owner_deletion(setup):
+def test_durable_jobs_are_not_capped_and_cascade_with_owner_deletion(setup):
     settings, archive, index, conversation = setup
     for number in range(66):
         conversation = archive.start_conversation("default")
         append(archive, conversation, number)
-    assert len(archive.export("default")["summary_jobs"]) == 64
+    assert len(archive.export("default")["summary_jobs"]) == 66
     archive.delete("default", None)
     exported = archive.export("default")
     assert not exported["summary_jobs"] and not exported["summaries"] and not exported["notes"]
@@ -376,7 +376,7 @@ def test_retry_cli_and_export_include_derived_data(setup, tmp_path, capsys):
     capsys.readouterr()
     assert iris.main(["memory", "--config", str(config), "export"]) == 0
     exported = json.loads(capsys.readouterr().out)
-    assert exported["summaries"] and exported["notes"] and exported["schema_version"] == 7
+    assert exported["summaries"] and exported["notes"] and exported["schema_version"] == 8
 
 
 def test_budget_settings_and_environment_validation(monkeypatch):

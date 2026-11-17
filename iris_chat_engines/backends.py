@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from iris_chat_engines.messages import ChatError, Message
 from iris_settings import Settings
+from iris_turn import check_deadline, remaining_timeout
 
 
 class ChatBackend(Protocol):
@@ -49,6 +50,7 @@ class ChatCompletionsBackend:
 
     def complete(self, messages: list[Message], tools: list[dict[str, object]]) -> Message:
         headers = chat_headers(self.settings)
+        check_deadline()
         payload: dict[str, object] = {
             "model": self.settings.model,
             "messages": [message.model_dump(exclude_none=True) for message in messages],
@@ -70,11 +72,15 @@ class ChatCompletionsBackend:
                 f"{self.settings.base_url}/chat/completions",
                 json=payload,
                 headers=headers,
-                timeout=httpx.Timeout(self.settings.timeout, connect=10),
+                timeout=httpx.Timeout(
+                    remaining_timeout(self.settings.timeout), connect=remaining_timeout(10)
+                ),
             )
             response.raise_for_status()
             reply = ChatResponse.model_validate_json(response.content).choices[0].message
+            check_deadline()
         except httpx.TimeoutException as error:
+            check_deadline()
             raise ChatError(
                 "The model took too long to reply. Check the server or timeout setting."
             ) from error

@@ -26,20 +26,30 @@ class ScheduleConflict(Exception):
 def occurrences(
     rules: list[Rule], now: datetime, zone: ZoneInfo
 ) -> Iterator[tuple[datetime, Rule]]:
-    """Cover a full week on either side of now, including a skipped DST hour."""
+    """Find each weekday rule's nearest valid past and future occurrence.
+
+    Search weekly candidates rather than a window relative to restart time.
+    A nonexistent wall time skips that week, not the previous valid action.
+    The one-year bound also covers historical timezone changes that skip a day.
+    """
     local_day = now.astimezone(zone).date()
-    for offset in range(-8, 9):
-        day = local_day + timedelta(days=offset)
-        weekday = DAYS[day.weekday()]
-        for rule in rules:
-            if weekday not in rule.days:
-                continue
-            hour, minute = map(int, rule.time.split(":"))
-            wall = datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone)
-            instant = wall.astimezone(UTC)
-            # Skip nonexistent local times and use the first occurrence of a repeated time.
-            if instant.astimezone(zone) == wall:
-                yield instant, rule
+    for rule in rules:
+        hour, minute = map(int, rule.time.split(":"))
+        for weekday in rule.days:
+            offset = (DAYS.index(weekday) - local_day.weekday()) % 7
+            for direction in (-1, 1):
+                for week in range(54):
+                    day = local_day + timedelta(days=offset + direction * 7 * week)
+                    wall = datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone)
+                    instant = wall.astimezone(UTC)
+                    # fold=0 selects the first occurrence of a repeated wall time.
+                    if instant.astimezone(zone) != wall:
+                        continue
+                    if (direction < 0 and instant <= now) or (direction > 0 and instant > now):
+                        yield instant, rule
+                        break
+                else:
+                    raise ValueError("No valid weekly schedule occurrence within a year")
 
 
 class Scheduler:

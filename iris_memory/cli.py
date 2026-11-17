@@ -12,12 +12,13 @@ import httpx
 from iris_memory import SQLiteMemory, database_path
 from iris_memory.embeddings import EmbeddingError, MiniLMEncoder, download_model, model_directory
 from iris_memory.semantic import SemanticMemory
+from iris_paths import server_config
 from iris_settings import load_settings
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path("local-config.json"))
+    parser.add_argument("--config", type=Path)
     commands = parser.add_subparsers(dest="action", required=True)
     commands.add_parser("list", help="List conversation IDs, dates and exchange counts")
     commands.add_parser(
@@ -63,9 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        if args.config != Path("local-config.json") and not args.config.exists():
-            raise ValueError("The requested configuration file does not exist")
-        settings = load_settings(args.config if args.config.exists() else None)
+        settings = load_settings(server_config(args.config))
         if args.action == "download-model":
             directory = args.directory or model_directory(settings)
             with httpx.Client(trust_env=False, follow_redirects=True) as client:

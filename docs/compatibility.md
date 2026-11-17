@@ -23,8 +23,9 @@ robot feature.
 The server stores one active conversation per configured owner. Different clients
 for that owner deliberately share saved history. Their live sessions, companion
 settings and client personalities are separate. Without saving, or in private
-mode, live history belongs to the session. Server turn processing is serial;
-cancellation decisions can arrive independently while it is busy.
+mode, live history belongs to the session. Server turn processing is serial,
+in the order that complete requests enter the queue. Uploads have their own
+limits, and cancellation decisions can arrive independently while it is busy.
 
 ## Exact controls and their boundaries
 
@@ -60,9 +61,12 @@ Menu examples remain in `iris_droid/web/commands.json`, shared by Pi and web.
   replies, server-supplied command audio and diagnostic echo are separate.
 - Capture and playback remain half-duplex. Keep cue ordering, overflow rejection,
   wake calibration reuse, speech lead-in and the optional primer intact.
-- Buffered synthesis failure must not apply a memory-control change. Streamed
-  confirmation-before-commit is a known defect, tested as a desired outcome rather
-  than preserved as a compatibility promise.
+- Synthesis failure must not apply a memory-control change. Short private-mode,
+  confirmed-detail and confirmed-forgetting replies are prepared as buffered
+  audio and returned after the change succeeds, even when streaming is requested.
+- Streaming start/audio frames are provisional. Clients that negotiate completion
+  metadata must receive a valid final outcome before treating the turn as complete.
+  Older clients and servers remain usable with their original metadata limitations.
 - Tool effects and delivered audio cannot be rolled back by restoring a Python
   history list. Tests must distinguish those effects from reversible live state.
 
@@ -87,11 +91,15 @@ values stable during structural changes. Secrets remain excluded from saved
 server configuration. Startup must not silently download model weights.
 
 Client configuration is resolved from its working directory or explicit
-`--config`; CLI values override saved values. Server configuration currently has
-some module-directory versus working-directory inconsistencies. That is a known
-defect to resolve explicitly, not an invitation to move files during a refactor.
-The wheel currently omits the client wizard; its installed-artifact regression
-records the intended availability without hiding that defect.
+`--config`; CLI values override saved values. Server setup, diagnostics, the
+server, memory commands and voice preparation share the same resolution policy:
+an explicit file, then the working directory, then an existing checkout file
+with a warning. No configuration file is silently moved. Both wizards replace
+complete files atomically. Installed packages include `iris-configure-client`.
+
+See [request, configuration and upgrade details](runtime-contracts.md) for the
+deadline defaults, streaming compatibility, installed speech assets and archive
+schema repair. These are explicit corrections to the earlier behaviour.
 
 Use [the testing guide](testing.md) for commands, expected failures and the limits
 of automated coverage. For a deliberate behaviour change, update this reference,

@@ -15,12 +15,12 @@ from collections.abc import Callable, Generator
 from contextlib import closing, suppress
 from contextvars import ContextVar
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from importlib.resources import files
 from itertools import chain
 from pathlib import Path
-from threading import Event, Lock
-from time import perf_counter_ns, time_ns
+from threading import BoundedSemaphore, Event, Lock
+from time import monotonic, perf_counter_ns, time_ns
 from typing import cast
 from urllib.parse import unquote
 from uuid import UUID, uuid4
@@ -32,6 +32,7 @@ from pydantic import BaseModel
 
 from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
+from iris_droid.admission import BoundedHTTPServer, QueueTimeout, TurnQueue
 from iris_droid.expression import FACE_HEADER, FaceExpression
 from iris_droid.face_display import BROWSER_FACE_ASSETS
 from iris_droid.personalities import (
@@ -44,6 +45,7 @@ from iris_droid.personalities import (
     personality_command,
 )
 from iris_droid.protocol import (
+    COMPLETION_HEADER,
     MAX_BODY,
     VOICE_CANCEL_PATH,
     VOICE_DECISION_PATH,
@@ -51,6 +53,7 @@ from iris_droid.protocol import (
     VOICE_TIMING_HEADER,
     VOICE_TURN_HEADER,
     TurnCancelled,
+    TurnCompletion,
     TurnReply,
     VoiceTiming,
     companion_command,
@@ -72,12 +75,14 @@ from iris_memory.index import MemoryIndex
 from iris_memory.recall import RecallResolver
 from iris_memory.search import SearchArguments, search_memory
 from iris_memory.semantic import SemanticMemory
+from iris_paths import server_config
 from iris_settings import Settings, load_settings
 from iris_stt_engines import make_stt
 from iris_stt_engines.ISTT import ISTT
 from iris_tools import Skill
 from iris_tts_engines import StreamingSynthesizer, Synthesizer, open_tts
 from iris_tts_engines.text import plain_speech_text
+from iris_turn import TurnExpired, check_deadline, remaining_timeout, turn_budget
 
 LOGGER = logging.getLogger(__name__)
 STREAM_REPLY: ContextVar[Callable[[TurnReply, Generator[bytes], int], None] | None] = ContextVar(
@@ -151,6 +156,7 @@ class VoiceDecision:
     def check(self) -> None:
         if self._decided.is_set() and self._accept is False:
             raise TurnCancelled()
+        check_deadline()
 
     @property
     def accepted(self) -> bool:
@@ -166,7 +172,7 @@ class VoiceDecision:
             except OSError as error:
                 self.decide(False)
                 raise TurnCancelled() from error
-            if not self._decided.wait(15):
+            if not self._decided.wait(remaining_timeout(15)):
                 self.decide(False)
         self.check()
 
@@ -303,6 +309,7 @@ class Brain:
         finished: bool = False,
         expression: FaceExpression | None = None,
         selected_personality: str | None = None,
+        transactional: bool = False,
     ) -> TurnReply:
         result = TurnReply(
             heard=heard,
@@ -312,8 +319,12 @@ class Brain:
             expression=expression,
             selected_personality=selected_personality,
         )
+        check_deadline()
         stream_reply = STREAM_REPLY.get()
-        if not text_only and stream_reply is not None:
+        # Short state-changing confirmations are fully synthesized before the
+        # commit, then returned as a buffered reply. A streamed success cannot
+        # be retracted if the subsequent database/policy operation fails.
+        if not text_only and stream_reply is not None and not transactional:
             tts = cast(StreamingSynthesizer, self.tts)
             stream_reply(result, tts.stream(text), tts.sample_rate)
             return result
@@ -323,6 +334,7 @@ class Brain:
             started_ns = time_ns()
             started = perf_counter_ns()
             samples, rate = self.tts.synthesize(text)
+            check_deadline()
             synthesis_ns = perf_counter_ns() - started
             timing = VoiceTiming(
                 engine=self.settings.tts_engine,
@@ -353,7 +365,9 @@ class Brain:
                 if self.memory is not None
                 else "Private mode off. Conversation saving is disabled in configuration."
             )
-            result = self._reply(heard, text, text_only=text_only, companion=companion)
+            result = self._reply(
+                heard, text, text_only=text_only, companion=companion, transactional=True
+            )
             self._set_private(enabled)
             self.sessions[session].pending_forget = None
             return result
@@ -498,6 +512,7 @@ class Brain:
             "Independent backups and exports keep their own copies.",
             text_only=text_only,
             companion=companion,
+            transactional=True,
         )
         self.memory.forget_current(
             self.settings.memory_owner,
@@ -596,7 +611,9 @@ class Brain:
                         "conversations that used its old value, including their other topics."
                     )
                 text += " Say 'confirm memory change' or 'cancel memory change'."
-        result = self._reply(heard, text, text_only=text_only, companion=chat.companion_mode)
+        result = self._reply(
+            heard, text, text_only=text_only, companion=chat.companion_mode, transactional=apply
+        )
         if apply and pending is not None and self.details is not None:
             self.details.apply(self.settings.memory_owner, pending)
             self._sync_policy()
@@ -712,6 +729,32 @@ class Brain:
         decision: VoiceDecision | None = None,
         personality: PersonalityContext | None = None,
     ) -> TurnReply:
+        with turn_budget(self.settings.turn_timeout):
+            return self._turn(
+                session,
+                body,
+                text_only=text_only,
+                wake_conversation=wake_conversation,
+                companion_idle=companion_idle,
+                volume_supported=volume_supported,
+                face=face,
+                decision=decision,
+                personality=personality,
+            )
+
+    def _turn(
+        self,
+        session: str,
+        body: bytes,
+        *,
+        text_only: bool,
+        wake_conversation: bool,
+        companion_idle: bool,
+        volume_supported: bool,
+        face: bool,
+        decision: VoiceDecision | None,
+        personality: PersonalityContext | None,
+    ) -> TurnReply:
         self._sync_policy()
         if companion_idle:
             chat = self.sessions.get(session)
@@ -729,6 +772,7 @@ class Brain:
             if decision is not None:
                 decision.check()
             heard = self.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
+        check_deadline()
         if decision is not None:
             decision.check()
         if not heard and not companion_idle:
@@ -1063,6 +1107,7 @@ class Brain:
                     text, expression = generated.text, generated.expression
             if decision is not None:
                 decision.check()
+            check_deadline()
             result = self._reply(
                 heard,
                 text,
@@ -1076,6 +1121,7 @@ class Brain:
                 if new_conversation and self.memory is not None and command is None:
                     conversation = self.memory.active_conversation(self.settings.memory_owner)
             if command is None and not finished:
+                check_deadline()
                 exchange = Exchange(
                     str(uuid4()),
                     "automatic" if companion_idle else "human",
@@ -1130,7 +1176,8 @@ def handler_for(
         else web_personalities or {}
     )
     default_personality = next(iter(personalities.values()), None)
-    turn_lock = Lock()
+    turn_queue = TurnQueue()
+    admission = BoundedSemaphore(brain.settings.max_pending_turns)
     decisions: dict[tuple[str, str], VoiceDecision] = {}
     decisions_lock = Lock()
 
@@ -1158,15 +1205,19 @@ def handler_for(
             if self._decision is not None:
                 self._decision.check()
                 if status == 200:
+                    final = self.completion(reply) if reply is not None else {}
                     self.send_event(
                         "result",
                         reply=json.loads(body),
                         private=private,
                         timing=voice_timing.model_dump() if voice_timing is not None else None,
+                        **final,
                     )
                 else:
                     self._decision.fail(lambda: self.send_event("failed", status=status))
                 return
+            if status == 200:
+                self.connection.settimeout(remaining_timeout(15))
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -1184,6 +1235,8 @@ def handler_for(
             if voice_timing is not None:
                 self.send_header(VOICE_TIMING_HEADER, voice_timing.model_dump_json())
             if reply is not None:
+                if self.headers.get(COMPLETION_HEADER) == "1":
+                    self.send_header(COMPLETION_HEADER, "1")
                 if reply._exchange_id is not None:
                     self.send_header("X-Iris-Exchange", reply._exchange_id)
                 if reply._deleted_exchange_id is not None:
@@ -1196,10 +1249,24 @@ def handler_for(
             frame = json.dumps({"event": event, **data}, separators=(",", ":"))
             self.wfile.write((frame + "\n").encode())
 
+        def completion(self, reply: TurnReply) -> dict[str, object]:
+            if self.headers.get(COMPLETION_HEADER) != "1":
+                return {}
+            return {
+                "completion": TurnCompletion(
+                    outcome="committed",
+                    private=brain.private_mode,
+                    exchange_id=reply._exchange_id,
+                    deleted_exchange_id=reply._deleted_exchange_id,
+                ).model_dump()
+            }
+
         def start_voice_stream(self) -> None:
             self.send_response(200)
             self.send_header("Content-Type", VOICE_STREAM_TYPE)
             self.send_header("Cache-Control", "no-store")
+            if self.headers.get(COMPLETION_HEADER) == "1":
+                self.send_header(COMPLETION_HEADER, "1")
             self.send_header("X-Iris-Private", "1" if brain.private_mode else "0")
             self.end_headers()
 
@@ -1217,6 +1284,9 @@ def handler_for(
             if name == "index.html":
                 body = body.replace(
                     b"__IRIS_PHRASE_LIMIT__", str(brain.settings.phrase_time_limit).encode()
+                )
+                body = body.replace(
+                    b"__IRIS_TURN_TIMEOUT__", str(brain.settings.turn_timeout + 5).encode()
                 )
             self.respond(200, body, content_type=content_type)
 
@@ -1237,9 +1307,27 @@ def handler_for(
             if self.path not in {"/v1/voice", VOICE_CANCEL_PATH, "/v1/text", "/v1/volume-result"}:
                 self.respond(404, b'{"error":"Unknown route"}')
                 return
-            # Browser connections can overlap, but the brain and its sessions are shared.
-            with turn_lock:
-                self.handle_turn()
+            if not admission.acquire(blocking=False):
+                self.respond(503, b'{"error":"Iris is busy; no turn was started"}')
+                return
+            try:
+                with turn_budget(brain.settings.turn_timeout):
+                    request = self.read_turn()
+                    if request is not None:
+                        # Reading uploads never occupies the brain. The queue
+                        # preserves order among fully received requests.
+                        with turn_queue.enter(brain.settings.queue_timeout):
+                            self.handle_turn(*request)
+            except QueueTimeout:
+                self.respond(503, b'{"error":"Iris is busy; no turn was started"}')
+            except TurnExpired:
+                self.respond(504, b'{"error":"Turn timed out; check any action before retrying"}')
+            except TimeoutError:
+                self.respond(408, b'{"error":"Request upload timed out"}')
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True
+            finally:
+                admission.release()
 
         def turn_key(self) -> tuple[str, str]:
             return (
@@ -1269,7 +1357,9 @@ def handler_for(
             else:
                 self.respond(409, b'{"error":"Voice turn is no longer pending"}')
 
-        def handle_turn(self) -> None:
+        def handle_turn(
+            self, session: str, body: bytes, text_only: bool, companion_idle: bool
+        ) -> None:
             stream_timing: VoiceTiming | None = None
             self._stream_started = False
 
@@ -1281,6 +1371,7 @@ def handler_for(
                 size = 0
                 with closing(chunks):
                     first = next(chunks, None)
+                    check_deadline()
                     if first is None:
                         raise RuntimeError("Pocket TTS returned no audio.")
                     first_audio_ns = perf_counter_ns() - started
@@ -1297,6 +1388,7 @@ def handler_for(
                         first_audio_ns=first_audio_ns,
                     )
                     for pcm in chain((first,), chunks):
+                        self.connection.settimeout(remaining_timeout(15))
                         size += len(pcm)
                         if size > MAX_BODY:
                             raise RuntimeError("Pocket TTS reply exceeds the transport limit.")
@@ -1316,12 +1408,24 @@ def handler_for(
             )
             token = STREAM_REPLY.set(stream_reply if use_stream else None)
             try:
-                self.deliver_turn()
+                reply = self.deliver_turn(session, body, text_only, companion_idle)
                 if self._stream_started:
                     assert stream_timing is not None
-                    self.send_event("done", timing=stream_timing.model_dump())
+                    assert reply is not None
+                    self.connection.settimeout(remaining_timeout(15))
+                    self.send_event(
+                        "done", timing=stream_timing.model_dump(), **self.completion(reply)
+                    )
             except TurnCancelled:
                 pass  # The decision already sent the terminal frame.
+            except TurnExpired:
+                self.connection.settimeout(1)
+                if self._stream_started:
+                    self.send_event("error")
+                elif self._decision is not None:
+                    self._decision.fail(lambda: self.send_event("failed", status=504))
+                else:
+                    raise
             except (BrokenPipeError, ConnectionResetError):
                 self.close_connection = True
             except Exception as error:
@@ -1347,7 +1451,7 @@ def handler_for(
                 self.send_event("processing")
             return decision
 
-        def deliver_turn(self) -> None:
+        def read_turn(self) -> tuple[str, bytes, bool, bool] | None:
             text_only = self.path == "/v1/text"
             companion_idle = self.headers.get("X-Iris-Companion-Idle") == "1"
             expected = (
@@ -1359,16 +1463,35 @@ def handler_for(
             )
             if self.headers.get_content_type() != expected:
                 self.respond(415, b'{"error":"Unexpected content type"}')
-                return
+                return None
             try:
                 session = str(UUID(self.headers.get("X-Iris-Session", "")))
                 length = int(self.headers.get("Content-Length", "0"))
                 if self.headers.get("Transfer-Encoding") or not 0 < length <= MAX_BODY:
                     self.respond(413, b'{"error":"Missing or oversized body"}')
-                    return
-                body = self.rfile.read(length)
-                if len(body) != length:
-                    raise ValueError("Incomplete request")
+                    return None
+                expires = monotonic() + remaining_timeout(brain.settings.upload_timeout)
+                body = bytearray()
+                while len(body) < length:
+                    remaining = expires - monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("Upload deadline expired")
+                    self.connection.settimeout(min(remaining, remaining_timeout(15)))
+                    chunk = self.rfile.read1(min(65536, length - len(body)))
+                    if not chunk:
+                        raise ValueError("Incomplete request")
+                    body.extend(chunk)
+                self.connection.settimeout(remaining_timeout(15))
+                return session, bytes(body), text_only, companion_idle
+            except (ValueError, EOFError):
+                self.respond(400, b'{"error":"Invalid session or request body"}')
+                return None
+
+        def deliver_turn(
+            self, session: str, body: bytes, text_only: bool, companion_idle: bool
+        ) -> TurnReply | None:
+            try:
+                check_deadline()
                 if self.path == "/v1/volume-result":
                     brain._sync_policy()
                     result = VolumeResult.model_validate_json(body)
@@ -1383,33 +1506,34 @@ def handler_for(
                     if self.path == VOICE_CANCEL_PATH and companion_idle:
                         raise ValueError("Companion openers do not support cancellation")
                     reply = self.run_voice_or_text(session, body, text_only, companion_idle)
-            except TurnCancelled:
+            except (TurnCancelled, TurnExpired):
                 raise
             except (ValueError, EOFError):
                 if self._stream_started:
                     raise
                 self.respond(400, b'{"error":"Invalid session, text or WAV recording"}')
-                return
+                return None
             except sr.UnknownValueError:
                 if self._stream_started:
                     raise
                 self.respond(422, b'{"error":"No speech recognized; please try again"}')
-                return
+                return None
             except sqlite3.Error as error:
                 if self._stream_started:
                     raise
+                check_deadline()
                 LOGGER.error("Conversation memory failed (%s)", type(error).__name__)
                 self.respond(
                     503, b'{"error":"Conversation memory unavailable; check the PC archive"}'
                 )
-                return
+                return None
             except MemoryPolicyError:
                 if self._stream_started:
                     raise
                 self.respond(
                     503, b'{"error":"Conversation memory policy changed; please try again"}'
                 )
-                return
+                return None
             except ChatError as error:
                 if self._stream_started:
                     raise
@@ -1420,15 +1544,16 @@ def handler_for(
                 else:
                     LOGGER.warning("Chat failed: %s", error)
                 self.respond(502, b'{"error":"Chat failed; check the PC model server"}')
-                return
+                return None
             except Exception as error:
                 if self._stream_started:
                     raise
                 LOGGER.error("Droid turn failed (%s)", type(error).__name__)
                 self.respond(503, b'{"error":"Speech service failed; check the PC console"}')
-                return
+                return None
+            check_deadline()
             if self._stream_started:
-                return
+                return reply
             self.respond(
                 200,
                 reply.model_dump_json(exclude_none=True).encode(),
@@ -1438,6 +1563,7 @@ def handler_for(
                     reply._voice_timing if self.headers.get(VOICE_TIMING_HEADER) == "1" else None
                 ),
             )
+            return reply
 
         def run_voice_or_text(
             self, session: str, body: bytes, text_only: bool, companion_idle: bool
@@ -1494,7 +1620,7 @@ def handler_for(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path("local-config.json"))
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--web-chat", action="store_true", help="Serve the browser chat at /chat")
@@ -1508,7 +1634,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         token = os.environ.get("IRIS_DROID_TOKEN", "")
         validate_token(token)
-        settings = load_settings(args.config if args.config.exists() else None)
+        settings = load_settings(server_config(args.config))
         web_personalities = (
             load_personalities(args.web_personalities_file)
             if args.web_personalities_file is not None
@@ -1524,7 +1650,7 @@ def main(argv: list[str] | None = None) -> int:
             handler = handler_for(
                 brain, token, web_chat=args.web_chat, web_personalities=web_personalities
             )
-            with ThreadingHTTPServer((args.host, args.port), handler) as server:
+            with BoundedHTTPServer((args.host, args.port), handler) as server:
                 print(f"Iris droid server listening on {args.host}:{args.port}")
                 server.serve_forever()
         return 0
