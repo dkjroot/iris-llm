@@ -22,9 +22,9 @@ does not mean traffic went to a home device or model provider.
 | Provisional voice acceptance and cancellation | [Client](client-setup.md), [technical guide](technical-guide.md) | `tests/test_voice_cancel.py::test_cancellation_prevents_tool_dispatch`; `tests/test_application_contracts.py::test_provisional_application_turn_restores_evicted_session_without_http` | Actual Vosk cancellation at different points; never use a hazardous action. |
 | Effects, failed replies and ambiguous outcomes | [Runtime contracts](runtime-contracts.md), [extensions](extensions.md) | `tests/test_application_contracts.py::test_effect_receipt_survives_reply_failure_and_session_rollback`; `test_uncertain_effect_is_not_repeated_with_a_new_tool_call_id` in that file | Physical read-back; delivery is distinct from acceptance. |
 | Buffered/streamed wire validation and completion | [Interfaces](interfaces.md) | `tests/test_phase1_boundaries.py::test_invalid_or_incomplete_stream_never_returns_success`; `test_incremental_frames_preserve_utf8_across_every_byte_boundary` | Slow LAN and phone disconnect; no assumed retry safety. |
-| Recognition, resampling and empty audio | [Client](client-setup.md), [voice preparation](voice-reference.md) | `tests/test_speech.py`; `tests/test_droid.py::test_native_capture_is_converted_to_server_format` | Actual faster-whisper/wav2vec2/Google route, chosen model and language. |
+| Recognition, resampling and empty audio | [Client](client-setup.md), [voice preparation](voice-reference.md) | `tests/test_speech.py`; `tests/test_droid.py::test_native_capture_is_converted_to_server_format`; opt-in [CPU speech round trip](../scripts/check_local_speech.py) | Actual faster-whisper/wav2vec2/Google route, chosen model and language. |
 | Speech workers and bounded recovery | [Performance/recovery](performance-and-recovery.md) | `tests/test_phase4_resilience.py::test_wrong_request_identity_retires_pipe_and_restart_budget_is_finite`; `tests/test_chatterbox.py`; `tests/test_pocket_contracts.py` | Real Pocket/Chatterbox environment, weights, prepared voice, audible quality. |
-| Kokoro preparation and speech cleanup | [Server](server-setup.md) | `tests/test_kokoro.py::test_failed_download_preserves_previous_file_and_removes_partial`; `test_speech_cleanup_preserves_displayed_reply_and_model_history` | Real voice pack and audible onset on chosen hardware. |
+| Kokoro preparation and speech cleanup | [Server](server-setup.md) | `tests/test_kokoro.py::test_failed_download_preserves_previous_file_and_removes_partial`; `test_speech_cleanup_preserves_displayed_reply_and_model_history`; opt-in [real Kokoro/Whisper/Pocket check](../scripts/check_local_speech.py) | Real voice pack and audible onset on chosen hardware. |
 | Capture, playback, overflow/device loss | [Client audio](client-setup.md) | `tests/test_droid.py::test_capture_overflow_aborts_before_any_network_turn`; `tests/test_reply_playback.py`; `tests/test_application_contracts.py::test_stalled_playback_aborts_with_a_finite_wait` | USB disconnect/reconnect, device names after reboot, no clipped words. |
 | Wake, VAD, silence and companion timing | [Client](client-setup.md) | `tests/test_wake_conversation.py`; `tests/test_vad.py`; `tests/test_companion.py::test_timer_randomizes_backs_off_caps_and_resets_after_human_reply` | Accent, room noise, television, idle opener, off/sleep controls. |
 | Volume and feedback | [Client](client-setup.md) | `tests/test_volume.py::test_client_never_retries_change_when_acknowledgement_fails`; `tests/test_client_feedback.py`; `tests/test_sounds.py` | ALSA mixer mapping and perceived levels; cancellation cue with no-sounds. |
@@ -108,10 +108,17 @@ jobs. A configured job is not a recorded successful run.
 | Pi image, USB audio, KMS/touch and actual wake/VAD | Fakes cannot establish driver timing, permissions or recognition quality. | Run shared A–D/I and release checklist on the actual Pi/panel. |
 | iPhone Safari and Siri | Chromium with synthetic audio does not exercise iOS trust, dictation or Shortcuts. | Run E/F directly, with Siri and after host/Pi reboot. |
 | Matter build/commissioning/firmware, physical scheduling and restore | Adapter tests do not perform radio discovery, attestation or electrical switching. | Run controller/G/J with a harmless device; record node/endpoints without credentials. |
-| Each selected model/backend on its target platform | A real embedding test on one host does not validate speech, chat or other platforms; disabled dependencies leave genuine inference paths unexercised. | Prepare local assets explicitly, run opt-in embedding tests and real speech smoke/quality checks, recording each platform's result. |
+| Each selected model/backend on its target platform | The opt-in embedding and CPU speech checks exercise real weights, but do not validate chat, every backend, perceptual quality or other platforms. | Prepare local assets explicitly, run opt-in embedding tests and real speech smoke/quality checks, recording each platform's result. |
 | Native rendering and cross-platform services | Menu logic tests do not render every font/pixel or execute launchd/Task Scheduler/systemd on all hosts. | Inspect actual display and run each documented startup/stop/update path. |
 | A beginner follows both documentation tracks | An author can unconsciously fill in omitted prerequisites. | Record each point where the reader needed help and repair the guide; repeat that section from a clean state. |
 
 These are release/route gates, not silently waived tests. Keep local run logs,
 exact device details and any private diagnostic material outside public docs.
 The absence of another observed gap is not a proof that no bug remains.
+
+The optional [native display check](../scripts/check_native_display.py) renders all
+shipped sprite frames and menu pages with real Pygame fonts and surfaces in both
+orientations. It is also run by the fresh `face` installation profile. Synthetic
+finger events exercise coordinate conversion and selection; KMS and physical
+touch still need the Pi acceptance checks. See [testing](testing.md) for the
+separate model preparation and offline speech commands.

@@ -6,6 +6,7 @@ import argparse
 import importlib
 import importlib.metadata
 import sys
+import traceback
 
 PROFILES = {
     "base": {
@@ -26,6 +27,7 @@ PROFILES = {
     "vad": {"onnxruntime": "onnxruntime"},
     "microphone": {"PyAudio": "pyaudio"},
     "wake": {"vosk": "vosk"},
+    "face": {"pygame": "pygame"},
     "wav2vec2": {"torch": "torch", "transformers": "transformers"},
     "kokoro": {"kokoro-onnx": "kokoro_onnx", "onnxruntime": "onnxruntime"},
     "chatterbox": {"chatterbox-tts": "chatterbox.tts_turbo"},
@@ -47,6 +49,7 @@ def main() -> int:
             importlib.import_module(module)
         except Exception as exc:
             print(f"FAIL {distribution}: {type(exc).__name__}")
+            traceback.print_exc()
             failed = True
         else:
             print(f"OK {distribution} {version}")

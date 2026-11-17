@@ -217,6 +217,56 @@ Then `python scripts/check_clean_install.py base` creates a disposable virtual
 environment outside the checkout, installs the wheel and dependencies, runs pip's
 consistency check, verifies import origins and exercises installed command help.
 Unlike the artifact fixture, this needs package-download access. Repeat with
-`server`, `memory` or `vad` for those optional profiles. See
+`server`, `memory`, `vad` or `face` for those optional profiles. The face profile
+also installs Pygame 2.6.1 and renders the shipped sprites and menus with SDL's
+dummy display, so it doesn't need a desktop or open a window. See
 [installation profiles](install-profiles.md) for native libraries and model limits,
 and [release acceptance](releasing.md) for the checks on actual devices.
+
+## Real speech without a microphone
+
+Linux CI uses an explicit [ALSA null PCM](https://alsa-project.org/alsa-doc/alsa-lib/pcm_plugins.html)
+configuration in `tests/fixtures/alsa-null.conf` so PortAudio can initialise
+without a sound card or a logged-in desktop audio session. This is a silent test
+device, not evidence of working input or output hardware. Package import failures
+still fail the profile and include their traceback. Each matrix job runs to
+completion even if another platform fails.
+
+If you have Iris's `whisper,kokoro` extras installed, you can check the real CPU
+models with a sentence generated entirely for the test. Choose a disposable
+directory for the assets and results. From an installed checkout, run:
+
+```sh
+python scripts/check_local_speech.py --assets .cache/speech-check --prepare
+python scripts/check_local_speech.py --assets .cache/speech-check
+```
+
+The first command downloads about 430 MB: the checksum-checked Kokoro pack and a
+pinned revision of Whisper tiny.en. The second runs Kokoro, converts its output
+to PCM and sends it through Iris's Whisper adapter. It checks for recognisable
+words, finite non-silent audio and the expected sample rate. It writes a synthetic
+WAV and `result.json` with versions, asset hashes, transcription and elapsed time.
+Treat that time as a diagnostic observation, not a benchmark or quality score.
+
+You can also exercise Pocket's real voice preparation and supervised worker.
+Install the separate Pocket environment as described in [server setup](server-setup.md),
+then add `--pocket-python .venv-pocket/bin/python` to **both** commands above.
+On Windows use `--pocket-python .venv-pocket/Scripts/python.exe`. Preparation
+downloads Pocket's pinned model as well, so allow roughly another 210 MB for those weights, plus the separate
+worker environment. The check prepares a temporary voice from the synthetic Kokoro WAV and
+transcribes Pocket's reply with Whisper. It never uses or replaces your prepared
+voices. Both environments must be installed before running the commands.
+
+The runner clears inherited Iris settings, uses its own Hugging Face cache and
+disables implicit tokens. During inference, model loading is local-only and Python
+socket connection attempts fail. The check runs in a child process with a ten-minute
+limit. It doesn't read your Iris configuration or archive, start a chat server,
+open a microphone or play sound. Native libraries aren't covered by Python's
+socket hook, so this isn't a general network sandbox. Missing packages or assets
+fail the command; they aren't quietly skipped. These checks are explicit opt-ins
+because they download large assets and need additional environments.
+
+For native graphics alone, install Iris and Pygame, then run
+`python scripts/check_native_display.py`. This uses the real renderer in both
+landscape and portrait, including sprite expressions, menu fonts and synthetic
+touch events. It doesn't prove that the Pi's display or touchscreen works.

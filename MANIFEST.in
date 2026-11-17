@@ -4,6 +4,7 @@ recursive-include scripts *.py *.cjs
 recursive-include systemd *.service *.timer
 recursive-include tests *.py *.json *.sql *.md
 recursive-include tests/fixtures/tls *.pem
+include tests/fixtures/alsa-null.conf
 exclude AGENTS.md DEVELOPMENT.md local-config.json client_config.json personalities.json .env
 prune agent_docs
 prune node_modules

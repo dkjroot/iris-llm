@@ -62,7 +62,7 @@ files = ["iris.py", "configure.py", "configure_client.py", "iris_settings.py", "
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]
-module = ["speech_recognition", "sounddevice", "faster_whisper", "faster_whisper.*", "transformers", "transformers.*", "torch", "kokoro_onnx", "onnxruntime", "vosk", "tokenizers"]
+module = ["speech_recognition", "sounddevice", "faster_whisper", "faster_whisper.*", "transformers", "transformers.*", "torch", "kokoro_onnx", "onnxruntime", "vosk", "tokenizers", "huggingface_hub"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

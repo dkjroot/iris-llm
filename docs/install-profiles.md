@@ -31,16 +31,19 @@ means managing that extra dependency yourself; a later `uv sync` can remove
 packages that are not in its selected dependency set. Keep the install commands
 in your local launcher consistent with the profile you actually use.
 
-The CI profile matrix installs base, server, semantic-memory and VAD packages
+The CI profile matrix installs base, server, semantic-memory, VAD and face packages
 on Windows, macOS and Linux with Python 3.12, then imports their native modules
 without loading weights. Base artifact checks additionally cover Python 3.11 and
 3.13 on Windows and Linux. These are intended release gates, not evidence that
 an unrun workflow or a particular GPU works. PyAudio, Vosk, SDL, wav2vec2 and the
 isolated synthesis workers still need the applicable checks on the target device.
+The face job also renders with Pygame 2.6.1 and SDL's dummy display. This checks
+real PNG decoding, fonts, surfaces and touch-coordinate handling without needing
+a screen; the Pi still needs its own KMS, permissions and physical touch checks.
 
 After installing a profile, run `python scripts/check_profiles.py PROFILE` from
 the source distribution or checkout. Supported names are `base`, `server`,
-`memory`, `vad`, `microphone`, `wake`, `wav2vec2`, `kokoro`, `chatterbox` and `pocket`.
+`memory`, `vad`, `face`, `microphone`, `wake`, `wav2vec2`, `kokoro`, `chatterbox` and `pocket`.
 Run the last two with the worker environment's Python. The command reports
 package versions and import success without loading models, opening devices or
 reading your Iris configuration. Missing packages fail clearly rather than

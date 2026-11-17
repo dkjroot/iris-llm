@@ -4,6 +4,7 @@ jobs:
   check:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         python: ['3.11', '3.12', '3.13']
@@ -12,6 +13,11 @@ jobs:
             python: '3.12'
     steps:
       - uses: actions/checkout@v4
+      - if: runner.os == 'Linux'
+        name: Prepare silent CI audio
+        run: |
+          sudo apt-get update && sudo apt-get install -y libportaudio2
+          echo "ALSA_CONFIG_PATH=$GITHUB_WORKSPACE/tests/fixtures/alsa-null.conf" >> "$GITHUB_ENV"
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -44,6 +50,7 @@ jobs:
   javascript:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
@@ -57,16 +64,20 @@ jobs:
   profiles:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        profile: [base, server, memory, vad]
+        profile: [base, server, memory, vad, face]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libportaudio2
+        name: Prepare silent CI audio
+        run: |
+          sudo apt-get update && sudo apt-get install -y libportaudio2
+          echo "ALSA_CONFIG_PATH=$GITHUB_WORKSPACE/tests/fixtures/alsa-null.conf" >> "$GITHUB_ENV"
       - run: python -m pip install build 'setuptools>=77'
       - run: python -m build --wheel
       - run: python scripts/check_clean_install.py ${{ matrix.profile }}
