@@ -36,6 +36,7 @@ def next_face(head: FaceHead) -> FaceHead:
 BROWSER_FACE_ASSETS = {
     "/face.css": ("face.css", "text/css; charset=utf-8"),
     "/speech-envelope.js": ("speech-envelope.js", "text/javascript; charset=utf-8"),
+    "/command-feedback.js": ("command-feedback.js", "text/javascript; charset=utf-8"),
     "/face.js": ("face.js", "text/javascript; charset=utf-8"),
     "/face-rig.js": ("face-rig.js", "text/javascript; charset=utf-8"),
     "/face-portraits.js": ("face-portraits.js", "text/javascript; charset=utf-8"),
@@ -81,6 +82,25 @@ class FaceDisplay:
         self._idle_since: float | None = None
         self._preview_until = 0.0
         self.speech = SpeechEnvelope()
+        self.companion_mode: bool | None = None
+        self._notice: dict[str, object] | None = None
+        self._notice_until = 0.0
+        self._notice_id = 0
+
+    def notify(self, title: str, message: str, status: str = "info", *, seconds: float = 6) -> None:
+        with self._lock:
+            self._notice_id += 1
+            self._notice = {
+                "id": self._notice_id,
+                "title": title[:80],
+                "message": message[:320],
+                "status": status,
+            }
+            self._notice_until = monotonic() + seconds
+
+    def clear_notice(self) -> None:
+        with self._lock:
+            self._notice = None
 
     def cycle_face(self) -> bool:
         with self._lock:
@@ -152,6 +172,10 @@ class FaceDisplay:
                 "activity": activity,
                 "expression": "neutral" if expired else self._expression,
             }
+            if self._notice is not None and now < self._notice_until:
+                state["notice"] = self._notice
+            if self.companion_mode is not None:
+                state["companion_mode"] = self.companion_mode
             if activity == "speaking":
                 state["mouth"] = self.speech.snapshot(now)
             if now < self._preview_until:

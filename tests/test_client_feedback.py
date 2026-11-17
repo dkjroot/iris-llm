@@ -2,7 +2,6 @@
 
 import base64
 from importlib.resources import files
-from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import httpx
@@ -10,6 +9,7 @@ import pytest
 import speech_recognition as sr
 
 import iris
+from iris_domain.replies import TurnReply
 from iris_droid.client import play_wav
 from iris_droid.feedback import ClientFeedback
 from iris_droid.protocol import write_wav
@@ -51,7 +51,7 @@ def test_command_acknowledgement_stops_busy_sound_and_preserves_wake_state(phras
         patch("iris_droid.client.stop_playback", side_effect=lambda: events.append("stop")),
         patch(
             "iris_droid.client.DroidClient.turn",
-            return_value=SimpleNamespace(
+            return_value=TurnReply(
                 heard=phrase,
                 text="Command accepted.",
                 audio=base64.b64encode(REPLY).decode() if spoken else "",
@@ -113,7 +113,7 @@ def test_client_feedback_follows_turn_and_stops_before_reply_and_rearming(activa
 
     def turn(*args, **kwargs):
         events.append("request")
-        return SimpleNamespace(
+        return TurnReply(
             heard="hello",
             text="hello",
             audio=base64.b64encode(REPLY).decode(),
@@ -205,7 +205,7 @@ def test_no_sounds_keeps_echo_and_spoken_reply():
         patch("iris_droid.client.stop_playback") as stop,
         patch(
             "iris_droid.client.DroidClient.turn",
-            return_value=SimpleNamespace(
+            return_value=TurnReply(
                 heard="exit", text="goodbye", audio=base64.b64encode(REPLY).decode(), finished=True
             ),
         ),
@@ -236,7 +236,7 @@ def test_text_mode_is_silent_without_requiring_no_sounds():
         patch("iris_droid.client.stop_playback") as stop,
         patch(
             "iris_droid.client.DroidClient.turn",
-            return_value=SimpleNamespace(heard="exit", text="goodbye", audio="", finished=True),
+            return_value=TurnReply(heard="exit", text="goodbye", audio="", finished=True),
         ),
     ):
         assert iris.main(["client", "--text"]) == 0

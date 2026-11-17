@@ -7,6 +7,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from iris_domain.commands import control_phrase
+
 Percent = Annotated[int, Field(strict=True, ge=0, le=100)]
 
 
@@ -63,8 +65,7 @@ class VolumeResult(BaseModel):
 
 def volume_command(text: str) -> VolumeCommand | None:
     """Recognise whole utterances only; conversation about volume is ordinary chat."""
-    phrase = " ".join(text.casefold().replace("’", "'").split()).strip(" .!?,")
-    phrase = re.sub(r"^please | please$", "", phrase)
+    phrase = control_phrase(text)
     fixed = {
         "volume up": ("change", 10),
         "turn it up": ("change", 10),

@@ -29,7 +29,7 @@ not a multi-user authorization boundary: one server's memory owner is shared.
 | `GET /chat` and its allowlisted assets | Web enabled | HTML (with configured time limits), JS, styles and shared menu data; no directory browsing. |
 
 `TurnReply` contains `heard`, `text`, `audio`, `finished`, `companion_mode`, and
-optional `volume`, `expression`, `selected_personality`. Audio is a base64 mono
+optional `volume`, `expression`, `selected_personality`, and negotiated `command` feedback. Audio is a base64 mono
 PCM WAV at the synthesiser's sample rate. Reply text and the plain speech version
 are distinct: formatting cleanup is not a rewrite of the archived source answer.
 The authoritative definitions are [reply models](../iris_domain/replies.py),
@@ -44,6 +44,7 @@ The authoritative definitions are [reply models](../iris_domain/replies.py),
 | `X-Iris-Wake-Conversation: 1` | Enable wake-conversation control semantics. |
 | `X-Iris-Volume: 1` | Client can apply a supported mixer command and report its result. |
 | `X-Iris-Face: 1` | Client understands expression metadata. |
+| `X-Iris-Command-Feedback: 1` | Request structured command receipts. Use completion negotiation too for streamed replies. |
 | `X-Iris-Personality` | Validated ASCII-encoded JSON catalog/active prompt, up to 7,800 header characters. |
 | `X-Iris-Web-Personality` | Browser's configured personality name, resolved on the server. |
 | `X-Iris-Text-Only: 1` | Request text-only acknowledgement on the volume-result route. |
@@ -54,6 +55,15 @@ Buffered completion uses `X-Iris-Private`, `X-Iris-Exchange` and
 `completion` object with `outcome`, `private` and nullable exchange IDs. “Committed”
 means the applicable server work finished, including private/no-archive turns;
 it is not proof of physical delivery or an external action's final state.
+
+A negotiated `command` receipt contains `title`, `message` and a `status` of
+`success`, `error` or `info`. It comes from deterministic command handling, not
+model prose. Buffered replies carry it in `TurnReply`; streamed replies carry it
+only in the final `completion` object. It is absent from the initial stream
+`start` reply, and omitted entirely for clients that don't request it. An `info`
+receipt can describe a query or a control requiring further input; it does not
+claim a mutation succeeded. Mixer receipts describe the client's reported
+read-back, not a separate server-side hardware check.
 
 NDJSON means one JSON object per newline. A normal stream has one `start`, audio
 frames with base64 `pcm`, and one `done`; failure is `error`. A cancellable stream

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from iris_domain.commands import (
     companion_command,
     is_clear_context,
+    is_companion_status,
     is_delete_previous,
     is_stop_listening,
 )
@@ -37,6 +38,7 @@ class ParsedCommands:
     stop_listening: bool
     finished: bool
     companion: bool | None
+    companion_status: bool
     personality: str | None
 
     @property
@@ -51,7 +53,7 @@ class ParsedCommands:
             ("clear", self.clear_context),
             ("stop", self.stop_listening),
             ("exit", self.finished),
-            ("companion", self.companion is not None),
+            ("companion", self.companion is not None or self.companion_status),
         ):
             if matched:
                 return name
@@ -78,6 +80,7 @@ def parse_commands(
         and is_stop_listening(heard),
         finished=heard.casefold().strip(" .!?") == "exit",
         companion=companion_command(heard),
+        companion_status=is_companion_status(heard),
         personality=personality_command(heard),
     )
 
@@ -249,6 +252,13 @@ class CommandRouter:
                 if wake_conversation and not text_only
                 else "Companion mode off.",
                 audio=command_audio("stopped-listening.wav", text_only=text_only),
+            )
+        if parsed.companion_status:
+            return self.app._reply(
+                heard,
+                "Companion mode is on." if companion else "Companion mode is off.",
+                text_only=text_only,
+                companion=companion,
             )
         if extension is not None:
             return extension(request)

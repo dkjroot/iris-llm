@@ -58,7 +58,7 @@ def make_brain(**options):
         ("Companion mode on!", True),
         ("  COMPANION   mode OFF. ", False),
         ("don't turn companion mode on", None),
-        ("companion mode off please", None),
+        ("companion mode off please", False),
     ],
 )
 def test_only_complete_control_phrases_match(phrase, expected):

@@ -10,7 +10,9 @@
         ["Cancel, cancel", "Drop the turn while Iris is working, with voice cancel enabled."],
         ["Exit", "End the conversation."],
         ["Companion mode on", "Let Iris start conversations during quiet stretches."],
-        ["Companion mode off", "Switch off companion mode."]
+        ["Companion mode off", "Switch off companion mode."],
+        ["Companion mode status", "Check whether it is on for this conversation."],
+        ["Please turn companion mode on", "Enable companion mode and disable companion mode work too."]
       ]
     },
     {

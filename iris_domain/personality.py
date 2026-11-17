@@ -7,6 +7,8 @@ from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from iris_domain.commands import control_phrase
+
 PERSONALITY_HEADER = "X-Iris-Personality"
 WEB_PERSONALITY_HEADER = "X-Iris-Web-Personality"
 MAX_PERSONALITY_HEADER = 7800
@@ -57,7 +59,7 @@ def personality_catalog(prompts: dict[str, object]) -> dict[str, PersonalityCont
 
 def personality_command(text: str) -> str | None:
     """Return a requested name, an empty string for listing, or None for chat."""
-    phrase = " ".join(text.casefold().split()).strip(" .!?,")
+    phrase = control_phrase(text)
     if phrase == "list personalities":
         return ""
     prefix = "switch to personality "

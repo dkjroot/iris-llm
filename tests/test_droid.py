@@ -15,6 +15,7 @@ import pytest
 import speech_recognition as sr
 
 import iris
+from iris_domain.replies import TurnReply
 from iris_droid.client import DroidClient, open_microphone, play_wav, record_turn
 from iris_droid.protocol import MAX_BODY, VOICE_STREAM_TYPE, read_wav, validate_token, write_wav
 from iris_droid.server import Brain, handler_for
@@ -517,7 +518,7 @@ def test_echo_plays_exact_outgoing_recording_before_send(activation, echo, capsy
     def turn(body, *, text_only):
         assert body is RECORDING and text_only is False
         events.append("sent")
-        return SimpleNamespace(heard="exit", text="Goodbye", audio="", finished=True)
+        return TurnReply(heard="exit", text="Goodbye", audio="", finished=True)
 
     argv = ["client", "--no-sounds", "--activation", activation, "--speaker", "7"]
     if echo:
@@ -563,7 +564,7 @@ def test_text_mode_ignores_recording_echo():
         patch("iris_droid.client.play_wav") as play,
         patch(
             "iris_droid.client.DroidClient.turn",
-            return_value=SimpleNamespace(heard="exit", text="Goodbye", audio="", finished=True),
+            return_value=TurnReply(heard="exit", text="Goodbye", audio="", finished=True),
         ) as turn,
     ):
         assert iris.main(["client", "--no-sounds", "--text", "--echo-recording"]) == 0

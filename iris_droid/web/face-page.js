@@ -1,3 +1,4 @@
+import { mountCommandFeedback } from "/command-feedback.js";
 import { mountFaceCycle, updateFace } from "/face.js";
 import { mountMenu } from "/menu.js";
 
@@ -17,6 +18,8 @@ const menu = mountMenu({
   },
 });
 
+const commandFeedback = mountCommandFeedback();
+let lastNotice = null;
 let connected = false;
 let cycling = false;
 const cycleButton = mountFaceCycle(async () => {
@@ -53,6 +56,13 @@ async function poll() {
     cycleButton.disabled = cycling || !connected;
     updateFace(state && { ...state, showIdle: state.preview || state.show_idle });
     menu.update(state);
+    commandFeedback.companion(state?.companion_mode &&
+      (state.activity !== "idle" || state.show_idle || state.preview));
+    if (state?.notice?.id !== lastNotice) {
+      lastNotice = state?.notice?.id;
+      if (state?.notice) commandFeedback.show(state.notice, state.notice.status === "processing" ? 600000 : 6000);
+      else commandFeedback.clear();
+    }
   }
   setTimeout(poll, document.hidden ? 1000 : speaking ? 50 : 200);
 }

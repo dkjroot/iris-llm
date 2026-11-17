@@ -1,3 +1,4 @@
+import { mountCommandFeedback } from "/command-feedback.js";
 import { ChatController } from "/chat-controller.js";
 import { cycleSavedFace, mountFaceCycle, savedFace, updateFace, followFaceAudio } from "/face.js";
 import { mountMenu } from "/menu.js";
@@ -18,6 +19,7 @@ const storageKey = "iris.droid.connection-key";
 const phraseLimit = Number(document.body.dataset.phraseLimit);
 const turnTimeout = Number(document.body.dataset.turnTimeout);
 const controller = new ChatController(newSession);
+const commandFeedback = mountCommandFeedback();
 let savedToken = null;
 let faceTimer;
 const face = { head: savedFace(), activity: "idle", expression: "neutral", showIdle: true };
@@ -185,6 +187,7 @@ async function turn(body, active = null) {
   if (track) track.enabled = false;
   controller.voice?.capture?.reset();
   show("Waiting for Iris…");
+  commandFeedback.show({title:"Processing…", message:"Checking what you said.", status:"processing"}, turnTimeout * 1000);
   showFace("thinking");
   let feedback = "";
   let writtenExpression = null;
@@ -196,6 +199,7 @@ async function turn(body, active = null) {
         "Content-Type": spoken ? "audio/wav" : "text/plain",
         "X-Iris-Session": controller.session,
         "X-Iris-Face": "1",
+        "X-Iris-Command-Feedback": "1",
         "X-Iris-Web-Personality": encodeURIComponent(controller.personality || ""),
       },
       body,
@@ -211,11 +215,18 @@ async function turn(body, active = null) {
       }
       if (response.status === 422 && spoken) {
         feedback = "I didn’t catch that. Try again.";
+        commandFeedback.show({title:"No speech recognised", message:feedback, status:"error"});
         return;
       }
       throw new Error(reply.error || "Iris couldn’t answer.");
     }
     controller.acknowledge(request, reply, response.headers.get("X-Iris-Private") === "1");
+    commandFeedback.companion(reply.companion_mode);
+    if (reply.selected_personality && controller.personality !== reply.selected_personality) {
+      commandFeedback.show({title:"Personality unchanged", status:"info",
+        message:`Keeping your newer selection: ${controller.personality}.`});
+    } else if (reply.command) commandFeedback.show(reply.command);
+    else commandFeedback.clear();
     if (reply.selected_personality) menu.setActive(controller.personality);
     connection.open = false;
     if (remember.checked && !rememberOption.hidden && token !== savedToken) {
@@ -254,6 +265,8 @@ async function turn(body, active = null) {
   } catch (error) {
     if (!controller.current(request)) return;
     disableMic();
+    commandFeedback.show({title:"No confirmation received",
+      message:"Check the command's status before trying again.", status:"error"});
     feedback = error.name === "TimeoutError"
       ? "Iris took too long. Check any device action before trying again."
       : error instanceof TypeError ? "Couldn’t reach Iris. Check the connection." : error.message;

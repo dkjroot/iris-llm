@@ -23,12 +23,25 @@ class VoiceTiming(BaseModel):
     audio_seconds: float = Field(ge=0, allow_inf_nan=False)
 
 
+COMMAND_FEEDBACK_HEADER = "X-Iris-Command-Feedback"
+
+
+class CommandFeedback(BaseModel):
+    """A deterministic control result, never an inference from assistant prose."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    title: str = Field(min_length=1, max_length=80)
+    message: str = Field(min_length=1, max_length=320)
+    status: Literal["success", "error", "info"] = "info"
+
+
 class TurnCompletion(BaseModel):
     """Authoritative server outcome, not proof that the client played the audio."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
     outcome: Literal["committed"]
     private: bool
+    command: CommandFeedback | None = None
     exchange_id: str | None = Field(default=None, min_length=1, max_length=128)
     deleted_exchange_id: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -43,6 +56,7 @@ class TurnReply(BaseModel):
     volume: VolumeCommand | None = None
     expression: FaceExpression | None = None
     selected_personality: str | None = None
+    command: CommandFeedback | None = None
     _voice_timing: VoiceTiming | None = PrivateAttr(default=None)
     _streamed: bool = PrivateAttr(default=False)
     _exchange_id: str | None = PrivateAttr(default=None)

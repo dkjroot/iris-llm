@@ -275,6 +275,10 @@ def test_real_http_volume_roundtrip_speaks_actual_result_without_chat(mode):
                     assert "couldn't check or change" in reply.text
                 else:
                     assert reply.text == "Speaker volume is 49 percent."
+                assert reply.command.status == (
+                    "error" if mode in {"disabled", "failure"} else "success"
+                )
+                assert reply.command.message == reply.text
                 assert client.private_mode == (mode == "private")
                 read_wav(base64.b64decode(reply.audio))
                 if mode == "disabled":

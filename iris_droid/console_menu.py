@@ -116,6 +116,7 @@ class ConsoleMenu:
             wake,
             self.selection,
             self.error,
+            state.notice if state else None,
         )
         if view == self.last_view:
             return True
@@ -185,8 +186,44 @@ class ConsoleMenu:
         else:
             top = self.note("With home automation set up, ask Iris about your own devices.", top)
             self.phrases(self.commands["home"], top)
+        self.draw_notice(state)
         self.pygame.display.flip()
         return True
+
+    def draw_notice(self, state: DisplayState | None) -> None:
+        if state is None:
+            return
+        if (
+            state.companion_mode
+            and self.page is None
+            and (state.activity != "idle" or state.preview or state.show_idle)
+        ):
+            badge = self.font(17, True).render("Companion on", True, MINT)
+            width, _ = badge.get_size()
+            self.screen.blit(badge, (self.width - width - self.margin, self.px(24)))
+        if state.notice is None:
+            return
+        title, message, status = state.notice
+        color = {"success": MINT, "error": PEACH, "processing": SKY}.get(status, LILAC)
+        width = min(self.width - self.margin * 2, self.px(680))
+        lines = self.wrap(message, width - self.px(36), 18)
+        if len(lines) > 3:
+            lines = [*lines[:2], lines[2].rstrip(" .") + "…"]
+        line_h = self.font(18, False).get_linesize()
+        height = self.px(54) + line_h * len(lines)
+        x, y = (self.width - width) // 2, self.height - self.margin - height
+        self.pygame.draw.rect(self.screen, PANEL, (x, y, width, height), border_radius=self.px(14))
+        self.pygame.draw.rect(
+            self.screen, color, (x, y, width, height), width=2, border_radius=self.px(14)
+        )
+        self.screen.blit(
+            self.font(21, True).render(title, True, color), (x + self.px(18), y + self.px(12))
+        )
+        for i, line in enumerate(lines):
+            self.screen.blit(
+                self.font(18, False).render(line, True, WHITE),
+                (x + self.px(18), y + self.px(42) + i * line_h),
+            )
 
     def open_category(self, item: Category) -> None:
         self.category = item

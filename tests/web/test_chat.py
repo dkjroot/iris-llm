@@ -195,3 +195,65 @@ def test_pagehide_prevents_late_turn_from_mutating_the_restored_page(web_page):
     expect(page.locator("#send")).to_be_enabled()
     expect(page.locator("#messages article")).to_have_count(0)
     expect(page.locator("#message")).to_have_value("This response will arrive late")
+
+
+def test_command_receipt_bubbles_then_expires_and_prose_cannot_confirm(web_page):
+    from playwright.sync_api import expect
+
+    page, _ = web_page
+    replies = [
+        {
+            "heard": "please turn companion mode on",
+            "text": "Companion mode on.",
+            "companion_mode": True,
+            "command": {
+                "title": "Companion mode on",
+                "message": "Enabled for this conversation.",
+                "status": "success",
+            },
+        },
+        {"heard": "hello", "text": "Companion mode is on.", "companion_mode": False},
+    ]
+    pending = []
+    page.route("**/v1/text", lambda route: pending.append(route))
+    page.locator("#message").fill("please turn companion mode on")
+    page.get_by_role("button", name="Send", exact=True).click()
+    notice = page.locator(".iris-command-notice")
+    expect(notice).to_contain_text("Processing…")
+    for _ in range(100):
+        if pending:
+            break
+        page.wait_for_timeout(10)
+    assert pending
+    assert pending[0].request.headers["x-iris-command-feedback"] == "1"
+    pending.pop().fulfill(json={"audio": "", "finished": False, **replies[0]})
+    expect(notice).to_have_attribute("data-status", "success")
+    expect(notice).to_contain_text("Companion mode on")
+    badge = page.locator(".iris-companion-badge")
+    expect(badge).to_be_visible()
+    expect(notice).to_be_hidden(timeout=8000)
+    expect(badge).to_be_visible()
+    page.locator("#message").fill("hello")
+    page.get_by_role("button", name="Send", exact=True).click()
+    for _ in range(100):
+        if pending:
+            break
+        page.wait_for_timeout(10)
+    assert pending
+    pending.pop().fulfill(json={"audio": "", "finished": False, **replies[1]})
+    expect(page.locator("#status")).to_have_text("Ready")
+    expect(notice).to_be_hidden()
+    expect(badge).to_be_hidden()
+
+
+def test_command_failure_is_visible_without_claiming_the_action_failed(web_page):
+    from playwright.sync_api import expect
+
+    page, _ = web_page
+    page.route("**/v1/text", lambda route: route.fulfill(status=503, json={"error": "Unavailable"}))
+    page.locator("#message").fill("companion mode on")
+    page.get_by_role("button", name="Send", exact=True).click()
+    notice = page.locator(".iris-command-notice")
+    expect(notice).to_have_attribute("data-status", "error")
+    expect(notice).to_contain_text("No confirmation received")
+    expect(page.locator(".iris-companion-badge")).to_be_hidden()

@@ -43,6 +43,15 @@ The Pi uses pre-rendered artwork and a small cache of animation frames at up to
 transitions between expressions. Neither needs a 3D engine or downloaded artwork.
 Update the PC and client together to get the full expression range.
 
+Built-in voice and text commands now show a brief result bubble over the face.
+“Processing…” means Iris is checking the request; green confirms a completed
+change, and amber reports an error or missing confirmation. Some controls need a
+further choice or confirmation, so those show an informational response instead.
+The bubble disappears after about six seconds. **Companion on** stays visible
+while the face is awake, so you don't have to remember the last spoken reply.
+These indicators work on the native Pi display and in the phone's web interface.
+See [voice commands and confirmations](voice-commands.md) for examples.
+
 ## Choose a face
 
 While Iris's face is on screen, tap the smiley in the top left to cycle through

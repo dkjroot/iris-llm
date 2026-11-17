@@ -7,7 +7,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
 import speech_recognition as sr
@@ -19,6 +19,7 @@ from iris_domain.personality import (
     PersonalityContext,
 )
 from iris_domain.replies import (
+    CommandFeedback,
     TurnReply,
 )
 from iris_domain.turn import TurnExecution
@@ -193,6 +194,33 @@ class TurnCoordinator:
             decision,
         )
         if control is not None:
+            # Stamp only deterministic command outcomes. Streamed replies carry
+            # this receipt in their final completion frame, after execution.
+            if control.volume is None:
+                kind = parsed.first or "command"
+                title = {
+                    "companion": "Companion mode status",
+                    "clear": "Context cleared",
+                    "stop": "Stopped listening",
+                    "personality": "Personality",
+                    "volume": "Speaker volume",
+                    "delete": "Delete previous",
+                }.get(kind, "Command response")
+                status: Literal["success", "error", "info"] = (
+                    "success" if kind in {"clear", "stop"} else "info"
+                )
+                if kind == "volume":
+                    status = "error"
+                if kind == "personality" and parsed.personality:
+                    status = "success" if control.selected_personality is not None else "error"
+                receipt_text = (
+                    control.text
+                    if kind in {"companion", "clear", "stop", "personality", "volume", "delete"}
+                    else "Command handled. Iris's reply has the details."
+                )
+                control.command = CommandFeedback(
+                    title=title, message=receipt_text[:320] or "Command handled.", status=status
+                )
             return control
         chat = self.app._session(session)
         # All clients for an owner deliberately share one active conversation.
@@ -279,6 +307,7 @@ class TurnCoordinator:
                 companion=chat.companion_mode,
                 finished=finished,
                 expression=expression,
+                transactional=command is not None,
             )
             if decision is not None:
                 decision.require_acceptance()
@@ -318,6 +347,14 @@ class TurnCoordinator:
         except BaseException:
             chat.restore(previous)
             raise
+        if command is not None:
+            result.command = CommandFeedback(
+                title="Companion mode on" if command else "Companion mode off",
+                message="Enabled for this conversation."
+                if command
+                else "Automatic conversation is off.",
+                status="success",
+            )
         if finished:
             del self.app.sessions[session]
         return result

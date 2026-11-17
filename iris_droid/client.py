@@ -22,6 +22,7 @@ from uuid import uuid4
 import httpx
 from pydantic import ValidationError
 
+from iris_domain.replies import COMMAND_FEEDBACK_HEADER, CommandFeedback
 from iris_droid.capture import (
     DEFAULT_MICROPHONE_BUFFER,
     CaptureCalibration,
@@ -120,6 +121,7 @@ class DroidClient:
         self.state = ClientController(self.personality_headers)
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
+        self.headers[COMMAND_FEEDBACK_HEADER] = "1"
         if wake_conversation:
             self.headers["X-Iris-Wake-Conversation"] = "1"
         if face:
@@ -171,6 +173,15 @@ class DroidClient:
                 self.cancel_feedback.cancelled()
             raise
         self.state.acknowledge(reply, personality_revision, companion_idle=companion_idle)
+        if (
+            reply.selected_personality is not None
+            and self.personality != reply.selected_personality
+        ):
+            reply.command = CommandFeedback(
+                title="Personality unchanged",
+                message=f"Keeping your newer selection: {self.personality}.",
+                status="info",
+            )
         if reply.volume is not None:
             if companion_idle or reply.volume != volume_command(reply.heard):
                 raise ValueError("Unexpected speaker volume action")
@@ -191,6 +202,11 @@ class DroidClient:
             if reply.volume is not None:
                 raise ValueError("Unexpected action in volume acknowledgement")
             reply.heard = heard
+            reply.command = CommandFeedback(
+                title="Speaker volume",
+                message=result.description(),
+                status="success" if result.state is not None else "error",
+            )
         return reply
 
     def _request(self, path: str, body: bytes, headers: dict[str, str]) -> TurnReply:
@@ -262,6 +278,8 @@ class DroidClient:
             return  # Older servers do not promise authoritative final metadata.
         completion = TurnCompletion.model_validate(value)
         self.private_mode = completion.private
+        if completion.command is not None:
+            reply.command = completion.command
         reply._completion = completion
         reply._exchange_id = completion.exchange_id
         reply._deleted_exchange_id = completion.deleted_exchange_id
@@ -1099,6 +1117,7 @@ def main(argv: list[str] | None = None) -> int:
 
                 def stream_player(start: VoiceStreamStart, chunks: Iterator[bytes]) -> int | None:
                     feedback.stop_working()
+                    display.clear_notice()
                     with display.speaking(start.reply.expression):
                         return play_stream(
                             chunks,
@@ -1250,6 +1269,10 @@ def main(argv: list[str] | None = None) -> int:
                             play_wav(body, speaker)
                     try:
                         display.show("thinking")
+                        if not proactive:
+                            display.notify(
+                                "Processing…", "Checking what you said.", "processing", seconds=600
+                            )
                         with (
                             nullcontext() if proactive or args.voice_cancel else feedback.working()
                         ):
@@ -1259,12 +1282,19 @@ def main(argv: list[str] | None = None) -> int:
                                 **({"companion_idle": True} if proactive else {}),
                             )
                     except TurnCancelled:
+                        display.show("idle")
+                        display.notify("Cancelled", "This turn was discarded.")
                         print("Voice turn discarded.", flush=True)
                         if conversation is not None and conversation.active:
                             conversation.activate()
                         continue
                     except httpx.HTTPError as error:
                         display.show("idle")
+                        display.notify(
+                            "No confirmation received",
+                            "Check the command's status before trying again.",
+                            "error",
+                        )
                         # Failed input hasn't confirmed intelligible speech. Keep
                         # its deadline and unanswered-opener backoff intact, but
                         # pace failed proactive requests so they don't spin.
@@ -1288,6 +1318,13 @@ def main(argv: list[str] | None = None) -> int:
                             "Check the PC; turn not resent."
                         )
                         continue
+                    display.companion_mode = reply.companion_mode
+                    if reply.command is not None:
+                        display.notify(
+                            reply.command.title, reply.command.message, reply.command.status
+                        )
+                    else:
+                        display.clear_notice()
                     private = client.private_mode is True
                     if private and not args.show_private_text:
                         print("Private conversation: transcript hidden.")

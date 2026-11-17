@@ -50,6 +50,8 @@ class DisplayState:
     preview: bool = False
     show_idle: bool = False
     mouth: tuple[tuple[float, float], ...] | None = None
+    notice: tuple[str, str, str] | None = None
+    companion_mode: bool | None = None
 
 
 def read_state(port: int) -> DisplayState | None:
@@ -76,6 +78,20 @@ def read_state(port: int) -> DisplayState | None:
     personalities = (
         tuple(name for name in names if isinstance(name, str)) if isinstance(names, list) else ()
     )
+    notice = state.get("notice")
+    visible_notice = None
+    if isinstance(notice, dict):
+        title, message, status = notice.get("title"), notice.get("message"), notice.get("status")
+        if (
+            isinstance(title, str)
+            and len(title) <= 80
+            and isinstance(message, str)
+            and len(message) <= 320
+            and isinstance(status, str)
+            and status in {"success", "error", "info", "processing"}
+        ):
+            visible_notice = (title, message, str(status))
+    companion = state.get("companion_mode")
     active = state.get("personality")
     wake = state.get("wake_phrase")
     return DisplayState(
@@ -89,6 +105,8 @@ def read_state(port: int) -> DisplayState | None:
         preview=state.get("preview") is True,
         show_idle=state.get("show_idle") is True,
         mouth=read_mouth(state["mouth"], received) if "mouth" in state else None,
+        notice=visible_notice,
+        companion_mode=companion if isinstance(companion, bool) else None,
     )
 
 
@@ -324,7 +342,9 @@ def render(
             previous_blank = False
             clock.tick(24)
             continue
-        black = not visible_face and (state is None or state.screensaver == "black")
+        black = not visible_face and (
+            state is None or (state.screensaver == "black" and state.notice is None)
+        )
         if not black or not previous_blank:
             screen.fill((0, 0, 0))
             if state is not None:
@@ -350,6 +370,7 @@ def render(
                     )
                 elif state.screensaver == "snow":
                     draw_snow(pygame, screen, seconds)
+            menu.draw_notice(state)
             pygame.display.flip()
         previous_blank = black
         clock.tick(12 if state is None or state.activity == "idle" else 24)

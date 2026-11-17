@@ -539,7 +539,15 @@ utterance by then.
 
 ## 6. Companion mode
 
-Sometimes I just want Iris to hang out and chat, rather than keep asking what she can help with. Say **“companion mode on”** as a complete utterance, or type it in text mode. This asks the model to play the part of a relaxed robot companion: follow a tangent, have a bit of a laugh, and let a reply just be a reply without always tacking another question onto the end. She can still help with practical things when you ask. How well she settles into that role depends on the model and your configured personality prompt.
+Sometimes I just want Iris to hang out and chat, rather than keep asking what she can help with. Say **“companion mode on”** as a complete utterance, or type it in text mode. “Please turn companion mode on”, “enable companion mode” and “could you switch on companion mode?” work too. This asks the model to play the part of a relaxed robot companion: follow a tangent, have a bit of a laugh, and let a reply just be a reply without always tacking another question onto the end. She can still help with practical things when you ask. How well she settles into that role depends on the model and your configured personality prompt.
+
+A successful command uses Iris's normal voice to say “Companion mode on. Let's
+hang out.” Hearing that voice doesn't mean the request went to the chat model.
+On the face display, a green **Companion mode on** bubble confirms the change,
+and **Companion on** stays visible while the face is awake. Say **“companion mode
+status”** or **“is companion mode on?”** to check it. The bubble disappears after
+about six seconds. [Voice commands and confirmations](voice-commands.md) explains
+how to tell a command result from an ordinary reply.
 
 While companion mode is on, Iris can start a conversation herself after a random stretch of quiet. Initially that's somewhere between 90 seconds and four minutes, measured from when she finishes speaking. She picks from a bank of ideas and asks the model to write something fresh, using the recent conversation for context. There are ordinary check-ins, but also terrible robot business ideas, suspiciously specific awards, useless superpowers and things a pigeon might put in a strongly worded letter. The idea is to get an occasional unexpected thought or a laugh, rather than hear the same recorded “how was your day?” every time.
 

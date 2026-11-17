@@ -27,6 +27,7 @@ from iris_app.decisions import VoiceDecision as VoiceDecision
 from iris_app.replies import STREAM_REPLY as STREAM_REPLY
 from iris_app.runtime import Brain as Brain
 from iris_chat_engines.compatible import ChatError
+from iris_domain.replies import COMMAND_FEEDBACK_HEADER, CommandFeedback
 from iris_droid.admission import BoundedHTTPServer, QueueTimeout, TurnQueue
 from iris_droid.expression import FACE_HEADER
 from iris_droid.face_display import BROWSER_FACE_ASSETS
@@ -184,6 +185,12 @@ def handler_for(
             frame = json.dumps({"event": event, **data}, separators=(",", ":"))
             self.wfile.write((frame + "\n").encode())
 
+        def reply_payload(self, reply: TurnReply) -> dict[str, object]:
+            return reply.model_dump(
+                exclude_none=True,
+                exclude={"command"} if self.headers.get(COMMAND_FEEDBACK_HEADER) != "1" else set(),
+            )
+
         def completion(self, reply: TurnReply) -> dict[str, object]:
             if self.headers.get(COMPLETION_HEADER) != "1":
                 return {}
@@ -193,7 +200,12 @@ def handler_for(
                     private=brain.private_mode,
                     exchange_id=reply._exchange_id,
                     deleted_exchange_id=reply._deleted_exchange_id,
-                ).model_dump()
+                    command=reply.command,
+                ).model_dump(
+                    exclude={"command"}
+                    if self.headers.get(COMMAND_FEEDBACK_HEADER) != "1"
+                    else set()
+                )
             }
 
         def start_voice_stream(self) -> None:
@@ -347,7 +359,7 @@ def handler_for(
                     self._stream_started = True
                     self.send_event(
                         "start",
-                        reply=reply.model_dump(exclude_none=True),
+                        reply=reply.model_dump(exclude_none=True, exclude={"command"}),
                         rate=rate,
                         started_ns=started_ns,
                         first_audio_ns=first_audio_ns,
@@ -467,6 +479,11 @@ def handler_for(
                         text_only=self.headers.get("X-Iris-Text-Only") == "1",
                         companion=chat is not None and chat.companion_mode,
                     )
+                    reply.command = CommandFeedback(
+                        title="Speaker volume",
+                        message=result.description(),
+                        status="success" if result.state is not None else "error",
+                    )
                 else:
                     if self.path == VOICE_CANCEL_PATH and companion_idle:
                         raise ValueError("Companion openers do not support cancellation")
@@ -521,7 +538,7 @@ def handler_for(
                 return reply
             self.respond(
                 200,
-                reply.model_dump_json(exclude_none=True).encode(),
+                json.dumps(self.reply_payload(reply), ensure_ascii=False).encode(),
                 private=brain.private_mode,
                 reply=reply,
                 voice_timing=(
