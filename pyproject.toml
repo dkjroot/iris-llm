@@ -27,7 +27,7 @@ vad = ["onnxruntime>=1.20,<2"]
 whisper = ["faster-whisper>=1.1,<2"]
 kokoro = ["kokoro-onnx>=0.4.9,<0.5", "onnxruntime>=1.20,<2"]
 wav2vec2 = ["transformers>=4.48,<5", "torch>=2.6,<3"]
-dev = ["pytest>=8.3,<10", "mypy>=1.15,<2", "ruff>=0.11,<1"]
+dev = ["pytest>=8.3,<10", "mypy>=1.15,<2", "ruff>=0.11,<1", "coverage>=7.6,<8", "build>=1.2,<2", "setuptools>=77", "pip>=24,<27", "playwright>=1.51,<2"]
 
 [project.scripts]
 iris = "iris:main"
@@ -67,3 +67,23 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+xfail_strict = true
+markers = [
+    "browser: runs JavaScript and browser checks (enable with --browser)",
+    "artifact: builds and installs a wheel (enable with --artifacts)",
+    "review_regression: a regression identified by the November 2026 code review",
+]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["."]
+omit = ["tests/*", "build/*", ".cache/*", ".venv*/*", "agent_docs/*"]
+
+[tool.coverage.report]
+include = ["iris.py", "configure.py", "configure_client.py", "iris_*.py", "iris_*/*", "scripts/*"]
+show_missing = true
+precision = 2
+
+[tool.coverage.json]
+output = ".cache/checks/coverage.json"

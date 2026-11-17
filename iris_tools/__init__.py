@@ -134,7 +134,9 @@ class ToolRegistry:
                 home = HomeClient(settings)
                 for name, (operation, description) in HOME_TOOLS.items():
                     self.skills[name] = Skill(
-                        name, description, OPERATIONS[operation],
+                        name,
+                        description,
+                        OPERATIONS[operation],
                         partial(home.execute, operation),
                     )
             if settings.notifications_enabled:

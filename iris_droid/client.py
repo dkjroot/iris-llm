@@ -938,6 +938,7 @@ def main(argv: list[str] | None = None) -> int:
                 ) as transport,
                 ExitStack() as stack,
             ):
+
                 def show_listening() -> None:
                     display.show("listening")
 

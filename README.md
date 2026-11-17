@@ -2254,5 +2254,9 @@ python scripts/check.py
 The tests use fake devices and models, plus local HTTP tests. They don't need a
 microphone, GPU, downloaded weights or a working model server. Actual listening
 quality and wake accuracy still need a conversation on the hardware you'll use.
+The [testing guide](docs/testing.md) covers branch coverage, installed-package checks,
+browser tests and local performance measurements. There is also a
+[compatibility reference](docs/compatibility.md) for keeping existing behaviour
+steady while changing the code.
 The [prototypes branch](https://github.com/dkjroot/iris-llm/tree/prototypes/examples)
 keeps the earlier experiments if you're interested in how this started.
