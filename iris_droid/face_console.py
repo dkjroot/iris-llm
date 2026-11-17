@@ -242,6 +242,17 @@ def draw_snow(pygame: ModuleType, screen: Surface, seconds: float) -> None:
         pygame.draw.rect(screen, (25, 31, 36), (round(x), round(y), size, size))
 
 
+def smile_icon(pygame: ModuleType, size: int) -> Surface:
+    # Draw large and scale down for smooth curves on the panel.
+    icon = pygame.Surface((72, 72), pygame.SRCALPHA)
+    ink = (249, 246, 255)
+    pygame.draw.circle(icon, ink, (36, 36), 33, width=5)
+    pygame.draw.circle(icon, ink, (27, 29), 4)
+    pygame.draw.circle(icon, ink, (45, 29), 4)
+    pygame.draw.arc(icon, ink, (20, 20, 32, 34), 1.15 * math.pi, 1.85 * math.pi, width=5)
+    return cast(Surface, pygame.transform.smoothscale(icon, (size, size)))
+
+
 def render(
     pygame: ModuleType,
     screen: Surface,
@@ -254,9 +265,9 @@ def render(
     sprites: Callable[[FaceExpression, str], Surface] | None = None
     previous_blank: tuple[bool, bool] | None = None
     menu = ConsoleMenu(pygame, screen, select)
-    cycle_button = pygame.Rect(menu.px(12), menu.px(12), menu.px(126), menu.px(50))
-    cycle_label = menu.font(18, True).render("Next face", True, (249, 246, 255))
-    label_width, label_height = cycle_label.get_size()
+    cycle_button = pygame.Rect(menu.px(12), menu.px(12), menu.px(50), menu.px(50))
+    icon_size = menu.px(26)
+    cycle_icon = smile_icon(pygame, icon_size)
     while True:
         seconds = monotonic()
         state = current()
@@ -298,10 +309,10 @@ def render(
                     screen, (83, 78, 109), cycle_button, width=1, border_radius=menu.px(14)
                 )
                 screen.blit(
-                    cycle_label,
+                    cycle_icon,
                     (
-                        cycle_button.centerx - label_width // 2,
-                        cycle_button.centery - label_height // 2,
+                        cycle_button.centerx - icon_size // 2,
+                        cycle_button.centery - icon_size // 2,
                     ),
                 )
             pygame.display.flip()

@@ -40,7 +40,10 @@ export function mountFaceCycle(cycle) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "iris-face-cycle";
-  button.textContent = "Next face";
+  button.setAttribute("aria-label", "Next face");
+  const smile = document.createElement("span");
+  smile.setAttribute("aria-hidden", "true");
+  button.append(smile);
   button.addEventListener("click", cycle);
   canvas.parentElement.append(button);
   return button;

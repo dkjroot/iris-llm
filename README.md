@@ -678,7 +678,7 @@ The selection belongs to the tab you're using. To use your own personalities,
 add `--web-personalities-file PATH` to the server command. It takes the same
 JSON format as the robot's `--personalities-file`.
 
-Tap **Next face** in the top left to try a different face. Your browser
+Tap the smiley in the top left to try a different face. Your browser
 remembers the one you picked for the next time you open Iris.
 
 On the computer that runs Iris, add `--web-chat` to the existing server command

@@ -68,13 +68,44 @@
   position: absolute;
   top: .7rem;
   left: .7rem;
+  display: grid;
+  place-items: center;
+  width: 2.8rem;
   min-height: 2.8rem;
-  padding: 0 .85rem;
+  padding: 0;
   border: 1px solid #534e6d;
   border-radius: .85rem;
   background: #19162a;
   color: #f9f6ff;
-  font: 700 .95rem/1 system-ui, sans-serif;
+}
+.iris-face-cycle span {
+  position: relative;
+  box-sizing: border-box;
+  width: 24px;
+  height: 24px;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+}
+.iris-face-cycle span::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 5px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 7px 0 currentColor;
+}
+.iris-face-cycle span::after {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 5px;
+  width: 10px;
+  height: 7px;
+  border-bottom: 2px solid currentColor;
+  border-radius: 50%;
 }
 .iris-face-cycle:active { background: #302743; }
 .iris-face-cycle:disabled { opacity: .55; cursor: default; }

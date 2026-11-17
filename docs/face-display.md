@@ -24,7 +24,7 @@ separate from the words Iris speaks and saves in conversation history.
 
 ## Choose a face
 
-Tap **Next face** in the top left to cycle through the faces. If Iris is idle,
+Tap the smiley in the top left to cycle through the faces. If Iris is idle,
 the new face appears for a few seconds so you can see what you picked. The Pi
 and its local preview share a choice and remember it when the client restarts.
 
