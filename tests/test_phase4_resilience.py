@@ -377,7 +377,9 @@ def test_real_worker_protocol_echoes_identity_and_terminal_state(monkeypatch, en
     assert all(m["request_id"] == 17 for m in messages[1:])
 
 
-def test_authenticated_health_has_no_conversation_or_config_content():
+@pytest.mark.parametrize("instance", ["", "a" * 32, "invalid-private-sentinel"])
+def test_authenticated_health_has_no_conversation_or_config_content(monkeypatch, instance):
+    monkeypatch.setenv("IRIS_INSTANCE_ID", instance)
     from http.server import HTTPServer
 
     import httpx
@@ -401,6 +403,7 @@ def test_authenticated_health_has_no_conversation_or_config_content():
                         "status": "ready",
                         "queue": {"active": False, "waiting": 0},
                         "speech": {"state": "in_process"},
+                        **({"instance": instance} if instance == "a" * 32 else {}),
                     }
                     assert "health-secret" not in reply.text
             finally:

@@ -197,3 +197,6 @@ agent_docs/
 
 # Local Iris face prototypes
 /face-experiments/
+
+# Development-only JavaScript dependencies
+/node_modules/

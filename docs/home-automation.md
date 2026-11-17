@@ -150,3 +150,41 @@ by the clocks going forward is skipped by the schedule too. When the clocks
 go back, a rule in the repeated hour runs the first time. The plug's own
 Tapo schedules are separate, so clear any rules in the Tapo app that would
 conflict with the ones you ask Iris to run.
+
+
+## Backing up the home setup
+
+Stop the update timer and home service before making a backup, and make sure no
+manual `chip-tool` command is using the pairing directory. Save the configured
+schedule database, the entire `matter_storage` directory and your home configuration,
+certificate and private key. Keep the token through your normal secret backup
+process too. The schedule database alone cannot restore Matter pairing or TLS.
+Treat this backup as private: controller fabric files and keys grant access to
+things in your house.
+
+For the schedule database, Python's SQLite backup operation makes a consistent
+copy, including any committed changes still in a journal after an unclean exit.
+Run this with the real configured source path and a new backup destination:
+
+```python
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+
+source_path = Path("/path/to/schedules.sqlite3").resolve()
+backup_path = Path("/path/to/new-backup/schedules.sqlite3").resolve()
+assert source_path.is_file() and not backup_path.exists()
+with closing(sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True)) as source:
+    with closing(sqlite3.connect(backup_path)) as backup:
+        source.backup(backup)
+        assert backup.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+```
+
+Create the backup directory first and copy the other files while the service is
+still stopped. Restore with the service stopped too, keeping any current database
+and journal sidecars together in a separate recovery directory before replacing
+them. Preserve file ownership and restrictive permissions. Check the clock,
+timezone, device identities and saved schedules before enabling the scheduler:
+an old backup can bring back schedules you have since edited or removed. Test
+recovery on a harmless device, and re-enable the updater only after the restored
+service works.

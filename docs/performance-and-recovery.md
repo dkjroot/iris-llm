@@ -55,7 +55,7 @@ answer the next request. An in-process synthesizer is labelled `in_process`
 rather than claiming it has a separate supervised worker.
 
 The home service includes a `scheduler` object in its existing authenticated
-`POST /v1/devices` result. Its state distinguishes ready, waiting for clock synchronization, degraded, stopped
+`POST /v1/list` result. Its state distinguishes ready, waiting for clock synchronization, degraded, stopped
 and stopping, with safe error categories for affected devices or the scheduler.
 A bad saved schedule or an unexpected adapter exception no longer quietly kills
 all scheduling while the HTTP service continues to answer.
@@ -173,3 +173,24 @@ Run timing comparisons without the test suite competing for CPU. Keep the
 resulting JSON alongside the software version, Python/SQLite versions and machine
 details. The tests check ordering and fault recovery; timings are measurements,
 not machine-specific CI pass/fail thresholds.
+
+## What to include in a bug report
+
+Start with the Iris commit, platform, Python version, selected engines, safe error
+category and the smallest synthetic reproduction. Stage timing with
+`IRIS_PERFORMANCE_LOG=1` omits conversation text and credentials. Health checks
+report readiness and resource state; a Windows watcher also supplies an opaque
+instance identifier. None of these is evidence that a real reply played correctly.
+
+Raw model tracing is different: it can contain prompts, replies, recalled history
+and tool arguments. Private-mode protections do not turn an ordinary non-private
+raw trace into a safe diagnostic log. A provisional turn that is later cancelled
+may already have appeared in a trace even though it is never committed to the
+archive. Deleting or forgetting a conversation does not erase terminal history,
+redirected logs, exports or independent backups. Leave raw tracing off for normal
+operation, use synthetic inputs when debugging it, and inspect logs before sharing.
+
+Do not include authorization headers, configuration dumps, model-provider keys,
+notification tokens, recordings or database files in public reports. Tests should
+use recognizable synthetic sentinel values to check error and log paths, without
+putting a real secret in the fixture in the first place.

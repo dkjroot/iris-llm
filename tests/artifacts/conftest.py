@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,12 @@ def installed_artifact(tmp_path_factory):
         shutil.copy2(path, source / path.name)
     for name in (
         "pyproject.toml",
+        "MANIFEST.in",
+        "CONTRIBUTING.md",
+        "package.json",
+        "package-lock.json",
+        ".node-version",
+        "uv.lock",
         "README.md",
         "LICENSE",
         "LICENSING.md",
@@ -30,6 +37,14 @@ def installed_artifact(tmp_path_factory):
         if path.is_dir():
             shutil.copytree(path, source / path.name, ignore=shutil.ignore_patterns("__pycache__"))
 
+    for name in ("docs", "scripts", "systemd", "tests"):
+        shutil.copytree(root / name, source / name, ignore=shutil.ignore_patterns("__pycache__"))
+    # Deliberately plant local material to ensure the distribution excludes it.
+    for name in ("AGENTS.md", "DEVELOPMENT.md", "local-config.json", ".env"):
+        (source / name).write_text("synthetic-private-sentinel", encoding="utf-8")
+    (source / "agent_docs").mkdir()
+    (source / "agent_docs" / "notes.md").write_text("synthetic-private-sentinel", encoding="utf-8")
+
     def run(*args):
         result = subprocess.run(args, cwd=work, capture_output=True, text=True, timeout=120)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -39,11 +54,54 @@ def installed_artifact(tmp_path_factory):
         sys.executable,
         "-m",
         "build",
-        "--wheel",
+        "--sdist",
         "--no-isolation",
         "--outdir",
         str(work),
         str(source),
+    )
+    (sdist,) = work.glob("*.tar.gz")
+    with tarfile.open(sdist) as archive:
+        names = ["/".join(Path(name).parts[1:]) for name in archive.getnames()]
+        assert {
+            "CONTRIBUTING.md",
+            "docs/updates.md",
+            "docs/releasing.md",
+            "docs/start-here.md",
+            "docs/technical-guide.md",
+            "docs/configuration-reference.md",
+            "docs/verification.md",
+            "docs/setup-windows.md",
+            "docs/setup-macos.md",
+            "docs/setup-linux.md",
+            "docs/setup-devices.md",
+            "docs/matter-controller.md",
+            "scripts/check_docs.py",
+            "scripts/build_reference.py",
+            "scripts/iris_autoupdate.py",
+            "systemd/iris-autoupdate.service",
+            "package-lock.json",
+            "tests/test_documentation.py",
+            "uv.lock",
+        } <= set(names)
+        assert not any(
+            name in {"AGENTS.md", "DEVELOPMENT.md", "local-config.json", ".env"}
+            or name.startswith("agent_docs/")
+            for name in names
+        )
+        archive.extractall(work / "unpacked", filter="data")
+    (unpacked,) = (work / "unpacked").iterdir()
+    run(sys.executable, str(unpacked / "scripts/check_docs.py"))
+    run(sys.executable, str(unpacked / "scripts/build_reference.py"), "--check")
+    run(
+        sys.executable,
+        "-m",
+        "build",
+        "--wheel",
+        "--no-isolation",
+        "--outdir",
+        str(work),
+        str(unpacked),
     )
     (wheel,) = work.glob("*.whl")
     run(

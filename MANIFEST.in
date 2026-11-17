@@ -1,0 +1,13 @@
+include CONTRIBUTING.md package.json package-lock.json .node-version uv.lock
+recursive-include docs *.md
+recursive-include scripts *.py *.cjs
+recursive-include systemd *.service *.timer
+recursive-include tests *.py *.json *.sql *.md
+recursive-include tests/fixtures/tls *.pem
+exclude AGENTS.md DEVELOPMENT.md local-config.json client_config.json personalities.json .env
+prune agent_docs
+prune node_modules
+prune .cache
+prune .venv
+prune .git
+global-exclude __pycache__ *.py[cod] *.sqlite3 *.sqlite3-*

@@ -60,7 +60,7 @@ There's no graphical login to set up.
 From SSH, use a Pi that already boots to the console. If you have Raspberry Pi
 OS Desktop, you can select **Console** under boot options in `sudo raspi-config`
 and reboot. Make sure your normal Iris voice client is set to
-[start at boot](../README.md#7-start-the-pi-client-at-boot) with a `--face` option.
+[start at boot](client-setup.md#7-start-the-pi-client-at-boot) with a `--face` option.
 The display can start while the voice client is still coming up.
 
 Run these **Raspberry Pi OS (Bash)** commands from the Pi checkout:

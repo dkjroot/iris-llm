@@ -226,9 +226,11 @@ def handler_for(
                     if speech["state"] in {"failed", "closed"}
                     else "ready"
                 )
-                self.respond(
-                    200, json.dumps({"status": status, "queue": queue, "speech": speech}).encode()
-                )
+                health: dict[str, object] = {"status": status, "queue": queue, "speech": speech}
+                instance = os.environ.get("IRIS_INSTANCE_ID", "")
+                if re.fullmatch(r"[0-9a-f]{32}", instance):
+                    health["instance"] = instance
+                self.respond(200, json.dumps(health).encode())
                 return
             if web_chat and self.path == "/v1/web-personalities":
                 if web_personalities is None or self.authenticated():

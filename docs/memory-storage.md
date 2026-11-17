@@ -143,7 +143,7 @@ needs a separate measured change.
 ## Backing up, checking and restoring an archive
 
 1. Find the database selected by `memory_database` in your server configuration.
-   If it isn't set, the [README's memory section](../README.md#conversation-memory)
+   If it isn't set, the [README's memory section](memory-and-privacy.md#conversation-memory)
    explains the default paths. Stop the server and any memory maintenance commands
    cleanly so no process is writing the archive.
 2. Copy the database to a safe location outside the source checkout. Keep the

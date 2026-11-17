@@ -43,3 +43,42 @@ def test_missing_whisper_model_has_setup_instruction() -> None:
     with patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=constructor)}):
         with pytest.raises(ValueError, match="--download-models"):
             STT(Settings())
+
+
+def test_wav2vec_uses_local_evaluation_normalised_audio_and_no_gradients(monkeypatch):
+    from contextlib import nullcontext
+
+    from iris_stt_engines.wav2vec2_offline import STT
+
+    processor, model = Mock(), Mock()
+    processor.batch_decode.return_value = ["HELLO Iris"]
+    processor_factory = Mock(return_value=processor)
+    model_factory = Mock(return_value=model)
+    inference = Mock(side_effect=nullcontext)
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            Wav2Vec2Processor=SimpleNamespace(from_pretrained=processor_factory),
+            Wav2Vec2ForCTC=SimpleNamespace(from_pretrained=model_factory),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=inference))
+    settings = Settings(stt_engine="wav2vec2", tokenizer_model="tokenizer", ctc_model="weights")
+    recogniser = STT(settings)
+    processor_factory.assert_called_once_with("tokenizer", local_files_only=True)
+    model_factory.assert_called_once_with("weights", local_files_only=True)
+    model.eval.assert_called_once_with()
+    assert recogniser.is_offline()
+    assert recogniser.recognize(AudioData(b"", 16000, 2)) == ""
+    processor.assert_not_called()
+    audio = AudioData(np.array([-32768, 0, 32767], dtype="<i2").tobytes(), 16000, 2)
+    assert recogniser.recognize(audio) == "hello iris"
+    np.testing.assert_allclose(processor.call_args.args[0], [-1, 0, 32767 / 32768])
+    assert processor.call_args.kwargs == {"sampling_rate": 16000, "return_tensors": "pt"}
+    inference.assert_called_once_with()
+    model.assert_called_once_with(processor.return_value.input_values)
+    model.return_value.logits.argmax.assert_called_once_with(dim=-1)
+    model.side_effect = RuntimeError("synthetic inference failure")
+    with pytest.raises(RuntimeError, match="inference failure"):
+        recogniser.recognize(audio)

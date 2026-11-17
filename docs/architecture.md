@@ -12,6 +12,7 @@ The code is arranged around these boundaries:
 | `iris_domain` | Shared values: messages, session state, commands, personalities, replies and audio capabilities. These modules don't open devices, databases or network connections. |
 | `iris_app` | The order of operations for a turn, exact command routing, memory preparation, reply preparation and ownership of running work. |
 | `iris_chat_engines` | The model conversation loop and provider adapters. A backend implements `complete(messages, tools)`. |
+| `iris_home` | Standalone authenticated home service, device adapters, schedules and scheduler ownership. |
 | `iris_memory` | The SQLite archive, retrieval, derived summaries, facts and memory policies. |
 | `iris_tools` | Validated tool definitions, execution policy and the services those tools call. |
 | `iris_stt_engines` and `iris_tts_engines` | Speech recognition and synthesis adapters. Isolated synthesis backends share `iris_tts_engines.worker`. |
@@ -146,7 +147,7 @@ If it outlasts the drain wait, its lease retains the resources and performs clea
 when it returns. This is a bounded shutdown wait, not a promise that every native
 library can be interrupted. A service manager can still terminate the process.
 
-Isolated speech workers have bounded graceful-exit, kill/reap and reader-join
+Isolated speech workers have bounded kill/reap and reader-join
 waits. They no longer rely on an implicit unbounded `Popen` context exit. Client
 cancellation listeners have bounded joins; a listener that won't stop cannot
 cause acceptance of the pending turn. Playback completion waits use the audio's
@@ -173,3 +174,5 @@ table dictionary, see [memory storage and recovery](memory-storage.md).
 See [performance and recovery](performance-and-recovery.md) for redacted stage
 timings, health checks, speech-worker recovery, scheduler ordering and reproducible
 synthetic benchmarks.
+
+For runnable examples, see [the extension recipes](extensions.md) and [contributing](../CONTRIBUTING.md).

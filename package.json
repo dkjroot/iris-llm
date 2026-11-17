@@ -1,0 +1,14 @@
+{
+  "name": "iris-development-tools",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Reproducible development-only checks and face sprite generation for Iris",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "check:js": "node scripts/check_web.cjs",
+    "build:faces": "node scripts/build_face_sprites.cjs",
+    "check:faces": "node scripts/build_face_sprites.cjs --check",
+    "test": "npm run check:js && npm run check:faces"
+  },
+  "devDependencies": {"@napi-rs/canvas": "0.1.100"}
+}

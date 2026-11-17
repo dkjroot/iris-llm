@@ -1,3 +1,4 @@
+import os
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -56,6 +57,15 @@ def brain_factory(tmp_path):
             return harness
 
         yield create
+
+
+@pytest.fixture(autouse=True)
+def isolated_server_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tests opt into their own services; a developer's live credentials never do."""
+    for name in os.environ:
+        upper = name.upper()
+        if upper.startswith("IRIS_") and not upper.startswith("IRIS_TEST_"):
+            monkeypatch.delenv(name)
 
 
 @pytest.fixture(autouse=True)

@@ -37,6 +37,20 @@ test deliberately supplies a fallback.
 
 ## Coverage and known defects
 
+The [verification map](verification.md) connects features, configuration families
+and invariants to tests and physical acceptance. The generated
+[settings reference](configuration-reference.md) is checked by the documentation
+tests; regenerate it with `python scripts/build_reference.py` after changing
+declarations or help. Runnable extension examples cover chat, controls, tools,
+speech and devices.
+
+The test fixture removes inherited `IRIS_*` configuration and credentials before
+each test, preserving explicit `IRIS_TEST_*` opt-ins. A test must set its own
+synthetic keys/endpoints. This does not replace transport fakes: never point a
+test at a real home service or personal archive. Local HTTP tests bind port zero
+so the OS allocates a free port. Intentional stall tests use bounded subprocesses;
+deadline/race tests should prefer events or injected clocks over arbitrary sleeps.
+
 ```sh
 python scripts/check.py --coverage
 ```
@@ -76,7 +90,7 @@ python scripts/check.py --artifacts tests/artifacts
 ```
 
 These checks copy the package sources into a temporary build directory, build a
-wheel and install it into a fresh target directory without downloading packages.
+source distribution, build a wheel from its extracted contents and install it into a fresh target directory without downloading packages.
 An isolated Python process imports the installed code, checks command help and
 reads packaged assets. It disables site initialization, editable-install hooks,
 the working directory and `PYTHONPATH`. Third-party dependencies come from the
@@ -87,6 +101,13 @@ dependency resolution on a completely clean machine. The server and client
 wizards, other installed entry points and selected resources must all pass.
 
 ## JavaScript and browser checks
+
+Use the Node version in `.node-version` and run `npm ci --ignore-scripts`, then
+`npm test`. This checks module syntax, pure JavaScript contracts and regenerated
+face pixels without altering the shipped artwork. [Contributing](../CONTRIBUTING.md)
+explains the native-renderer tolerance. These checks complement the real browser
+suite below.
+
 
 Prepare the browser once, while you have a network connection:
 
@@ -183,3 +204,19 @@ comparisons. This is a diagnostic benchmark, not a machine-specific CI speed gat
 See [performance and recovery](performance-and-recovery.md) for redacted stage
 timings, health checks, speech-worker recovery, scheduler ordering and reproducible
 synthetic benchmarks.
+
+## Documentation and dependency profiles
+
+The ordinary suite checks local Markdown files and anchors, executes the Python
+extension recipes and checks the shared menu's command phrases against their
+entry points. Run `python scripts/check_docs.py` for links alone. External URLs
+still need human review; this check deliberately makes no network requests.
+
+Build one wheel into an otherwise empty `dist` directory with `python -m build`.
+Then `python scripts/check_clean_install.py base` creates a disposable virtual
+environment outside the checkout, installs the wheel and dependencies, runs pip's
+consistency check, verifies import origins and exercises installed command help.
+Unlike the artifact fixture, this needs package-download access. Repeat with
+`server`, `memory` or `vad` for those optional profiles. See
+[installation profiles](install-profiles.md) for native libraries and model limits,
+and [release acceptance](releasing.md) for the checks on actual devices.

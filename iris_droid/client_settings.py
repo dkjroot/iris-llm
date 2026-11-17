@@ -57,7 +57,8 @@ def settings_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-sounds",
         action="store_true",
-        help="Disable feedback cues and busy sound (spoken replies and recording echo still play)",
+        help="Disable optional cues and busy sound (voice-cancel acknowledgement, "
+        "spoken replies and recording echo still play)",
     )
     parser.add_argument(
         "--echo-recording",
