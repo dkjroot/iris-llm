@@ -88,8 +88,9 @@ transactions check before committing, so an expired transaction rolls back.
 This is cooperative enforcement. An in-process native model call already running
 cannot be forcibly interrupted, and a blocked operating-system operation may
 finish later. The serial brain remains occupied until such a call returns;
-expired work must not then advance to another effect or commit. Stronger worker
-supervision and shutdown handling are separate work. A device action that already
+expired work must not then advance to another effect or commit. Application shutdown stops admission and retains resources until active work
+releases them, even if it outlasts the bounded drain wait. See
+[architecture and ownership](architecture.md#shutdown-and-resource-ownership). A device action that already
 happened cannot be undone by a timeout, and a lost response does not prove that
 it failed. Check the device before repeating an uncertain action.
 

@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from iris_memory.hierarchy import Prepared
@@ -45,14 +45,6 @@ class Exchange:
     user_text: str
     assistant_text: str
     tool_names: tuple[str, ...] = ()
-
-
-class MemoryStore(Protocol):
-    def active_conversation(self, owner: str) -> str: ...
-    def start_conversation(self, owner: str) -> str: ...
-    def recent(self, owner: str, conversation: str, limit: int, chars: int) -> list[Exchange]: ...
-    def append(self, owner: str, conversation: str, exchange: Exchange) -> None: ...
-    def revision(self, owner: str, conversation: str) -> str | None: ...
 
 
 class SQLiteMemory:

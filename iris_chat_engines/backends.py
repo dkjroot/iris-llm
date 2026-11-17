@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
@@ -12,6 +13,18 @@ from pydantic import BaseModel, Field, ValidationError
 from iris_chat_engines.messages import ChatError, Message
 from iris_settings import Settings
 from iris_turn import check_deadline, remaining_timeout
+
+
+@dataclass(frozen=True)
+class BackendCapabilities:
+    tools: bool = True
+    completion_reason: bool = False
+
+
+def capabilities(backend: object) -> BackendCapabilities:
+    """Older and simple fake adapters only need complete()."""
+    value = getattr(backend, "capabilities", None)
+    return value if isinstance(value, BackendCapabilities) else BackendCapabilities()
 
 
 class ChatBackend(Protocol):
@@ -28,6 +41,7 @@ class ChatBackend(Protocol):
 
 class Choice(BaseModel):
     message: Message
+    finish_reason: str | None = None
 
 
 class ChatResponse(BaseModel):
@@ -43,6 +57,8 @@ def chat_headers(settings: Settings) -> dict[str, str]:
 
 class ChatCompletionsBackend:
     """OpenAI-compatible Chat Completions for local hosts or hosted services."""
+
+    capabilities = BackendCapabilities(completion_reason=True)
 
     def __init__(self, settings: Settings, client: httpx.Client) -> None:
         self.settings = settings
@@ -77,7 +93,9 @@ class ChatCompletionsBackend:
                 ),
             )
             response.raise_for_status()
-            reply = ChatResponse.model_validate_json(response.content).choices[0].message
+            choice = ChatResponse.model_validate_json(response.content).choices[0]
+            reply = choice.message
+            reply._finish_reason = choice.finish_reason
             check_deadline()
         except httpx.TimeoutException as error:
             check_deadline()

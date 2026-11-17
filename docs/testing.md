@@ -149,3 +149,7 @@ command. Try the affected paths on the hardware you use. Pay particular attentio
 to wake and cancellation recognition, playback starting cleanly, touch controls,
 service startup after reboot, and updates on Windows. Keep those results separate
 from automated test results.
+
+Application and client boundaries are described in [the architecture guide](architecture.md).
+`tests/test_application_contracts.py` exercises coordination, rollback, effect
+policy and resource ownership without starting an HTTP server or opening devices.

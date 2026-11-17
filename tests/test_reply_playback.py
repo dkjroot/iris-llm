@@ -35,7 +35,8 @@ def test_stream_plays_before_next_chunk_and_keeps_one_output_device():
         yield
 
     # Simulate the single stream consuming its remaining buffer before wait().
-    def finished():
+    def finished(timeout):
+        assert 0 < timeout < 10
         options = stream.call_args.kwargs
         block = np.empty((480, 1), dtype="<i2")
         with pytest.raises(sd.CallbackStop):
@@ -120,7 +121,11 @@ def test_lead_in_is_silence_in_same_stream_and_keeps_every_speech_sample(seconds
     assert rate == 24000 and len(samples) == len(SAMPLES) + padding
     np.testing.assert_array_equal(samples[:padding], np.zeros(padding, dtype="<i2"))
     np.testing.assert_array_equal(samples[padding:], SAMPLES)
-    assert play.call_args.kwargs == {"device": 7, "blocking": True, "latency": "high"}
+    assert play.call_args.kwargs == {
+        "device": 7,
+        "blocking": False,
+        "latency": "high",
+    }
 
 
 def test_optional_primer_and_speech_share_one_playback_stream():
@@ -264,9 +269,20 @@ def test_no_speech_stream_plays_complete_server_wav_without_saving():
 
 @pytest.mark.parametrize("seconds", [-1, 2.1, float("nan"), float("inf")])
 def test_invalid_lead_in_does_not_open_transport_or_speaker(seconds):
-    with patch("httpx.Client") as transport, patch("sounddevice.play") as play:
+    with (
+        patch("httpx.Client") as transport,
+        patch("sounddevice.play") as play,
+    ):
         assert iris.main(["client", "--speech-lead-in", str(seconds)]) == 1
         with pytest.raises(ValueError, match="Speech lead-in"):
             play_wav(WAV, lead_in=seconds)
     transport.assert_not_called()
     play.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def completed_mock_playback(monkeypatch):
+    # These tests mock sd.play; its corresponding public stream is already drained.
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("sounddevice.get_stream", Mock(return_value=Mock(active=False)))

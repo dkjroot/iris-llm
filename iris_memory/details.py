@@ -5,10 +5,18 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from iris_domain.memory import (
+    DetailCommand as DetailCommand,
+)
+from iris_domain.memory import (
+    PendingDetail as PendingDetail,
+)
+from iris_domain.memory import (
+    detail_command as detail_command,
+)
 from iris_memory.controls import MemoryPolicyError
 
 if TYPE_CHECKING:
@@ -32,51 +40,6 @@ SCHEMA = (
     "FOREIGN KEY(owner,target) REFERENCES conversations(owner,id) ON DELETE CASCADE)",
     "PRAGMA user_version=5",
 )
-
-
-@dataclass(frozen=True)
-class DetailCommand:
-    action: str
-    label: str = ""
-    text: str = ""
-
-
-def detail_command(text: str) -> DetailCommand | None:
-    """Deliberate complete utterances; recall questions never become saved assertions."""
-    text = " ".join(text.strip().split()).rstrip(".!?")
-    fixed = {
-        "list remembered details": "list",
-        "what have you remembered": "list",
-        "confirm memory change": "confirm",
-        "cancel memory change": "cancel",
-        "forget that detail": "forget_selected",
-        "show that detail": "show_selected",
-    }
-    if text.casefold() in fixed:
-        return DetailCommand(fixed[text.casefold()])
-    selected = re.fullmatch(r"correct that detail to (.{1,500})", text, re.I)
-    if selected:
-        return DetailCommand("correct_selected", text=selected[1])
-    for pattern, action in (
-        (r"remember (.{1,80}?) as (.{1,500})", "remember"),
-        (r"correct (.{1,80}?) to (.{1,500})", "correct"),
-        (r"forget the detail(?: about)? (.{1,80})", "forget"),
-        (r"show the detail(?: about)? (.{1,80})", "show"),
-    ):
-        match = re.fullmatch(pattern, text, re.I)
-        if match:
-            return DetailCommand(
-                action, match[1].casefold(), match[2] if match.lastindex == 2 else ""
-            )
-    return None
-
-
-@dataclass(frozen=True)
-class PendingDetail:
-    command: DetailCommand
-    epoch: int
-    conversations: tuple[tuple[str, str | None], ...]
-    expires_at: datetime
 
 
 class Details:

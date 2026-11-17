@@ -37,7 +37,7 @@ def test_recording_loads_the_real_packaged_cue_before_reopening_microphone() -> 
 
     def play(samples, rate, *, device, blocking, latency):
         assert rate == 24000 and len(samples) > 0
-        assert device == 7 and blocking is True
+        assert device == 7 and blocking is False
         events.append("cue")
 
     with (
@@ -71,7 +71,10 @@ def make_brain() -> tuple[Brain, httpx.Client]:
 
 def test_voice_roundtrip_and_session_isolation_without_audio_devices() -> None:
     brain, transport = make_brain()
-    with transport, patch("sounddevice.play") as play:
+    with (
+        transport,
+        patch("sounddevice.play") as play,
+    ):
         reply = brain.turn("laptop", RECORDING)
         pcm, rate = read_wav(base64.b64decode(reply.audio))
         assert rate == 24000 and len(pcm) == 200
@@ -345,7 +348,11 @@ def test_playback_resamples_when_hardware_rejects_voice_rate(output_rate):
     assert rate == output_rate and abs(len(actual) - output_rate) <= 2
     frequency = np.fft.rfftfreq(len(actual), 1 / rate)[np.argmax(abs(np.fft.rfft(actual)))]
     assert abs(frequency - 440) < 2
-    assert play.call_args.kwargs == {"device": 1, "blocking": True, "latency": "high"}
+    assert play.call_args.kwargs == {
+        "device": 1,
+        "blocking": False,
+        "latency": "high",
+    }
     query.assert_called_once_with(1, "output")
 
 
@@ -917,3 +924,11 @@ def test_local_microphone_test_rejects_text_mode_without_opening_audio():
         assert iris.main(["client", "--no-sounds", "--test-microphone", "--text"]) == 1
     record.assert_not_called()
     transport.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def completed_mock_playback(monkeypatch):
+    # These tests mock sd.play; its corresponding public stream is already drained.
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("sounddevice.get_stream", Mock(return_value=Mock(active=False)))

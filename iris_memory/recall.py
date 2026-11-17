@@ -10,6 +10,15 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from iris_chat_engines.messages import Message
+from iris_domain.memory import (
+    Candidate as Candidate,
+)
+from iris_domain.memory import (
+    DateWindow as DateWindow,
+)
+from iris_domain.memory import (
+    PendingRecall as PendingRecall,
+)
 from iris_memory.index import MemoryIndex, query_terms
 
 # Strip conversational scaffolding before lexical retrieval. These words do not
@@ -44,13 +53,6 @@ def is_recall_request(text: str) -> bool:
             re.I,
         )
     )
-
-
-@dataclass(frozen=True)
-class DateWindow:
-    start: datetime
-    end: datetime
-    description: str
 
 
 def date_window(text: str, now: datetime, timezone: str) -> DateWindow | None:
@@ -91,28 +93,6 @@ def date_window(text: str, now: datetime, timezone: str) -> DateWindow | None:
         if (end - start).days == 1
         else f"{start.isoformat()} to {end.isoformat()} (end excluded)",
     )
-
-
-@dataclass(frozen=True)
-class Candidate:
-    conversation: str
-    day: str
-    label: str
-    sources: tuple[str, ...]
-    score: int
-    semantic_similarity: float = 0.0
-    semantic_only: bool = False
-    hierarchy_activity: float = 0.0
-
-
-@dataclass(frozen=True)
-class PendingRecall:
-    active: str
-    candidates: tuple[Candidate, ...]
-    expires_at: datetime
-    selected: int | None = None
-    window: DateWindow | None = None
-    query: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

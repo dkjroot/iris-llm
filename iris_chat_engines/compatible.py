@@ -8,40 +8,35 @@ from collections.abc import Callable
 
 import httpx
 
-from iris_chat_engines.backends import ChatBackend, make_backend
+from iris_chat_engines.backends import ChatBackend, capabilities, make_backend
 from iris_chat_engines.budget import estimate, fit, input_budget
 from iris_chat_engines.messages import ChatError as ChatError
 from iris_chat_engines.messages import Message as Message
-from iris_droid.companion import COMPANION_PROMPT, ICE_BREAKERS
-from iris_droid.expression import FACE_PROMPT, ModelReply, read_model_reply
-from iris_memory.controls import PendingForget
-from iris_memory.details import PendingDetail
-from iris_memory.recall import PendingRecall
+from iris_domain.companion import COMPANION_PROMPT, ICE_BREAKERS
+from iris_domain.expression import FACE_PROMPT, ModelReply, read_model_reply
+from iris_domain.session import SessionState
+from iris_domain.turn import effect_scope
 from iris_settings import Settings
-from iris_tools import ToolRegistry
+from iris_tools import ToolRegistry, ToolServices
 from iris_turn import check_deadline
 
 
-class ChatEngine:
+class ChatEngine(SessionState):
     def __init__(
-        self, settings: Settings, client: httpx.Client, *, backend: ChatBackend | None = None
+        self,
+        settings: Settings,
+        client: httpx.Client,
+        *,
+        backend: ChatBackend | None = None,
+        services: ToolServices | None = None,
     ) -> None:
+        super().__init__()
         self.settings = settings
         self.backend = backend if backend is not None else make_backend(settings, client)
-        self.tools = ToolRegistry(settings, client)
-        self.history: list[Message] = []
-        self.memory_revision: tuple[str, str | None] | None = None
-        self.memory_context = ""
-        self.memory_sources: set[str] = set()
-        self.memory_search_calls = 0
-        self.pending_recall: PendingRecall | None = None
-        self.pending_forget: PendingForget | None = None
-        self.selected_detail: str | None = None
-        self.pending_detail: PendingDetail | None = None
-        self.last_followup: str | None = None
-        self.last_tool_names: tuple[str, ...] = ()
-        self.companion_mode = False
-        self.last_companion_seed: str | None = None
+        self.tools = ToolRegistry(settings, client, services=services)
+
+    def tool_definitions(self) -> list[dict[str, object]]:
+        return self.tools.definitions() if capabilities(self.backend).tools else []
 
     def _system_prompt(self, *, face: bool = False, personality_prompt: str = "") -> str:
         return (
@@ -58,7 +53,7 @@ class ChatEngine:
                 if personality_prompt
                 else ""
             )
-            + self.tools.instructions()
+            + (self.tools.instructions() if capabilities(self.backend).tools else "")
             + (FACE_PROMPT if face else "")
         )
 
@@ -144,6 +139,7 @@ class ChatEngine:
             raise ChatError("The server returned an empty assistant reply")
         return reply
 
+    @effect_scope()
     def generate_reply(
         self,
         user_text: str,
@@ -156,7 +152,7 @@ class ChatEngine:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
         system = self._system_prompt(face=face, personality_prompt=personality_prompt)
-        definitions = self.tools.definitions()
+        definitions = self.tool_definitions()
         messages = fit(
             self.settings,
             system,
@@ -203,7 +199,7 @@ class ChatEngine:
                 self._remember(messages[1:])
                 self.last_tool_names = tuple(sorted(tool_names))
                 return result
-            if not self.tools.skills:
+            if not definitions:
                 raise ChatError("The model requested a tool, but tools are disabled")
             if round_number == 4 or len(call_ids) + len(reply.tool_calls) > 8:
                 raise ChatError("The model exceeded the tool-call limit; try a simpler question")

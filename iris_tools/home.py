@@ -1,6 +1,9 @@
 """Conversation tools for the standalone home automation service."""
 
 import ssl
+from collections.abc import Iterator
+from contextlib import contextmanager
+from threading import Lock
 
 import httpx
 from pydantic import BaseModel
@@ -27,22 +30,43 @@ HOME_TOOLS = {
 
 
 class HomeClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, persistent: bool = False) -> None:
         self.url = settings.home_service_url
         self.token = settings.home_service_token
         self.ca = settings.home_service_ca
+        self.persistent = persistent
+        self._client: httpx.Client | None = None
+        self._lock = Lock()
+
+    def close(self) -> None:
+        with self._lock:
+            client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+    @contextmanager
+    def transport(self) -> Iterator[httpx.Client]:
+        if not self.persistent:
+            verify = ssl.create_default_context(cafile=str(self.ca)) if self.ca else True
+            with httpx.Client(verify=verify, trust_env=False) as client:
+                yield client
+            return
+        with self._lock:
+            if self._client is None:
+                verify = ssl.create_default_context(cafile=str(self.ca)) if self.ca else True
+                self._client = httpx.Client(verify=verify, trust_env=False)
+            client = self._client
+        yield client
 
     def execute(self, operation: str, args: BaseModel) -> dict[str, object]:
         if self.url is None or self.token is None:
             return {"error": "The home service is not configured."}
         try:
-            verify = ssl.create_default_context(cafile=str(self.ca)) if self.ca else True
-            with httpx.Client(
-                verify=verify, trust_env=False, timeout=remaining_timeout(20)
-            ) as client:
+            with self.transport() as client:
                 response = client.post(
                     f"{self.url}/v1/{operation}",
                     json=args.model_dump(),
+                    timeout=remaining_timeout(20),
                     headers={"Authorization": f"Bearer {self.token.get_secret_value()}"},
                 )
             payload = response.json()

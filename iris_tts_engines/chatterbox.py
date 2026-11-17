@@ -3,32 +3,43 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
-from io import BufferedReader
+from contextlib import contextmanager
 from pathlib import Path
-from queue import Empty, Full, Queue
-from threading import Event, Thread
-from typing import TypeVar
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ValidationError
 
-from iris_frames import ndjson_lines
-from iris_paths import runtime_data_root
 from iris_settings import ChatterboxSettings
-from iris_tts_engines.text import plain_speech_text
-from iris_turn import TurnExpired, check_deadline, remaining_timeout
+from iris_tts_engines.worker import (
+    MAX_WORKER_FRAME as MAX_WORKER_FRAME,
+)
+from iris_tts_engines.worker import (
+    ROOT as ROOT,
+)
+from iris_tts_engines.worker import (
+    VOICE_DIRECTORY as VOICE_DIRECTORY,
+)
+from iris_tts_engines.worker import (
+    Response as Response,
+)
+from iris_tts_engines.worker import (
+    SpeechWorker as SpeechWorker,
+)
+from iris_tts_engines.worker import (
+    Worker as Worker,
+)
+from iris_tts_engines.worker import (
+    open_worker as open_worker,
+)
+from iris_tts_engines.worker import (
+    read_responses as read_responses,
+)
 
-ROOT = runtime_data_root()
-VOICE_DIRECTORY = ROOT / "prepared-voices"
 MODEL_DIRECTORY = ROOT / ".cache" / "chatterbox-turbo"
 WORKER = Path(__file__).with_name("chatterbox_worker.py")
-MAX_WORKER_FRAME = 30_001_024
 
 
 def worker_command(settings: ChatterboxSettings, action: str) -> list[str]:
@@ -64,69 +75,6 @@ def worker_environment() -> dict[str, str]:
     return {**os.environ, "HF_HOME": str(ROOT / ".cache" / "chatterbox-hub")}
 
 
-class Response(BaseModel):
-    status: str
-    samples: str = ""
-    rate: int = 0
-
-
-def read_responses(stream: BufferedReader, responses: Queue[str | None], stop: Event) -> None:
-    def put(line: str | None) -> None:
-        while not stop.is_set():
-            try:
-                responses.put(line, timeout=0.1)
-                return
-            except Full:
-                pass
-
-    try:
-        for line in ndjson_lines(
-            iter(lambda: stream.read1(65536), b""), max_frame=MAX_WORKER_FRAME
-        ):
-            put(line)
-            if stop.is_set():
-                return
-    except (OSError, ValueError):
-        pass  # A malformed/oversized pipe is unusable, like an unexpected exit.
-    finally:
-        put(None)
-
-
-class SpeechWorker:
-    def __init__(
-        self, process: subprocess.Popen[bytes], responses: Queue[str | None], name: str
-    ) -> None:
-        self.process = process
-        self.responses = responses
-        self.name = name
-
-    def receive(self, timeout: float) -> Response:
-        try:
-            line = self.responses.get(timeout=remaining_timeout(timeout))
-            check_deadline()
-        except TurnExpired:
-            self.process.kill()
-            raise
-        except Empty as error:
-            self.process.kill()
-            check_deadline()
-            raise RuntimeError(f"{self.name} timed out. Restart the Iris server.") from error
-        if line is None:
-            self.process.kill()
-            raise RuntimeError(f"{self.name} stopped. Check the server console.")
-        try:
-            return Response.model_validate_json(line)
-        except ValidationError as error:
-            self.process.kill()
-            raise RuntimeError(f"{self.name} returned an invalid response.") from error
-
-    def send(self, text: str) -> None:
-        check_deadline()
-        assert self.process.stdin is not None
-        self.process.stdin.write((json.dumps(plain_speech_text(text)) + "\n").encode("utf-8"))
-        self.process.stdin.flush()
-
-
 class Chatterbox(SpeechWorker):
     def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:
         self.send(text)
@@ -151,45 +99,3 @@ def open_chatterbox(settings: ChatterboxSettings) -> Iterator[Chatterbox]:
         command.extend(("--voice", str(voice)))
     with open_worker(command, Chatterbox, "Chatterbox", worker_environment()) as tts:
         yield tts
-
-
-Worker = TypeVar("Worker", bound=SpeechWorker)
-
-
-@contextmanager
-def open_worker(
-    command: list[str], worker_type: type[Worker], name: str, env: dict[str, str]
-) -> Iterator[Worker]:
-    with subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        env=env,
-    ) as process:
-        assert process.stdout is not None
-        responses: Queue[str | None] = Queue(maxsize=2)
-        stop = Event()
-        assert isinstance(process.stdout, BufferedReader)
-        reader = Thread(target=read_responses, args=(process.stdout, responses, stop), daemon=True)
-        reader.start()
-        tts = worker_type(process, responses, name)
-        try:
-            try:
-                ready = tts.receive(timeout=180)
-            except RuntimeError as error:
-                raise ValueError(str(error)) from error
-            if ready.status != "ready":
-                raise ValueError(f"{name} could not start. Check the server console.")
-            yield tts
-        finally:
-            stop.set()
-            assert process.stdin is not None
-            with suppress(BrokenPipeError):
-                process.stdin.close()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-            finally:
-                reader.join()

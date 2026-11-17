@@ -138,3 +138,60 @@ def test_turn_timeout_restores_controls_without_retrying_or_displaying_success(w
     expect(page.locator("#key")).to_be_editable()
     expect(page.locator("#messages article")).to_have_count(0)
     assert len(held) == 1
+
+
+def test_controller_rejects_disposed_requests_and_stale_personality(web_page):
+    page, _ = web_page
+    result = page.evaluate("""async () => {
+      const { ChatController } = await import('/chat-controller.js');
+      let number = 0;
+      const state = new ChatController(() => String(++number));
+      const old = state.begin();
+      state.close();
+      state.closed = false;
+      const current = state.begin();
+      state.selectPersonality('Friend');
+      const stale = state.acknowledge(old, { selected_personality: 'Comedian' }, true);
+      const oldFinished = state.finish(old);
+      const pending = state.pending;
+      const accepted = state.acknowledge(current, {
+        selected_personality: 'Comedian', finished: true,
+      }, false);
+      return { stale, oldFinished, pending, accepted, personality: state.personality,
+               session: state.session, privateMode: state.privateMode,
+               aborted: old.abort.signal.aborted };
+    }""")
+    assert result == {
+        "stale": False,
+        "oldFinished": False,
+        "pending": True,
+        "accepted": True,
+        "personality": "Friend",
+        "session": "2",
+        "privateMode": False,
+        "aborted": True,
+    }
+
+
+def test_pagehide_prevents_late_turn_from_mutating_the_restored_page(web_page):
+    from playwright.sync_api import expect
+
+    page, _ = web_page
+    page.evaluate("""() => {
+      const original = window.fetch;
+      window.fetch = (...args) => args[0] === '/v1/text'
+        ? new Promise(resolve => { window.finishLateTurn = resolve; }) : original(...args);
+    }""")
+    page.locator("#message").fill("This response will arrive late")
+    page.locator("#send").click()
+    page.wait_for_function("window.finishLateTurn !== undefined")
+    page.evaluate("""() => {
+      window.dispatchEvent(new Event('pagehide'));
+      window.dispatchEvent(new Event('pageshow'));
+      window.finishLateTurn(new Response(JSON.stringify({
+        heard: 'late', text: 'late reply', selected_personality: 'Comedian',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }""")
+    expect(page.locator("#send")).to_be_enabled()
+    expect(page.locator("#messages article")).to_have_count(0)
+    expect(page.locator("#message")).to_have_value("This response will arrive late")

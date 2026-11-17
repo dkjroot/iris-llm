@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from threading import Event
 from time import monotonic
 
 
@@ -31,7 +32,13 @@ class Deadline:
 CURRENT_DEADLINE: ContextVar[Deadline | None] = ContextVar("iris_turn_deadline", default=None)
 
 
+CURRENT_STOP: ContextVar[Event | None] = ContextVar("iris_turn_stop", default=None)
+
+
 def remaining_timeout(limit: float) -> float:
+    stop = CURRENT_STOP.get()
+    if stop is not None and stop.is_set():
+        raise TurnExpired("Iris is shutting down")
     deadline = CURRENT_DEADLINE.get()
     return deadline.remaining(limit) if deadline is not None else limit
 

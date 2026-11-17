@@ -12,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 
 from iris_settings import PocketSettings
-from iris_tts_engines.chatterbox import ROOT, VOICE_DIRECTORY, Response, SpeechWorker, open_worker
+from iris_tts_engines.worker import ROOT, VOICE_DIRECTORY, Response, SpeechWorker, open_worker
 from iris_turn import TurnExpired
 
 MODEL_DIRECTORY = ROOT / ".cache" / "pocket-tts"

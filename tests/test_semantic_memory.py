@@ -295,7 +295,7 @@ def test_disabled_semantic_does_not_load_optional_runtime_or_model(setup):
     settings, archive, index, encoder, semantic, active, garden, story = setup
     with (
         httpx.Client() as client,
-        patch("iris_droid.server.MiniLMEncoder", side_effect=AssertionError("no load")),
+        patch("iris_app.runtime.MiniLMEncoder", side_effect=AssertionError("no load")),
     ):
         brain = Brain(settings, client, Mock(), Mock())
         assert brain.recall.index.semantic is None

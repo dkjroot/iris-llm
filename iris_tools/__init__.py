@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from iris_domain.turn import CURRENT_EFFECTS, EffectReceipt
 from iris_home.protocol import OPERATIONS
 from iris_settings import Settings
 from iris_tools.home import HOME_TOOLS, HomeClient
@@ -36,6 +37,9 @@ class Skill:
     description: str
     arguments: type[BaseModel]
     run: Callable[[BaseModel], dict[str, object]]
+
+    effect: bool = False
+    retry_after_error: bool = True
 
     def definition(self) -> dict[str, object]:
         return {
@@ -123,22 +127,45 @@ def conditions(code: int | None) -> str:
     }.get(code, "unavailable")
 
 
+class ToolServices:
+    """Server-lifetime services, borrowed by each session's tool registry.
+
+    The notification sender shares its cooldown across sessions. Application-owned
+    home requests reuse a lazy TLS client; standalone registries close per-call
+    clients. The supplied HTTP client remains owned by the composition root.
+    Session resets do not reset these services.
+    """
+
+    def __init__(
+        self, settings: Settings, client: httpx.Client, *, persistent: bool = False
+    ) -> None:
+        self.notifications = NotificationSender(settings, client)
+        self.home = HomeClient(settings, persistent=persistent)
+
+    def close(self) -> None:
+        self.home.close()
+
+
 class ToolRegistry:
-    def __init__(self, settings: Settings, client: httpx.Client) -> None:
+    def __init__(
+        self, settings: Settings, client: httpx.Client, *, services: ToolServices | None = None
+    ) -> None:
         self.settings = settings
         self.client = client
         self._place: Place | None = None
-        self.notifications = NotificationSender(settings, client)
+        self.services = services if services is not None else ToolServices(settings, client)
+        self.notifications = self.services.notifications
         self.skills: dict[str, Skill] = {}
         if settings.tools_enabled:
             if settings.home_service_url:
-                home = HomeClient(settings)
+                home = self.services.home
                 for name, (operation, description) in HOME_TOOLS.items():
                     self.skills[name] = Skill(
                         name,
                         description,
                         OPERATIONS[operation],
                         partial(home.execute, operation),
+                        effect=operation in {"switch", "save-schedule"},
                     )
             if settings.notifications_enabled:
                 self.skills["send_notification"] = Skill(
@@ -151,6 +178,8 @@ class ToolRegistry:
                     lambda args: self.notifications.send(
                         NotificationArguments.model_validate(args)
                     ),
+                    effect=True,
+                    retry_after_error=False,
                 )
             self.skills["get_local_time"] = Skill(
                 "get_local_time",
@@ -219,14 +248,44 @@ class ToolRegistry:
             except ValidationError:
                 result = {"error": "Invalid arguments. Follow the tool's JSON schema."}
             else:
+                effects = CURRENT_EFFECTS.get()
+                attempt = name + ":" + json.dumps(parsed.model_dump(mode="json"), sort_keys=True)
+                if (
+                    skill.effect
+                    and effects is not None
+                    and (attempt in effects.attempted or name in effects.blocked)
+                ):
+                    return json.dumps(
+                        {
+                            "error": "This action was already attempted in this turn. "
+                            "Check its result before retrying."
+                        }
+                    )
+                receipt = EffectReceipt(name) if skill.effect else None
+                if receipt is not None and effects is not None:
+                    effects.attempted.add(attempt)
+                    effects.receipts.append(receipt)
+                if effects is not None and skill.effect and not skill.retry_after_error:
+                    # Failed/lost responses prohibit a retry even with edited arguments.
+                    effects.blocked.add(name)
                 try:
                     result = skill.run(parsed)
+                    if effects is not None and "error" not in result:
+                        effects.blocked.discard(name)
+                    if receipt is not None:
+                        receipt.outcome = "uncertain" if "error" in result else "returned"
                     check_deadline()
                 except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+                    if receipt is not None:
+                        receipt.outcome = "uncertain"
                     result = {
                         "error": "The skill failed or returned invalid data. "
                         "Tell the user it failed; do not invent a result."
                     }
+                except BaseException:
+                    if receipt is not None and receipt.outcome == "attempted":
+                        receipt.outcome = "uncertain"
+                    raise
         if self.settings.trace:
             print(
                 f"Skill {name}: {'error' if 'error' in result else 'ok'} "

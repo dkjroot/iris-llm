@@ -70,7 +70,8 @@ target = Path(sys.argv[1]).resolve()
 sys.path[:0] = [str(target), *json.loads(sys.argv[2])]
 modules = {}
 for name in ("iris", "configure", "configure_client", "iris_paths", "iris_turn", "iris_frames",
-             "iris_droid.client", "iris_droid.server",
+             "iris_droid.client", "iris_droid.server", "iris_app.runtime", "iris_domain.session",
+             "iris_droid.controller", "iris_tts_engines.worker",
              "iris_home.service", "iris_memory.cli", "iris_tts_engines.pocket_worker"):
     spec = importlib.util.find_spec(name)
     modules[name] = spec is not None
@@ -98,6 +99,7 @@ for module_name in ("iris", "configure", "configure_client", "iris_droid.client"
 assets = {}
 for package, name in (
     ("iris_sounds", "cancelled.wav"), ("iris_sounds", "context-cleared.wav"),
+    ("iris_droid", "web/chat-controller.js"),
     ("iris_droid", "web/chat.js"), ("iris_droid", "web/speech.js"),
     ("iris_droid", "web/index.html"), ("iris_droid", "web/commands.json"),
     ("iris_droid", "face_sprites/sprites.json"), ("iris_droid", "face_sprites/sprout.png"),

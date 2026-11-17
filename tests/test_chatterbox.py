@@ -89,7 +89,7 @@ def test_worker_invalid_or_unterminated_frame_fails_and_closes(tmp_path, monkeyp
         f"sys.stdout.write({bad_reply})\n"
         "sys.stdout.flush()\n"
     )
-    monkeypatch.setattr(chatterbox, "MAX_WORKER_FRAME", 128)
+    monkeypatch.setattr("iris_tts_engines.worker.MAX_WORKER_FRAME", 128)
     with chatterbox.open_worker(
         [sys.executable, "-I", "-u", str(worker)], chatterbox.Chatterbox, "Synthetic", {}
     ) as tts:

@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass, fields
 from pathlib import Path
 
 from iris_droid.capture import DEFAULT_MICROPHONE_BUFFER, validate_capture_options
-from iris_droid.face_display import DEFAULT_FACE_PORT, FACE_HEADS, FACE_IDLE_MODES
+from iris_droid.face_display import (
+    DEFAULT_FACE_PORT,
+    FACE_HEADS,
+    FACE_IDLE_MODES,
+    FaceHead,
+    FaceIdle,
+)
 from iris_settings import read_config
 
 DEFAULT_CLIENT_CONFIG = Path("client_config.json")
@@ -185,7 +192,7 @@ def client_parser(settings: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return parser
 
 
-def validate_client_options(args: argparse.Namespace) -> None:
+def validate_client_options(args: argparse.Namespace | ClientOptions) -> None:
     if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
         raise ValueError("Recording limit and listen timeout must be in (0, 300]")
     if not 0 <= args.speech_lead_in <= 2:
@@ -268,3 +275,54 @@ def parse_client_args(argv: list[str] | None = None) -> argparse.Namespace:
         # Inherit audio tuning for diagnostics without enabling the wake listener.
         values.pop("voice_cancel", None)
     return parser.parse_args(argv, namespace=argparse.Namespace(**values))
+
+
+@dataclass
+class ClientOptions:
+    """Validated startup options; argparse stays at the command-line boundary."""
+
+    server: str
+    personalities_file: Path | None
+    face: FaceHead | None
+    face_idle: FaceIdle
+    face_port: int
+    volume_backend: str
+    alsa_card: str | None
+    alsa_control: str
+    no_sounds: bool
+    echo_recording: bool
+    activation: str
+    wake_model: Path | None
+    wake_phrase: str
+    voice_cancel: bool
+    vad_model: Path | None
+    vad_threshold: float
+    conversation_timeout: float
+    microphone: int | str | None
+    microphone_rate: int | None
+    energy_threshold: float | None
+    calibration_duration: float
+    speaker: int | str | None
+    speech_lead_in: float
+    speech_primer: bool
+    trace_voice: bool
+    no_speech_stream: bool
+    microphone_buffer: int
+    phrase_time_limit: float
+    listen_timeout: float
+    companion_idle_min: float
+    companion_idle_max: float
+    pause_threshold: float
+    config: Path | None
+    list_microphones: bool
+    text: bool
+    download_vad_model: Path | None
+    test_microphone: bool
+    save_reply: Path | None
+    play_wav: Path | None
+    show_private_text: bool
+
+    @classmethod
+    def from_namespace(cls, args: argparse.Namespace) -> ClientOptions:
+        validate_client_options(args)
+        return cls(**{field.name: getattr(args, field.name) for field in fields(cls)})

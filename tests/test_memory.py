@@ -254,7 +254,7 @@ def test_failed_turns_never_commit_and_roll_back(settings, failure):
             brain.tts.synthesize.side_effect = RuntimeError("synthesis failed")
         elif failure == "storage":
             brain.memory.append = Mock(side_effect=sqlite3.OperationalError("disk full"))
-        with patch("iris_droid.server.MAX_BODY", 1 if failure == "oversized" else 99999999):
+        with patch("iris_app.replies.MAX_BODY", 1 if failure == "oversized" else 99999999):
             with pytest.raises((RuntimeError, ValueError, sqlite3.Error)):
                 brain.turn("pi", b"failed", text_only=failure != "tts")
         assert brain.sessions["pi"].history == previous

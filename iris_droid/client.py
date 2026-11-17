@@ -13,8 +13,8 @@ from importlib.resources import files
 from math import isfinite
 from pathlib import Path
 from queue import Empty, SimpleQueue
-from threading import Event, Lock, Thread
-from time import time_ns
+from threading import Event, Thread
+from time import monotonic, time_ns
 from typing import TYPE_CHECKING, Protocol, TypedDict
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -28,13 +28,14 @@ from iris_droid.capture import (
     CheckedMicrophoneStream,
     validate_capture_options,
 )
-from iris_droid.client_settings import parse_client_args, validate_client_options
+from iris_droid.client_settings import ClientOptions, parse_client_args
 from iris_droid.companion import CompanionTimer, ConsoleInput
+from iris_droid.controller import ClientController
 from iris_droid.conversation import WakeConversation
 from iris_droid.expression import FACE_HEADER
 from iris_droid.face_display import FaceDisplay
 from iris_droid.feedback import ClientFeedback
-from iris_droid.personalities import PERSONALITY_HEADER, load_personalities, personality_command
+from iris_droid.personalities import PERSONALITY_HEADER, load_personalities
 from iris_droid.protocol import (
     COMPLETION_HEADER,
     MAX_BODY,
@@ -104,7 +105,6 @@ class DroidClient:
                 "Use the Iris droid server's http(s) origin, e.g. http://192.168.1.10:8765"
             )
         validate_token(token)
-        self.private_mode = False
         self.url = url.rstrip("/")
         self.client = client
         self.volume_backend = volume_backend
@@ -116,9 +116,7 @@ class DroidClient:
             name: context.to_header()
             for name, context in load_personalities(personalities_file).items()
         }
-        self.personality = next(iter(self.personality_headers), None)
-        self._personality_revision = 0
-        self._personality_lock = Lock()
+        self.state = ClientController(self.personality_headers)
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
         if wake_conversation:
@@ -126,15 +124,28 @@ class DroidClient:
         if face:
             self.headers[FACE_HEADER] = "1"
 
+    @property
+    def private_mode(self) -> bool:
+        return self.state.private_mode
+
+    @private_mode.setter
+    def private_mode(self, value: bool) -> None:
+        self.state.private_mode = value
+
+    @property
+    def personality(self) -> str | None:
+        return self.state.selection()[0]
+
     def select_personality(self, name: str) -> bool:
-        if name not in self.personality_headers:
-            return False
-        with self._personality_lock:
-            self.personality = name
-            self._personality_revision += 1
-        return True
+        return self.state.select(name)
 
     def turn(
+        self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
+    ) -> TurnReply:
+        with self.state.turn():
+            return self._turn(body, text_only=text_only, companion_idle=companion_idle)
+
+    def _turn(
         self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
     ) -> TurnReply:
         if not 0 < len(body) <= MAX_BODY:
@@ -143,9 +154,7 @@ class DroidClient:
             **self.headers,
             "Content-Type": "text/plain" if text_only or companion_idle else "audio/wav",
         }
-        with self._personality_lock:
-            personality = self.personality
-            personality_revision = self._personality_revision
+        personality, personality_revision = self.state.selection()
         if personality is not None:
             headers[PERSONALITY_HEADER] = self.personality_headers[personality]
         if companion_idle:
@@ -160,17 +169,7 @@ class DroidClient:
             if self.cancel_feedback is not None:
                 self.cancel_feedback.cancelled()
             raise
-        if (selected := reply.selected_personality) is not None:
-            if (
-                companion_idle
-                or personality_command(reply.heard) != selected.casefold()
-                or selected not in self.personality_headers
-            ):
-                raise ValueError("Unexpected personality switch in server reply")
-            with self._personality_lock:
-                if self._personality_revision == personality_revision:
-                    self.personality = selected
-                    self._personality_revision += 1
+        self.state.acknowledge(reply, personality_revision, companion_idle=companion_idle)
         if reply.volume is not None:
             if companion_idle or reply.volume != volume_command(reply.heard):
                 raise ValueError("Unexpected speaker volume action")
@@ -281,6 +280,7 @@ class DroidClient:
         stop = Event()
         cancelled = Event()
         confirmed = Event()
+        retired = Event()
 
         def decide(command: bytes) -> None:
             result = self.client.post(
@@ -299,7 +299,7 @@ class DroidClient:
             except Exception:
                 print("Cancel listener failed. Discarding this voice turn.", flush=True)
                 matched = True
-            if matched:
+            if matched and not retired.is_set() and not self.state.closed:
                 cancelled.set()
                 try:
                     decide(b"cancel")
@@ -310,7 +310,7 @@ class DroidClient:
                 confirmed.set()
 
         with feedback.working() if feedback is not None else nullcontext():
-            worker = Thread(target=listen, name="iris-cancel-listener")
+            worker = Thread(target=listen, name="iris-cancel-listener", daemon=True)
             worker.start()
             accepted = False
             try:
@@ -324,7 +324,10 @@ class DroidClient:
                     event = frame.get("event")
                     if event == "ready" and not accepted:
                         stop.set()
-                        worker.join()
+                        worker.join(timeout=6)
+                        if worker.is_alive():
+                            retired.set()
+                            raise ValueError("Cancel listener did not stop; turn not accepted")
                         if feedback is not None:
                             feedback.stop_working()
                         if cancelled.is_set():
@@ -343,11 +346,17 @@ class DroidClient:
                             accepted = True
                     elif event == "cancelled":
                         stop.set()
-                        worker.join()
+                        worker.join(timeout=6)
+                        if worker.is_alive():
+                            retired.set()
+                            raise ValueError("Cancel listener did not stop; turn not accepted")
                         raise TurnCancelled()
                     elif event == "failed":
                         stop.set()
-                        worker.join()
+                        worker.join(timeout=6)
+                        if worker.is_alive():
+                            retired.set()
+                            raise ValueError("Cancel listener did not stop; turn not accepted")
                         if confirmed.is_set():
                             raise TurnCancelled()
                         status = frame.get("status")
@@ -379,8 +388,9 @@ class DroidClient:
             except ValueError as error:
                 raise httpx.RemoteProtocolError(str(error), request=response.request) from error
             finally:
+                retired.set()
                 stop.set()
-                worker.join()
+                worker.join(timeout=6)
 
     def _stream_reply(
         self, response: httpx.Response, first: str, lines: Iterator[str]
@@ -484,7 +494,21 @@ def play_wav(
         elif on_speech_start is not None:
             play_timed(samples, rate, device, speech_frame, on_speech_start)
         else:
-            sd.play(samples, rate, device=device, blocking=True, latency="high")
+            sd.play(samples, rate, device=device, blocking=False, latency="high")
+            stream = sd.get_stream()
+            expires = monotonic() + len(samples) / rate + 5
+            try:
+                # play() owns its callback. Watch the public stream state instead
+                # of passing a second finished_callback through its keyword args.
+                pause = Event()
+                while stream.active:
+                    remaining = expires - monotonic()
+                    if remaining <= 0:
+                        stream.abort()
+                        raise OSError("Speaker playback did not finish")
+                    pause.wait(min(0.05, remaining))
+            finally:
+                stream.close()
             status = sd.get_status()
             if status is not None and status.output_underflow:
                 print("Speaker playback underrun: some audio may have been lost.", flush=True)
@@ -555,7 +579,8 @@ def play_timed(
         callback=callback,
         finished_callback=finished.set,
     ):
-        finished.wait()
+        if not finished.wait(len(samples) / rate + 5):
+            raise OSError("Speaker playback did not finish")
     on_speech_start(scheduled_ns)
     if underrun:
         print("Speaker playback underrun: some audio may have been lost.", flush=True)
@@ -598,9 +623,11 @@ def play_stream(
             queue.put((np.zeros(round(output_rate * lead_in), dtype="<i2"), None))
 
         converter = None
+        queued_seconds = lead_in + 2
 
         def enqueue(pcm: bytes) -> None:
-            nonlocal converter
+            nonlocal converter, queued_seconds
+            queued_seconds += len(pcm) / (rate * 2)
             if output_rate != rate:
                 pcm, converter = sr.audioop.ratecv(pcm, 2, 1, rate, output_rate, converter)
             samples = np.frombuffer(pcm, dtype="<i2")
@@ -657,7 +684,8 @@ def play_stream(
             for pcm in chunks:
                 enqueue(pcm)
             queue.put(None)
-            finished.wait()
+            if not finished.wait(queued_seconds + 5):
+                raise OSError("Speaker stream did not finish")
         if underrun:
             print("Speaker stream underrun: playback may have paused.", flush=True)
         return scheduled_ns
@@ -911,20 +939,20 @@ def resolve_speaker(name: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        args = parse_client_args(argv)
-        if args.download_vad_model is not None:
+        startup = parse_client_args(argv)
+        if startup.download_vad_model is not None:
             from iris_droid.vad import download_model
 
-            download_model(args.download_vad_model)
-            print(f"Silero model saved to {args.download_vad_model}")
+            download_model(startup.download_vad_model)
+            print(f"Silero model saved to {startup.download_vad_model}")
             return 0
-        if args.list_microphones:
+        if startup.list_microphones:
             import speech_recognition as sr
 
             for index, name in enumerate(sr.Microphone.list_microphone_names()):
                 print(f"{index}: {name}")
             return 0
-        validate_client_options(args)
+        args = ClientOptions.from_namespace(startup)
         wake_window = WakeConversation(args.conversation_timeout)
         companion = CompanionTimer(args.companion_idle_min, args.companion_idle_max)
         console = ConsoleInput()
@@ -945,10 +973,13 @@ def main(argv: list[str] | None = None) -> int:
                 name = args.microphone
                 args.microphone = resolve_microphone(name)
                 print(f"Microphone {name!r} resolved to index {args.microphone}.")
+        # Device names have been resolved for audio modes. Text mode needs no device.
+        speaker = args.speaker if isinstance(args.speaker, int) else None
+        microphone = args.microphone if isinstance(args.microphone, int) else None
         if args.play_wav is not None:
             play_wav(
                 args.play_wav.read_bytes(),
-                args.speaker,
+                speaker,
                 lead_in=args.speech_lead_in,
                 primer=args.speech_primer,
             )
@@ -959,8 +990,11 @@ def main(argv: list[str] | None = None) -> int:
 
             vad = SileroVAD(args.vad_model)
             print(f"Local speech detection: Silero VAD (threshold {args.vad_threshold:g}).")
+        local_capture_options: CaptureOptions = {}
+        if vad is not None:
+            local_capture_options = {"vad": vad, "vad_threshold": args.vad_threshold}
         with ClientFeedback(
-            args.speaker, play_wav, stop_playback, enabled=not args.no_sounds and not args.text
+            speaker, play_wav, stop_playback, enabled=not args.no_sounds and not args.text
         ) as feedback:
             if args.test_microphone:
                 print("Local microphone test. Stay quiet until the listening cue, then speak.")
@@ -968,11 +1002,11 @@ def main(argv: list[str] | None = None) -> int:
 
                 try:
                     body = record_turn(
-                        args.microphone,
+                        microphone,
                         args.phrase_time_limit,
                         args.listen_timeout,
                         None,
-                        args.speaker,
+                        speaker,
                         args.microphone_buffer,
                         args.pause_threshold,
                         sample_rate=args.microphone_rate,
@@ -980,7 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
                         calibration_duration=args.calibration_duration,
                         diagnostics=True,
                         feedback=feedback,
-                        **({"vad": vad, "vad_threshold": args.vad_threshold} if vad else {}),
+                        **local_capture_options,
                     )
                 except sr.WaitTimeoutError:
                     feedback.error()
@@ -994,7 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"Recorded {len(pcm) / (rate * 2):.1f} seconds. Playing local test...",
                     flush=True,
                 )
-                play_wav(body, args.speaker)
+                play_wav(body, speaker)
                 return 0
             display = FaceDisplay(args.face, args.face_idle, remember=True)
             with (
@@ -1020,7 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
                         return play_stream(
                             chunks,
                             start.rate,
-                            args.speaker,
+                            speaker,
                             lead_in=args.speech_lead_in,
                             primer=args.speech_primer,
                         )
@@ -1037,7 +1071,7 @@ def main(argv: list[str] | None = None) -> int:
                 def listen_for_cancel(stop: Event) -> bool:
                     assert detector is not None
                     with open_microphone(
-                        args.microphone, args.microphone_buffer, args.microphone_rate
+                        microphone, args.microphone_buffer, args.microphone_rate
                     ) as source:
                         return detector.listen_for_cancel(source, stop)
 
@@ -1060,6 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
                         remember=True,
                     ),
                 )
+                stack.callback(client.state.close)
                 display.personalities = tuple(client.personality_headers)
                 display.active_personality = lambda: client.personality
                 display.select_personality = client.select_personality
@@ -1116,14 +1151,14 @@ def main(argv: list[str] | None = None) -> int:
                         first_capture = False
                         try:
                             body = record_turn(
-                                args.microphone,
+                                microphone,
                                 args.phrase_time_limit,
                                 args.listen_timeout,
                                 wake
                                 if not companion.enabled
                                 and (conversation is None or not conversation.active)
                                 else None,
-                                args.speaker,
+                                speaker,
                                 args.microphone_buffer,
                                 args.pause_threshold,
                                 sample_rate=args.microphone_rate,
@@ -1162,7 +1197,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "Playing recording before sending...",
                                 flush=True,
                             )
-                            play_wav(body, args.speaker)
+                            play_wav(body, speaker)
                     try:
                         display.show("thinking")
                         with (
@@ -1245,7 +1280,7 @@ def main(argv: list[str] | None = None) -> int:
                         with display.speaking(cue):
                             play_wav(
                                 reply_audio,
-                                args.speaker,
+                                speaker,
                                 lead_in=args.speech_lead_in,
                                 primer=args.speech_primer,
                                 **playback_trace,

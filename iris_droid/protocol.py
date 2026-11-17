@@ -2,44 +2,49 @@
 
 from __future__ import annotations
 
-import io
 import warnings
-import wave
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from iris_audio import (
+    read_wav as read_wav,
+)
+from iris_audio import (
+    write_wav as write_wav,
+)
+from iris_domain.commands import (
+    companion_command as companion_command,
+)
+from iris_domain.commands import (
+    is_clear_context as is_clear_context,
+)
+from iris_domain.commands import (
+    is_delete_previous as is_delete_previous,
+)
+from iris_domain.commands import (
+    is_stop_listening as is_stop_listening,
+)
+from iris_domain.limits import MAX_BODY as MAX_BODY
+from iris_domain.replies import (
+    TurnCancelled as TurnCancelled,
+)
+from iris_domain.replies import (
+    TurnCompletion as TurnCompletion,
+)
+from iris_domain.replies import (
+    TurnReply as TurnReply,
+)
+from iris_domain.replies import (
+    VoiceStreamStart as VoiceStreamStart,
+)
+from iris_domain.replies import (
+    VoiceTiming as VoiceTiming,
+)
 
-from iris_droid.expression import FaceExpression
-from iris_droid.volume import VolumeCommand
-
-MAX_BODY = 10_000_000
 VOICE_TIMING_HEADER = "X-Iris-Voice-Timing"
 VOICE_STREAM_TYPE = "application/x-iris-voice+ndjson"
 VOICE_CANCEL_PATH = "/v1/voice/cancellable"
 VOICE_DECISION_PATH = "/v1/voice/decision"
 VOICE_TURN_HEADER = "X-Iris-Turn"
 COMPLETION_HEADER = "X-Iris-Completion"
-
-
-class TurnCancelled(Exception):
-    """The provisional voice turn was discarded."""
-
-
-def companion_command(text: str) -> bool | None:
-    phrase = " ".join(text.casefold().split()).strip(" .!?,")
-    return {"companion mode on": True, "companion mode off": False}.get(phrase)
-
-
-def is_stop_listening(text: str) -> bool:
-    return " ".join(text.casefold().split()).strip(" .!?,") == "stop listening"
-
-
-def is_clear_context(text: str) -> bool:
-    return " ".join(text.casefold().split()).strip(" .!?,") == "clear context"
-
-
-def is_delete_previous(text: str) -> bool:
-    return " ".join(text.casefold().split()).strip(" .!?,") == "delete previous"
 
 
 def validate_token(token: str) -> None:
@@ -58,81 +63,3 @@ def validate_token(token: str) -> None:
             UserWarning,
             stacklevel=2,
         )
-
-
-class VoiceTiming(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    engine: str
-    words: int = Field(ge=0)
-    started_ns: int = Field(gt=0)
-    synthesis_ns: int = Field(ge=0)
-    audio_seconds: float = Field(ge=0, allow_inf_nan=False)
-
-
-class TurnCompletion(BaseModel):
-    """Authoritative server outcome, not proof that the client played the audio."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    outcome: Literal["committed"]
-    private: bool
-    exchange_id: str | None = Field(default=None, min_length=1, max_length=128)
-    deleted_exchange_id: str | None = Field(default=None, min_length=1, max_length=128)
-
-
-class TurnReply(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    heard: str
-    text: str
-    audio: str = ""  # Base64-encoded mono PCM WAV, at the synthesizer's sample rate.
-    finished: bool = False
-    companion_mode: bool = False
-    volume: VolumeCommand | None = None
-    expression: FaceExpression | None = None
-    selected_personality: str | None = None
-    _voice_timing: VoiceTiming | None = PrivateAttr(default=None)
-    _streamed: bool = PrivateAttr(default=False)
-    _exchange_id: str | None = PrivateAttr(default=None)
-    _deleted_exchange_id: str | None = PrivateAttr(default=None)
-    _completion: TurnCompletion | None = PrivateAttr(default=None)
-
-
-class VoiceStreamStart(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    event: Literal["start"]
-    reply: TurnReply
-    rate: int = Field(ge=8000, le=48000)
-    started_ns: int = Field(gt=0)
-    first_audio_ns: int = Field(ge=0)
-
-
-def read_wav(data: bytes, *, input_audio: bool = False) -> tuple[bytes, int]:
-    try:
-        with wave.open(io.BytesIO(data), "rb") as source:
-            rate = source.getframerate()
-            frames = source.getnframes()
-            if (
-                source.getnchannels() != 1
-                or source.getsampwidth() != 2
-                or source.getcomptype() != "NONE"
-                or rate < 8000
-                or rate > 48000
-                or (input_audio and rate != 16000)
-                or not 0 < frames <= rate * 300
-            ):
-                raise ValueError("Expected mono 16-bit PCM WAV, at 16 kHz for microphone input")
-            pcm = source.readframes(frames)
-            if len(pcm) != frames * 2:
-                raise ValueError("Truncated WAV recording")
-            return pcm, rate
-    except (wave.Error, EOFError) as error:
-        raise ValueError("Invalid WAV recording") from error
-
-
-def write_wav(pcm: bytes, rate: int) -> bytes:
-    output = io.BytesIO()
-    with wave.open(output, "wb") as target:
-        target.setnchannels(1)
-        target.setsampwidth(2)
-        target.setframerate(rate)
-        target.writeframes(pcm)
-    return output.getvalue()

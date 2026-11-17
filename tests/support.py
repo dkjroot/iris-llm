@@ -12,8 +12,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import numpy as np
 
+from iris_app.runtime import Brain
 from iris_chat_engines.messages import Message
-from iris_droid.server import Brain
 from iris_home.devices import DeviceError
 from iris_settings import Settings
 

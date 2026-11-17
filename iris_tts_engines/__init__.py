@@ -1,24 +1,15 @@
 """Select the server's local speech synthesizer."""
 
-from collections.abc import Generator, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import Protocol
 
-import numpy as np
-import numpy.typing as npt
-
+from iris_domain.audio import (
+    StreamingSynthesizer as StreamingSynthesizer,
+)
+from iris_domain.audio import (
+    Synthesizer as Synthesizer,
+)
 from iris_settings import Settings
-
-
-class Synthesizer(Protocol):
-    def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]: ...
-
-
-class StreamingSynthesizer(Synthesizer, Protocol):
-    @property
-    def sample_rate(self) -> int: ...
-
-    def stream(self, text: str) -> Generator[bytes]: ...
 
 
 @contextmanager
