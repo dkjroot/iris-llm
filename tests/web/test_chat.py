@@ -257,3 +257,44 @@ def test_command_failure_is_visible_without_claiming_the_action_failed(web_page)
     expect(notice).to_have_attribute("data-status", "error")
     expect(notice).to_contain_text("No confirmation received")
     expect(page.locator(".iris-companion-badge")).to_be_hidden()
+
+
+def test_touch_commands_execute_once_confirm_deletion_and_leave_examples_as_text(web_page):
+    from playwright.sync_api import expect
+
+    page, _ = web_page
+    pending = []
+    page.route("**/v1/text", lambda route: pending.append(route))
+    page.get_by_role("button", name="Open Iris menu").click()
+    page.get_by_role("button", name="Command list", exact=True).click()
+    page.get_by_role("button", name="Conversation", exact=True).click()
+    button = page.get_by_role("button", name="Companion mode on", exact=True)
+    button.click()
+    expect(button).to_be_disabled()
+    expect(page.locator(".iris-command-notice")).to_contain_text("Processing")
+    page.wait_for_function("document.querySelector('#send').disabled")
+    assert len(pending) == 1
+    assert pending[0].request.post_data == "Companion mode on"
+    pending.pop().fulfill(
+        json={
+            "heard": "Companion mode on",
+            "text": "Enabled",
+            "audio": "",
+            "finished": False,
+            "companion_mode": True,
+            "command": {"title": "Companion mode on", "message": "Enabled.", "status": "success"},
+        }
+    )
+    expect(button).to_be_enabled()
+    expect(page.locator(".iris-command-notice")).to_have_attribute("data-status", "success")
+    page.get_by_role("button", name="Delete previous", exact=True).click()
+    assert not pending
+    page.get_by_role("button", name="Confirm: Delete previous", exact=True).click()
+    expect(page.get_by_role("button", name="Delete previous", exact=True)).to_be_disabled()
+    assert len(pending) == 1
+    pending.pop().fulfill(
+        json={"heard": "Delete previous", "text": "Deleted", "audio": "", "finished": False}
+    )
+    page.get_by_role("button", name="Back", exact=True).click()
+    page.get_by_role("button", name="Remembered details", exact=True).click()
+    expect(page.get_by_role("button", name="Remember LABEL as VALUE", exact=True)).to_have_count(0)

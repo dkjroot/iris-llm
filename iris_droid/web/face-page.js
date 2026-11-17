@@ -3,6 +3,15 @@ import { mountFaceCycle, updateFace } from "/face.js";
 import { mountMenu } from "/menu.js";
 
 const menu = mountMenu({
+  async executeCommand(phrase) {
+    const response = await fetch("/command", {
+      method: "POST", headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(phrase), signal: AbortSignal.timeout(1800),
+    });
+    if (!response.ok) throw new Error(response.status === 409
+      ? "Iris is busy. Wait for this turn to finish." : "Command not accepted. Try again when Iris is ready.");
+    menu.setBusy(true);
+  },
   async selectPersonality(name) {
     try {
       const response = await fetch("/personality", {

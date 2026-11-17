@@ -50,7 +50,9 @@ further choice or confirmation, so those show an informational response instead.
 The bubble disappears after about six seconds. **Companion on** stays visible
 while the face is awake, so you don't have to remember the last spoken reply.
 These indicators work on the native Pi display and in the phone's web interface.
-See [voice commands and confirmations](voice-commands.md) for examples.
+The command list also has touch buttons for controls that need no extra values.
+Clear context and Delete previous ask for confirmation before running. See
+[voice commands and confirmations](voice-commands.md) for examples.
 
 ## Choose a face
 

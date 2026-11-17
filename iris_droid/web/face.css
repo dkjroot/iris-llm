@@ -278,3 +278,20 @@
 @media (prefers-reduced-motion: reduce) {
   .iris-command-notice { animation: none; }
 }
+
+.iris-stage .iris-command-action {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 12px;
+  border: 1px solid #98ebcb;
+  border-radius: 10px;
+  background: #163d34;
+  color: #c0ffe8;
+  font: inherit;
+  font-weight: 650;
+  text-align: left;
+}
+.iris-stage .iris-command-action::after { content: " ›"; }
+.iris-stage .iris-command-action:active { background: #245548; }
+.iris-stage .iris-command-action:disabled { opacity: .5; cursor: wait; }
+.iris-command-row dt { align-self: center; }

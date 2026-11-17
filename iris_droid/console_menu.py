@@ -36,9 +36,15 @@ class Category(TypedDict):
     commands: list[Phrase]
 
 
+class TapCommand(TypedDict):
+    targets: list[str]
+    confirm: bool
+
+
 class Commands(TypedDict):
     categories: list[Category]
     home: list[Phrase]
+    tap_commands: NotRequired[dict[str, TapCommand]]
 
 
 class Font(Protocol):
@@ -49,11 +55,19 @@ class Font(Protocol):
 
 class ConsoleMenu:
     def __init__(
-        self, pygame: ModuleType, screen: Surface, select: Callable[[str], Future[bool]]
+        self,
+        pygame: ModuleType,
+        screen: Surface,
+        select: Callable[[str], Future[bool]],
+        execute: Callable[[str], Future[bool]] | None = None,
     ) -> None:
         self.pygame = pygame
         self.screen = screen
         self.select = select
+        self.execute = execute
+        self.command_request: Future[bool] | None = None
+        self.command_ready = False
+        self.confirm_command: tuple[str, str] | None = None
         pygame.font.init()
         self.fonts: dict[tuple[int, bool], Font] = {}
         self.commands = cast(
@@ -98,6 +112,11 @@ class ConsoleMenu:
             if not self.selection.result():
                 self.error = "Couldn’t switch personality. Try again."
             self.selection = None
+        if self.command_request is not None and self.command_request.done():
+            if not self.command_request.result():
+                self.error = "Command not accepted. Wait for Iris, then try again."
+            self.command_request = None
+        self.command_ready = bool(state and state.commands_ready and self.execute is not None)
         if self.page is None:
             return False
         if now >= self.deadline:
@@ -117,6 +136,9 @@ class ConsoleMenu:
             self.selection,
             self.error,
             state.notice if state else None,
+            self.command_request,
+            self.command_ready,
+            self.confirm_command,
         )
         if view == self.last_view:
             return True
@@ -129,10 +151,22 @@ class ConsoleMenu:
             "category": self.category["title"],
             "personalities": "Personalities",
             "home": "Home",
+            "confirm-command": "Confirm command",
         }
         self.header(titles[self.page])
         top = self.px(100)
-        if self.page == "main":
+        if self.page == "confirm-command" and self.confirm_command is not None:
+            phrase, meaning = self.confirm_command
+            top = self.note(f"{phrase}? {meaning}", top)
+            if self.error:
+                top = self.note(self.error, top)
+            choices = [("Go back", LILAC, lambda: self.go("category"))]
+            if self.command_ready and self.command_request is None:
+                choices.insert(0, (f"Confirm: {phrase}", PEACH, partial(self.run_command, phrase)))
+            else:
+                top = self.note("Wait for Iris to finish this turn.", top)
+            self.tiles(choices, top)
+        elif self.page == "main":
             self.tiles(
                 [
                     ("Command list", MINT, lambda: self.go("commands")),
@@ -142,7 +176,7 @@ class ConsoleMenu:
                 top,
             )
         elif self.page == "commands":
-            top = self.note("Say the phrases aloud while this menu is open.", top)
+            top = self.note("Tap an outlined command, or say any of these phrases aloud.", top)
             self.tiles(
                 [
                     (item["title"], COLORS[item["color"]], partial(self.open_category, item))
@@ -151,6 +185,15 @@ class ConsoleMenu:
                 top,
             )
         elif self.page == "category":
+            top = self.note(
+                self.error
+                or (
+                    "Wait for Iris to finish this turn."
+                    if not self.command_ready
+                    else "Tap an outlined command to run it."
+                ),
+                top,
+            )
             if note := self.category.get("note"):
                 top = self.note(note, top)
             rows = self.category["commands"]
@@ -224,6 +267,25 @@ class ConsoleMenu:
                 self.font(18, False).render(line, True, WHITE),
                 (x + self.px(18), y + self.px(42) + i * line_h),
             )
+
+    def choose_command(self, phrase: str, meaning: str) -> None:
+        if not self.command_ready or self.command_request is not None:
+            return
+        spec = self.commands.get("tap_commands", {}).get(phrase)
+        if spec is None or "client" not in spec["targets"]:
+            return
+        if spec["confirm"]:
+            self.confirm_command = (phrase, meaning)
+            self.go("confirm-command")
+        else:
+            self.run_command(phrase)
+
+    def run_command(self, phrase: str) -> None:
+        if self.execute is None or not self.command_ready or self.command_request is not None:
+            return
+        self.command_request = self.execute(phrase)
+        self.confirm_command = None
+        self.go("category")
 
     def open_category(self, item: Category) -> None:
         self.category = item
@@ -310,7 +372,13 @@ class ConsoleMenu:
     def header(self, title: str) -> None:
         left = self.margin
         if self.page != "main":
-            destination = "commands" if self.page == "category" else "main"
+            destination = (
+                "category"
+                if self.page == "confirm-command"
+                else "commands"
+                if self.page == "category"
+                else "main"
+            )
             self.button(
                 (left, self.px(17), self.px(57), self.px(50)),
                 "←",
@@ -404,6 +472,24 @@ class ConsoleMenu:
             self.pygame.draw.rect(
                 self.screen, PANEL, (self.margin, y, width, height), border_radius=self.px(13)
             )
+            spec = self.commands.get("tap_commands", {}).get(rows[index][0])
+            tappable = spec is not None and "client" in spec["targets"] and self.execute is not None
+            if tappable:
+                color = MINT if self.command_ready and self.command_request is None else MUTED
+                self.pygame.draw.rect(
+                    self.screen,
+                    color,
+                    (self.margin, y, width, height),
+                    width=2,
+                    border_radius=self.px(13),
+                )
+                if self.command_ready and self.command_request is None:
+                    self.buttons.append(
+                        (
+                            (self.margin, y, width, height),
+                            partial(self.choose_command, *rows[index]),
+                        )
+                    )
             self.label(terms[index], self.margin + padding, y + padding, 21, MINT, bold=True)
             self.label(
                 meanings[index],

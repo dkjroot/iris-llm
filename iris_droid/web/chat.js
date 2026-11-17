@@ -26,6 +26,11 @@ const face = { head: savedFace(), activity: "idle", expression: "neutral", showI
 
 const menu = mountMenu({
   web: true,
+  async executeCommand(phrase) {
+    if (controller.pending) throw new Error("Wait for Iris to finish this turn.");
+    if (!key.reportValidity()) throw new Error("Enter your connection key before running a command.");
+    await turn(phrase);
+  },
   async loadPersonalities() {
     const token = key.value;
     let response;
@@ -182,6 +187,7 @@ async function turn(body, active = null) {
   const request = controller.begin();
   if (!request) return;
   send.disabled = true;
+  menu.setBusy(true);
   key.readOnly = true;
   const track = controller.voice?.stream?.getAudioTracks()[0];
   if (track) track.enabled = false;
@@ -275,6 +281,7 @@ async function turn(body, active = null) {
     const currentTrack = controller.voice?.stream?.getAudioTracks()[0];
     if (currentTrack) currentTrack.enabled = true;
     send.disabled = false;
+    menu.setBusy(false);
     key.readOnly = false;
     show(feedback || (controller.voice ? "Listening…" : "Ready"));
     showFace(controller.voice ? "listening" : "idle", writtenExpression || "neutral", writtenExpression ? 3000 : 0);

@@ -79,5 +79,25 @@
     ["How much power is the desk lamp using?", "Read a device’s meter, if it has one."],
     ["What’s the schedule for the desk lamp?", "Check a device’s schedule."],
     ["Turn off the desk lamp at ten every night", "Ask Iris to change a device’s schedule."]
-  ]
+  ],
+  "tap_commands": {
+    "Clear context": {"targets": ["client", "web"], "confirm": true},
+    "Delete previous": {"targets": ["client", "web"], "confirm": true},
+    "Companion mode on": {"targets": ["client", "web"], "confirm": false},
+    "Companion mode off": {"targets": ["client", "web"], "confirm": false},
+    "Companion mode status": {"targets": ["client", "web"], "confirm": false},
+    "Please turn companion mode on": {"targets": ["client", "web"], "confirm": false},
+    "Memory status": {"targets": ["client", "web"], "confirm": false},
+    "Private mode on": {"targets": ["client", "web"], "confirm": false},
+    "Private mode off": {"targets": ["client", "web"], "confirm": false},
+    "List remembered details": {"targets": ["client", "web"], "confirm": false},
+    "List personalities": {"targets": ["client", "web"], "confirm": false},
+    "Cancel forgetting": {"targets": ["client", "web"], "confirm": false},
+    "Cancel memory change": {"targets": ["client", "web"], "confirm": false},
+    "Volume up": {"targets": ["client"], "confirm": false},
+    "Volume down": {"targets": ["client"], "confirm": false},
+    "Mute": {"targets": ["client"], "confirm": false},
+    "Unmute": {"targets": ["client"], "confirm": false},
+    "Volume status": {"targets": ["client"], "confirm": false}
+  }
 }

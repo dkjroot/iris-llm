@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Event
 from typing import Protocol
 
 DEFAULT_MICROPHONE_BUFFER = 8192
@@ -45,11 +46,18 @@ class MicrophoneStream(Protocol):
     def close(self) -> None: ...
 
 
+class CaptureInterrupted(Exception):
+    """A touch command superseded this unfinished microphone capture."""
+
+
 class CheckedMicrophoneStream:
-    def __init__(self, stream: MicrophoneStream) -> None:
+    def __init__(self, stream: MicrophoneStream, interrupt: Event | None = None) -> None:
         self._stream = stream
+        self._interrupt = interrupt
 
     def read(self, size: int) -> bytes:
+        if self._interrupt is not None and self._interrupt.is_set():
+            raise CaptureInterrupted
         try:
             # SpeechRecognition's normal wrapper suppresses this error. Missing
             # chunks shorten the recording and join unrelated samples together.
@@ -61,6 +69,8 @@ class CheckedMicrophoneStream:
                     "Try a larger --microphone-buffer (for example 16384), and check CPU load."
                 ) from error
             raise
+        if self._interrupt is not None and self._interrupt.is_set():
+            raise CaptureInterrupted
         if len(data) != size * 2:  # The microphone is mono, signed 16-bit PCM.
             raise OSError("Microphone returned incomplete audio; recording discarded.")
         return data

@@ -127,6 +127,7 @@ def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, tmp_p
 
     def play_audio(*args, **kwargs):
         assert read_state() == {
+            "commands_ready": False,
             **({"companion_mode": False} if not stream else {}),
             "head": "signal",
             "screensaver": "black",

@@ -148,3 +148,15 @@ A localhost URL describes the immediate endpoint, not whether that endpoint
 forwards elsewhere. Raw traces, terminal scrollback, browser key storage, diagnostic
 WAVs and backups have their own retention. See [diagnostics](performance-and-recovery.md#what-to-include-in-a-bug-report)
 and [privacy](memory-and-privacy.md#private-conversations-and-forgetting).
+
+## Local face command interface
+
+The loopback face service accepts `POST /command` with a JSON string containing
+a touch-enabled phrase from the shared command catalog. It uses the same Host,
+Origin, content-type and 512-byte body checks as the local personality control.
+Unknown phrases and parameter templates return 400; a busy or unavailable voice
+client returns 409. A 204 queues one command for the voice client’s current
+session. The execution result arrives through `/state` as a command notice.
+`commands_ready` reports whether the client can accept a tap. No automatic retry
+is performed. The native menu and browser menu both use this endpoint on the Pi;
+the phone sends text commands through its existing authenticated turn endpoint.

@@ -12,6 +12,7 @@ from iris_app.decisions import VoiceDecision
 from iris_app.runtime_audio import command_audio
 from iris_chat_engines.compatible import ChatEngine
 from iris_domain.replies import (
+    CommandFeedback,
     TurnReply,
 )
 from iris_memory.controls import MemoryAction, MemoryPolicyError, PendingForget
@@ -30,6 +31,7 @@ class PreparedMemory:
     recall_reply: str | None
     detail_labels: tuple[str, ...]
     hierarchy: Prepared | None
+    recall_found: bool = False
 
 
 class MemoryOrchestrator:
@@ -208,6 +210,11 @@ class MemoryOrchestrator:
             require_active=pending.require_active,
         )
         self.app._sync_policy()
+        result.command = CommandFeedback(
+            title="Conversation forgotten",
+            message=result.text,
+            status="success",
+        )
         return result
 
     def _detail_control(
@@ -307,9 +314,19 @@ class MemoryOrchestrator:
             self.app.sessions[session].selected_detail = (
                 pending.command.label if pending.command.action != "forget" else None
             )
+            result.command = CommandFeedback(
+                title="Memory updated",
+                message=text[:320],
+                status="success",
+            )
         else:
             chat.pending_detail = pending
             chat.selected_detail = selected
+            result.command = CommandFeedback(
+                title="Confirmation needed" if pending is not None else "Remembered details",
+                message=text[:319] + "…" if len(text) > 320 else text,
+                status="error" if self.app.private_mode or self.app.details is None else "info",
+            )
         return result
 
     def _checkpoint(self, conversation: str | None) -> None:
@@ -368,6 +385,11 @@ class MemoryOrchestrator:
                 text_only=text_only,
             ),
             companion_mode=companion,
+        )
+        result.command = CommandFeedback(
+            title="Delete previous",
+            message=result.text,
+            status="success" if removed else "info",
         )
         result._deleted_exchange_id = deleted
         return result
@@ -539,4 +561,4 @@ class MemoryOrchestrator:
                         "but can't load its details right now. "
                         "Please try again in a moment."
                     )
-        return PreparedMemory(recall_reply, detail_labels, hierarchy_plan)
+        return PreparedMemory(recall_reply, detail_labels, hierarchy_plan, bool(recalled))

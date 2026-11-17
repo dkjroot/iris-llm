@@ -1,6 +1,6 @@
 const idleMs = 180_000;
 
-export function mountMenu({ selectPersonality, loadPersonalities, web = false }) {
+export function mountMenu({ selectPersonality, loadPersonalities, executeCommand, web = false }) {
   const stage = document.querySelector(".iris-stage");
   stage.insertAdjacentHTML("beforeend", `
     <button type="button" class="iris-menu-trigger" aria-controls="iris-menu"
@@ -33,6 +33,10 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
   let choosing = false;
   let personalityError = "";
   let timer;
+  let busy = false;
+  let executing = false;
+  let actionError = "";
+  let confirmation = null;
 
   function resetTimer() {
     clearTimeout(timer);
@@ -81,7 +85,24 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
       const row = document.createElement("div");
       const term = document.createElement("dt");
       const description = document.createElement("dd");
-      term.textContent = phrase;
+      const action = commands?.tap_commands?.[phrase];
+      const target = web ? "web" : "client";
+      if (executeCommand && action?.targets.includes(target)) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "iris-command-action";
+        button.setAttribute("aria-label", phrase);
+        button.textContent = phrase;
+        button.disabled = busy || executing || !available;
+        button.addEventListener("click", () => {
+          if (action.confirm) {
+            confirmation = {phrase, meaning};
+            go("confirm-command", category);
+          } else void runCommand(phrase);
+        });
+        term.append(button);
+        row.classList.add("iris-command-row");
+      } else term.textContent = phrase;
       description.textContent = meaning;
       row.append(term, description);
       list.append(row);
@@ -103,8 +124,15 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
       category: category?.title,
       personalities: "Personalities",
       home: "Home",
+      "confirm-command": "Confirm command",
     }[page];
-    if (page === "main") {
+    if (page === "confirm-command" && confirmation) {
+      note(`${confirmation.phrase}? ${confirmation.meaning}`);
+      if (actionError) note(actionError, true);
+      if (busy || executing) note("Wait for Iris to finish this turn.", true);
+      else tiles([[`Confirm: ${confirmation.phrase}`, "peach", () => void runCommand(confirmation.phrase)]]);
+      tiles([["Go back", "lilac", () => go("category", category)]]);
+    } else if (page === "main") {
       tiles([
         ["Command list", "mint", () => go("commands")],
         ["Personalities", "lilac", () => go("personalities")],
@@ -129,11 +157,13 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
       note(commandError || "Loading commands…", true);
       if (commandError) tiles([["Retry", "mint", readCommands]]);
     } else if (page === "commands") {
-      note("Say the phrases aloud while this menu is open.");
+      note("Tap a command button to run it, or say any of these phrases aloud.");
       tiles(commands.categories.map(item => [
         item.title, item.color, () => go("category", item),
       ]));
     } else if (page === "category") {
+      if (actionError) note(actionError, true);
+      else if (busy || executing) note("Wait for Iris to finish this turn.", true);
       const conversation = category.title === "Conversation";
       if (web && conversation) {
         note("Wake mode, voice cancel and spontaneous companion replies run on the robot.");
@@ -151,6 +181,23 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
     if (focusedIndex >= 0) {
       const replacement = content.querySelectorAll("button")[focusedIndex];
       (replacement && !replacement.disabled ? replacement : title).focus({ preventScroll: true });
+    }
+  }
+
+  async function runCommand(phrase) {
+    if (!executeCommand || busy || executing || !available) return;
+    executing = true;
+    actionError = "";
+    if (page === "confirm-command") page = "category";
+    confirmation = null;
+    render();
+    try {
+      await executeCommand(phrase);
+    } catch (error) {
+      actionError = error.message || "Command not accepted. Try again when Iris is ready.";
+    } finally {
+      executing = false;
+      render();
     }
   }
 
@@ -226,7 +273,7 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
     go("main");
   });
   close.addEventListener("click", dismiss);
-  back.addEventListener("click", () => go(page === "category" ? "commands" : "main"));
+  back.addEventListener("click", () => go(page === "confirm-command" ? "category" : page === "category" ? "commands" : "main", category));
   for (const event of ["pointerdown", "keydown", "wheel", "scroll"]) {
     panel.addEventListener(event, resetTimer, { passive: true, capture: true });
   }
@@ -238,7 +285,13 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
   });
 
   return {
+    setBusy(value) {
+      if (busy !== value) { busy = value; render(); }
+    },
     update(state) {
+      const nextBusy = state?.commands_ready !== true;
+      const busyChanged = busy !== nextBusy;
+      busy = nextBusy;
       const newNames = state?.personalities || [];
       const newActive = state?.personality || null;
       const newWake = state?.wake_phrase || null;
@@ -247,7 +300,7 @@ export function mountMenu({ selectPersonality, loadPersonalities, web = false })
       available = Boolean(state);
       names = newNames;
       if (!choosing) active = newActive;
-      if ((changed && page === "personalities" && !choosing) ||
+      if (busyChanged || (changed && page === "personalities" && !choosing) ||
           (wakePhrase !== newWake && page === "category" && category.title === "Conversation")) {
         wakePhrase = newWake;
         render();

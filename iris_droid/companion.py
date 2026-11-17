@@ -6,7 +6,7 @@ import math
 import random
 from collections.abc import Callable
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic
 
 from iris_domain.companion import (
@@ -15,6 +15,7 @@ from iris_domain.companion import (
 from iris_domain.companion import (
     ICE_BREAKERS as ICE_BREAKERS,
 )
+from iris_droid.capture import CaptureInterrupted
 
 
 class CompanionTimer:
@@ -58,8 +59,10 @@ class ConsoleInput:
         self._pending = False
         self._results: Queue[str | BaseException] = Queue()
 
-    def read(self, prompt: str, timeout: float | None = None) -> str | None:
-        if timeout is None and not self._pending:
+    def read(
+        self, prompt: str, timeout: float | None = None, *, interrupt: Event | None = None
+    ) -> str | None:
+        if timeout is None and not self._pending and interrupt is None:
             return input(prompt)
         if not self._pending:
             self._pending = True
@@ -72,7 +75,22 @@ class ConsoleInput:
 
             Thread(target=read_line, daemon=True).start()
         try:
-            result = self._results.get(timeout=timeout)
+            if interrupt is None:
+                result = self._results.get(timeout=timeout)
+            else:
+                deadline = None if timeout is None else monotonic() + timeout
+                while True:
+                    if interrupt.is_set():
+                        raise CaptureInterrupted
+                    remaining = (
+                        0.05 if deadline is None else max(0, min(0.05, deadline - monotonic()))
+                    )
+                    try:
+                        result = self._results.get(timeout=remaining)
+                        break
+                    except Empty:
+                        if deadline is not None and monotonic() >= deadline:
+                            return None
         except Empty:
             return None
         self._pending = False

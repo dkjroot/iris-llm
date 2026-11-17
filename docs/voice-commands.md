@@ -55,8 +55,9 @@ actual mixer result. An unavailable mixer gives an amber error.
 
 Some commands, including memory controls that may ask you to make another choice,
 show an informational command response. That means the control handler answered;
-it doesn't claim a requested change is complete. Listen to the reply for the
-next step. Ordinary chat doesn't produce a command-success bubble.
+it doesn't claim a requested change is complete. The bubble includes the handler’s response and the next step. A request to
+change a remembered detail says that confirmation is needed; a completed change
+gets a success response. Ordinary chat doesn't produce a command-success bubble.
 
 “No confirmation received” means the request or its reply failed somewhere along
 the way. A change might already have happened, particularly on a device, so check
@@ -81,3 +82,18 @@ automatic-opener timer. While the Pi's companion mode is on, detected follow-up
 speech is sent without another wake phrase; say “companion mode off” when you're
 done. See [the client setup guide](client-setup.md#6-companion-mode) for the timing
 settings and listening behaviour.
+
+## Run commands by touch
+
+Open the menu and choose **Command list**. Commands with an outlined button can
+be tapped, including companion mode, private mode, memory status and personality
+listing. On the Pi, the simple speaker volume controls work by touch too.
+Commands that need a name, value or a previous selection stay as spoken examples.
+The phone cannot change the Pi’s speaker mixer.
+
+A tap uses the same command handler and client session as a spoken command. On
+the Pi it interrupts wake waiting or an unfinished recording, then runs the
+command. Buttons are disabled while Iris is processing a turn. Tapping **Clear
+context** or **Delete previous** opens a confirmation screen first. The result
+bubble shows what happened; accepting a tap alone does not confirm execution.
+Touch commands use text replies, so you can change a setting quietly.

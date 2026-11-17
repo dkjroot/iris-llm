@@ -52,6 +52,7 @@ class DisplayState:
     mouth: tuple[tuple[float, float], ...] | None = None
     notice: tuple[str, str, str] | None = None
     companion_mode: bool | None = None
+    commands_ready: bool = False
 
 
 def read_state(port: int) -> DisplayState | None:
@@ -107,11 +108,16 @@ def read_state(port: int) -> DisplayState | None:
         mouth=read_mouth(state["mouth"], received) if "mouth" in state else None,
         notice=visible_notice,
         companion_mode=companion if isinstance(companion, bool) else None,
+        commands_ready=state.get("commands_ready") is True,
     )
 
 
 def request_personality(port: int, name: str) -> bool:
     return post_control(port, "/personality", name)
+
+
+def request_command(port: int, phrase: str) -> bool:
+    return post_control(port, "/command", phrase)
 
 
 def request_face_cycle(port: int) -> bool:
@@ -311,12 +317,13 @@ def render(
     current: Callable[[], DisplayState | None],
     select: Callable[[str], Future[bool]],
     cycle_face: Callable[[], None],
+    execute: Callable[[str], Future[bool]] | None = None,
 ) -> None:
     clock = pygame.time.Clock()
     head: FaceHead | None = None
     sprites: Callable[[FaceExpression, str], Surface] | None = None
     previous_blank = False
-    menu = ConsoleMenu(pygame, screen, select)
+    menu = ConsoleMenu(pygame, screen, select, execute)
     cycle_button = pygame.Rect(menu.px(12), menu.px(12), menu.px(50), menu.px(50))
     icon_size = menu.px(26)
     cycle_icon = smile_icon(pygame, icon_size)
@@ -497,6 +504,9 @@ def main(argv: list[str] | None = None) -> int:
                         current,
                         lambda name: worker.submit(request_personality, args.port, name),
                         cycle_face,
+                        (lambda phrase: worker.submit(request_command, args.port, phrase))
+                        if demo_head is None
+                        else None,
                     )
             finally:
                 pygame.display.quit()

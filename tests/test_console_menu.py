@@ -1,6 +1,7 @@
 """Native-menu navigation and async outcomes without SDL or a physical panel."""
 
 from concurrent.futures import Future
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -128,3 +129,37 @@ def test_wrapping_preserves_long_names(menu):
     lines = view.wrap(text, 25, 20)
     assert len(lines) > 1 and "".join(lines) == text
     assert all(view.font(20, False).size(line)[0] <= 25 for line in lines)
+
+
+def test_touch_commands_require_readiness_and_confirmation(menu):
+    view, _, press = menu
+    executed = []
+
+    def execute(phrase):
+        future = Future()
+        executed.append((phrase, future))
+        return future
+
+    view.execute = execute
+    current = state()
+    current = replace(current, commands_ready=True)
+    view.tap(100, 100, 1)
+    view.open_category(view.commands["categories"][0])
+    view.draw(current, 2)
+    view.choose_command("Delete previous", "Remove the most recent exchange.")
+    assert not executed
+    view.draw(current, 3)
+    assert view.page == "confirm-command"
+    press("Confirm: Delete previous", 4)
+    assert executed[0][0] == "Delete previous"
+    view.choose_command("Companion mode on", "Enable")
+    assert len(executed) == 1
+    executed[0][1].set_result(True)
+    current = replace(current, commands_ready=False)
+    view.draw(current, 5)
+    view.choose_command("Companion mode on", "Enable")
+    assert len(executed) == 1
+    current = replace(current, commands_ready=True)
+    view.draw(current, 6)
+    view.choose_command("Companion mode on", "Enable")
+    assert executed[1][0] == "Companion mode on"

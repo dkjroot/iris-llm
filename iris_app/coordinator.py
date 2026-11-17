@@ -196,7 +196,7 @@ class TurnCoordinator:
         if control is not None:
             # Stamp only deterministic command outcomes. Streamed replies carry
             # this receipt in their final completion frame, after execution.
-            if control.volume is None:
+            if control.volume is None and control.command is None:
                 kind = parsed.first or "command"
                 title = {
                     "companion": "Companion mode status",
@@ -213,11 +213,25 @@ class TurnCoordinator:
                     status = "error"
                 if kind == "personality" and parsed.personality:
                     status = "success" if control.selected_personality is not None else "error"
-                receipt_text = (
-                    control.text
-                    if kind in {"companion", "clear", "stop", "personality", "volume", "delete"}
-                    else "Command handled. Iris's reply has the details."
-                )
+                if kind == "memory":
+                    title = {
+                        "private_on": "Private mode on",
+                        "private_off": "Private mode off",
+                        "status": "Memory status",
+                        "forget": "Forgetting request",
+                        "forget_recalled": "Forgetting request",
+                        "confirm_forget": "Forgetting response",
+                        "cancel_forget": "Forgetting cancelled",
+                    }.get(parsed.action or "", "Memory command")
+                    if parsed.action in {"private_on", "private_off", "cancel_forget"}:
+                        status = "success"
+                elif kind == "detail":
+                    title = "Remembered details"
+                elif kind == "block_followup":
+                    title = "Companion follow-up"
+                receipt_text = control.text
+                if len(receipt_text) > 320:
+                    receipt_text = receipt_text[:319] + "…"
                 control.command = CommandFeedback(
                     title=title, message=receipt_text[:320] or "Command handled.", status=status
                 )
@@ -244,6 +258,8 @@ class TurnCoordinator:
         followup_conversation: str | None = None
         hierarchy_plan = None
         expression: FaceExpression | None = None
+        recall_reply: str | None = None
+        recall_found = False
         personality_prompt = personality.prompt if personality is not None else ""
         try:
             if command is not None:
@@ -281,6 +297,7 @@ class TurnCoordinator:
                     personality_prompt=personality_prompt,
                 )
                 recall_reply = prepared.recall_reply
+                recall_found = prepared.recall_found
                 detail_labels = prepared.detail_labels
                 hierarchy_plan = prepared.hierarchy
                 if recall_reply is not None:
@@ -355,6 +372,23 @@ class TurnCoordinator:
                 else "Automatic conversation is off.",
                 status="success",
             )
+        elif recall_reply is not None:
+            result.command = CommandFeedback(
+                title="Memory recall",
+                message=text[:319] + "…" if len(text) > 320 else text,
+                status="info",
+            )
+        elif recall_found:
+            result.command = CommandFeedback(
+                title="Memory recall",
+                message="Found matching material in saved conversations.",
+                status="success",
+            )
         if finished:
+            result.command = CommandFeedback(
+                title="Conversation ended",
+                message="Iris is stopping this conversation.",
+                status="success",
+            )
             del self.app.sessions[session]
         return result

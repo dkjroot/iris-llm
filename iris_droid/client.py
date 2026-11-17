@@ -7,7 +7,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from functools import partial
 from importlib.resources import files
 from math import isfinite
@@ -26,6 +26,7 @@ from iris_domain.replies import COMMAND_FEEDBACK_HEADER, CommandFeedback
 from iris_droid.capture import (
     DEFAULT_MICROPHONE_BUFFER,
     CaptureCalibration,
+    CaptureInterrupted,
     CheckedMicrophoneStream,
     validate_capture_options,
 )
@@ -57,6 +58,7 @@ from iris_droid.protocol import (
     validate_token,
     write_wav,
 )
+from iris_droid.touch_commands import TouchCommands
 from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
 from iris_droid.wake import WakeDetector
 from iris_frames import ndjson_lines
@@ -74,6 +76,7 @@ class CaptureOptions(TypedDict, total=False):
     vad: SpeechDetector
     vad_threshold: float
     on_listening: Callable[[], None]
+    interrupt: Event
 
 
 class DroidClient:
@@ -808,6 +811,8 @@ def open_microphone(
     device: int | None,
     buffer_frames: int = DEFAULT_MICROPHONE_BUFFER,
     sample_rate: int | None = None,
+    *,
+    interrupt: Event | None = None,
 ) -> Iterator[sr.Microphone]:
     import speech_recognition as sr
 
@@ -834,7 +839,7 @@ def open_microphone(
             f"Requested rate: {sample_rate or 'device default'}; buffer: {buffer_frames} frames."
         )
     try:
-        source.stream = CheckedMicrophoneStream(source.stream)
+        source.stream = CheckedMicrophoneStream(source.stream, interrupt)
         yield source
     finally:
         microphone.__exit__(None, None, None)
@@ -862,6 +867,7 @@ def record_turn(
     vad_threshold: float = 0.5,
     quiet: bool = False,
     on_listening: Callable[[], None] | None = None,
+    interrupt: Event | None = None,
 ) -> bytes:
     import speech_recognition as sr
 
@@ -872,13 +878,19 @@ def record_turn(
         energy_threshold=energy_threshold,
         calibration_duration=calibration_duration,
     )
+
+    def source_context() -> AbstractContextManager[sr.Microphone]:
+        if interrupt is None:
+            return open_microphone(microphone, buffer_frames, sample_rate)
+        return open_microphone(microphone, buffer_frames, sample_rate, interrupt=interrupt)
+
     recognizer = sr.Recognizer()
     recognizer.pause_threshold = pause_threshold
     threshold = energy_threshold
     if threshold is None and calibration is not None and wake is None:
         threshold = calibration.energy_threshold
     if threshold is None and vad is None:
-        with open_microphone(microphone, buffer_frames, sample_rate) as source:
+        with source_context() as source:
             # Always read at least one buffer, even at low device rates or with
             # a large buffer. The library otherwise calibrates using no audio.
             duration = max(calibration_duration, source.CHUNK / source.SAMPLE_RATE * 1.01)
@@ -895,7 +907,7 @@ def record_turn(
     if announce_ready and feedback is not None:
         feedback.ready()
     if wake is not None:
-        with open_microphone(microphone, buffer_frames, sample_rate) as source:
+        with source_context() as source:
             wake.wait(source)
         if conversation is not None:
             conversation.activate()
@@ -906,7 +918,7 @@ def record_turn(
         play_wav(files("iris_sounds").joinpath("bleep.wav").read_bytes(), speaker)
     elif feedback is not None and (not quiet or wake is not None):
         feedback.listening()
-    with open_microphone(microphone, buffer_frames, sample_rate) as source:
+    with source_context() as source:
         if diagnostics:
             print(
                 f"Microphone: {source.SAMPLE_RATE} Hz, mono, {source.CHUNK} frames "
@@ -1164,6 +1176,12 @@ def main(argv: list[str] | None = None) -> int:
                     ),
                 )
                 stack.callback(client.state.close)
+                touch = TouchCommands()
+                stack.callback(touch.close)
+                if args.face is not None:
+                    display.execute_command = touch.submit
+                    display.commands_ready = lambda: touch.ready
+                    capture_options["interrupt"] = touch.interrupt
                 display.personalities = tuple(client.personality_headers)
                 display.active_personality = lambda: client.personality
                 display.select_personality = client.select_personality
@@ -1181,6 +1199,8 @@ def main(argv: list[str] | None = None) -> int:
                 first_capture = True
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
+                    touch.listen()
+                    tapped = touch.take()
                     if not args.text:
                         display.show("idle")
                     if (
@@ -1194,10 +1214,17 @@ def main(argv: list[str] | None = None) -> int:
                     proactive = False
                     if not args.text and args.activation == "enter" and not companion.enabled:
                         feedback.ready()
-                    if args.text:
-                        line = console.read(
-                            "You: ", companion.remaining() if companion.enabled else None
-                        )
+                    if tapped is not None:
+                        body = tapped.encode()
+                    elif args.text:
+                        try:
+                            line = console.read(
+                                "You: ",
+                                companion.remaining() if companion.enabled else None,
+                                **({"interrupt": touch.interrupt} if args.face is not None else {}),
+                            )
+                        except CaptureInterrupted:
+                            continue
                         proactive = line is None
                         body = b"idle" if proactive else (line or "").encode()
                         if not proactive and not body.strip():
@@ -1206,7 +1233,15 @@ def main(argv: list[str] | None = None) -> int:
                         import speech_recognition as sr
 
                         if args.activation == "enter" and not companion.enabled:
-                            input("Press Enter to talk...")
+                            if args.face is None:
+                                input("Press Enter to talk...")
+                            else:
+                                try:
+                                    console.read(
+                                        "Press Enter to talk...", interrupt=touch.interrupt
+                                    )
+                                except CaptureInterrupted:
+                                    continue
                         quiet = args.activation != "enter" or companion.enabled
                         announce_ready = quiet and (
                             first_capture
@@ -1244,6 +1279,8 @@ def main(argv: list[str] | None = None) -> int:
                                 else calibration,
                                 companion_timer=companion if companion.enabled else None,
                             )
+                        except CaptureInterrupted:
+                            continue
                         except sr.WaitTimeoutError:
                             if companion.enabled:
                                 proactive = True
@@ -1267,18 +1304,23 @@ def main(argv: list[str] | None = None) -> int:
                                 flush=True,
                             )
                             play_wav(body, speaker)
+                    if tapped is None and not touch.begin_voice():
+                        continue
                     try:
                         display.show("thinking")
                         if not proactive:
                             display.notify(
-                                "Processing…", "Checking what you said.", "processing", seconds=600
+                                "Processing…",
+                                "Applying your command." if tapped else "Checking what you said.",
+                                "processing",
+                                seconds=600,
                             )
                         with (
                             nullcontext() if proactive or args.voice_cancel else feedback.working()
                         ):
                             reply = client.turn(
                                 body,
-                                text_only=args.text,
+                                text_only=args.text or tapped is not None,
                                 **({"companion_idle": True} if proactive else {}),
                             )
                     except TurnCancelled:
@@ -1381,6 +1423,12 @@ def main(argv: list[str] | None = None) -> int:
                         print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
                         continue
                     if reply.finished:
+                        if face_port is not None:
+                            # Keep the local display server alive long enough to show
+                            # the final acknowledgement before shutting down.
+                            display.show("idle")
+                            display.notify("Conversation ended", "Iris is stopping.", "success")
+                            Event().wait(3)
                         return 0
                     companion.update(reply.companion_mode, proactive=proactive)
                     if conversation is not None:

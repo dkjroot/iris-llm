@@ -17,6 +17,7 @@ from typing import Literal, cast, get_args
 
 from iris_droid.expression import FaceExpression
 from iris_droid.speech_motion import SpeechEnvelope
+from iris_droid.touch_commands import touch_commands
 
 FaceHead = Literal["humanoid-android", "sprout", "signal", "rivet"]
 FaceIdle = Literal["snow", "black"]
@@ -73,6 +74,8 @@ class FaceDisplay:
         self.screensaver = screensaver
         self.personalities: tuple[str, ...] = ()
         self.active_personality: Callable[[], str | None] = lambda: None
+        self.execute_command: Callable[[str], bool] | None = None
+        self.commands_ready: Callable[[], bool] = lambda: False
         self.select_personality: Callable[[str], bool] = lambda _: False
         self.wake_phrase: str | None = None
         self._lock = Lock()
@@ -172,6 +175,8 @@ class FaceDisplay:
                 "activity": activity,
                 "expression": "neutral" if expired else self._expression,
             }
+            if self.execute_command is not None:
+                state["commands_ready"] = self.commands_ready()
             if self._notice is not None and now < self._notice_until:
                 state["notice"] = self._notice
             if self.companion_mode is not None:
@@ -251,7 +256,7 @@ class FaceDisplay:
                 if not self.valid_host():
                     self.send_error(400)
                     return
-                if self.path not in {"/personality", "/cycle-face"}:
+                if self.path not in {"/personality", "/cycle-face", "/command"}:
                     self.send_error(404)
                     return
                 if self.headers.get("Origin") not in (None, f"http://{self.headers['Host']}"):
@@ -268,7 +273,17 @@ class FaceDisplay:
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
-                if self.path == "/cycle-face":
+                if self.path == "/command":
+                    if not isinstance(value, str) or value not in touch_commands("client"):
+                        self.send_error(400)
+                        return
+                    accepted = display.execute_command is not None and display.execute_command(
+                        value
+                    )
+                    if not accepted:
+                        self.send_error(409, "Iris is busy; wait for this turn to finish")
+                        return
+                elif self.path == "/cycle-face":
                     accepted = value is None and display.cycle_face()
                 else:
                     accepted = isinstance(value, str) and display.select_personality(value)
