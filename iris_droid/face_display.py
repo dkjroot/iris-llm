@@ -16,6 +16,7 @@ from time import monotonic
 from typing import Literal, cast, get_args
 
 from iris_droid.expression import FaceExpression
+from iris_droid.speech_motion import SpeechEnvelope
 
 FaceHead = Literal["humanoid-android", "sprout", "signal", "rivet"]
 FaceIdle = Literal["snow", "black"]
@@ -34,6 +35,7 @@ def next_face(head: FaceHead) -> FaceHead:
 
 BROWSER_FACE_ASSETS = {
     "/face.css": ("face.css", "text/css; charset=utf-8"),
+    "/speech-envelope.js": ("speech-envelope.js", "text/javascript; charset=utf-8"),
     "/face.js": ("face.js", "text/javascript; charset=utf-8"),
     "/face-rig.js": ("face-rig.js", "text/javascript; charset=utf-8"),
     "/face-portraits.js": ("face-portraits.js", "text/javascript; charset=utf-8"),
@@ -78,6 +80,7 @@ class FaceDisplay:
         self._deadline: float | None = None
         self._idle_since: float | None = None
         self._preview_until = 0.0
+        self.speech = SpeechEnvelope()
 
     def cycle_face(self) -> bool:
         with self._lock:
@@ -129,11 +132,13 @@ class FaceDisplay:
 
     @contextmanager
     def speaking(self, expression: FaceExpression | None) -> Iterator[None]:
+        self.speech.clear()
         self.show("speaking", expression)
         try:
             yield
         finally:
             self.show("idle")
+            self.speech.clear()
 
     def state(self) -> bytes:
         with self._lock:
@@ -147,6 +152,8 @@ class FaceDisplay:
                 "activity": activity,
                 "expression": "neutral" if expired else self._expression,
             }
+            if activity == "speaking":
+                state["mouth"] = self.speech.snapshot(now)
             if now < self._preview_until:
                 state["preview"] = True
             if (

@@ -19,6 +19,19 @@ async function moduleFrom(name) {
     });
     assert.equal(result.status, 0, `${name}: ${result.stderr}`);
   }
+  const { speechEnvelope, envelopeAt, outputTime } = await moduleFrom("speech-envelope.js");
+  const speech = new Float32Array(1440);
+  speech.fill(.2, 480, 960);
+  const envelope = speechEnvelope({length: 1440, sampleRate: 24000, numberOfChannels: 1,
+    getChannelData: () => speech});
+  assert.equal(envelopeAt(envelope, -.01), 0);
+  assert.equal(envelopeAt(envelope, .01), 0);
+  assert.equal(envelopeAt(envelope, .03), 1);
+  assert.equal(envelopeAt(envelope, .05), 0);
+  assert.equal(envelopeAt(envelope, 2), 0);
+  assert.equal(outputTime({currentTime: 1, outputLatency: .1}, 0), .9);
+  assert.equal(outputTime({currentTime: 1, getOutputTimestamp: () =>
+    ({contextTime: .8, performanceTime: 1000})}, 1050), .8500000000000001);
   const { recordingWav, SpeechCapture } = await moduleFrom("speech.js");
   const wav = new DataView(recordingWav([new Float32Array(4800).fill(0.5)], 48000));
   assert.equal(wav.getUint32(24, true), 16000);

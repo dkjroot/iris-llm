@@ -1,5 +1,7 @@
 "use strict";
 
+import { speechEnvelope, envelopeAt, outputTime } from "/speech-envelope.js";
+
 const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
 const motionPreference = matchMedia("(prefers-reduced-motion: reduce)");
@@ -15,6 +17,26 @@ let visibleFace = false;
 let frame = null;
 let lastDraw = null;
 const pose = { ...expressions.neutral };
+let audioMouth = null;
+let localMouth = [];
+
+export function followFaceAudio(audio, buffer, start) {
+  const envelope = speechEnvelope(buffer);
+  const sample = now => audio.state === "running"
+    ? envelopeAt(envelope, outputTime(audio, now) - start) : 0;
+  audioMouth = sample;
+  requestDraw();
+  return () => { if (audioMouth === sample) audioMouth = null; };
+}
+
+function localMouthAt(now) {
+  let level = 0;
+  for (const [at, value] of localMouth) {
+    if (at > now) break;
+    level = now - at < 150 ? value : 0;
+  }
+  return level;
+}
 
 export function savedFace() {
   try {
@@ -58,6 +80,11 @@ const flakes = Array.from({ length: 9 }, (_, index) => ({
 }));
 
 export function updateFace(state) {
+  const now = performance.now();
+  localMouth = Array.isArray(state?.mouth) && state.mouth.length <= 128
+    ? state.mouth.filter(point => Array.isArray(point) && point.length === 2 &&
+      point.every(Number.isFinite) && Math.abs(point[0]) <= 3 && point[1] >= 0 && point[1] <= 1)
+      .map(([offset, level]) => [now + offset * 1000, level]) : [];
   const head = typeof state?.head === "string" && Object.hasOwn(portraits, state.head)
     ? portraits[state.head] : null;
   const headChanged = head !== face;
@@ -116,7 +143,12 @@ function draw(now) {
     const cue = activity === "thinking" ? "focused" : expression;
     if (still) Object.assign(pose, expressions[cue]);
     else blendPose(pose, cue, elapsed / 1000);
-    drawPortrait(ctx, face, bust, pose, activity, faceMotion(seconds, activity, still), seconds);
+    const motion = faceMotion(seconds, activity, still);
+    // Live displays never invent syllables while waiting for audio or in pauses.
+    motion.jaw = activity === "speaking" && !still
+      ? (audioMouth ? audioMouth(now) : localMouthAt(now)) * 9 : 0;
+    motion.round = 0; // Energy does not identify vowel/phoneme shape.
+    drawPortrait(ctx, face, bust, pose, activity, motion, seconds);
   } else if (snow && !still) {
     ctx.fillStyle = "#8fa7ba38";
     for (const flake of flakes) {

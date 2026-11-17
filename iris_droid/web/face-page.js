@@ -39,6 +39,7 @@ const cycleButton = mountFaceCycle(async () => {
 cycleButton.disabled = true;
 
 async function poll() {
+  let speaking = false;
   if (!document.hidden) {
     let state = null;
     try {
@@ -48,11 +49,12 @@ async function poll() {
       // Keep the menus available while the voice client restarts.
     }
     connected = Boolean(state);
+    speaking = state?.activity === "speaking";
     cycleButton.disabled = cycling || !connected;
     updateFace(state && { ...state, showIdle: state.preview || state.show_idle });
     menu.update(state);
   }
-  setTimeout(poll, document.hidden ? 1000 : 200);
+  setTimeout(poll, document.hidden ? 1000 : speaking ? 50 : 200);
 }
 
 poll();

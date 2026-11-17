@@ -19,7 +19,7 @@ const scale = 1.6;
 const width = Math.round(portraitWidth * scale);
 const height = Math.round(portraitHeight * scale);
 // The moving eyes, brows and mouths occupy only this part of the portrait.
-const crop = [96, 120, 368, 272];
+const crop = [128, 128, 304, 272];
 const [left, top, tileWidth, tileHeight] = crop;
 const poses = Object.entries(expressions);
 const frames = [
@@ -29,7 +29,9 @@ const frames = [
   ["jaw-small", { jaw: 3 }],
   ["jaw-medium", { jaw: 6 }],
   ["jaw-wide", { jaw: 9 }],
-  ["thinking", { gaze: 3.5 }],
+  ["thinking", { gaze: 3.5, gazeY: -1.5 }],
+  ["look-left", { gaze: -2.4 }],
+  ["look-right", { gaze: 2.4 }],
 ];
 const args = process.argv.slice(2);
 const check = args.includes("--check");
@@ -91,14 +93,14 @@ for (const [name, theme] of Object.entries(portraits)) {
       const features = layer.getContext("2d");
       features.translate(-left, -top);
       features.scale(scale, scale);
-      theme.features(features, pose, { blink: 0, drift: 0, gaze: 0, jaw: 0, ...frame }, theme);
+      theme.features(features, pose, { blink: 0, drift: 0, gaze: 0, gazeY: 0, jaw: 0, round: 0, ...frame }, theme);
       ctx.drawImage(layer, tileWidth * column, height + tileHeight * row);
     });
   });
   publish(`${name}.png`, atlas.toBuffer("image/png"));
 }
 publish("sprites.json", JSON.stringify({
-  size: [width, height], crop, expressions: poses.map(([name]) => name),
+  size: [width, height], crop, mouthSplit: Math.round(180 * scale) - top, expressions: poses.map(([name]) => name),
   frames: frames.map(([name]) => name), tilts,
 }, null, 2) + "\n");
 console.log(`${check ? "Checked" : "Exported"} ${Object.keys(portraits).length} Iris sprite sheets.`);

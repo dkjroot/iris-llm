@@ -130,6 +130,7 @@ def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, tmp_p
             "head": "signal",
             "screensaver": "black",
             "activity": "speaking",
+            "mouth": [],
             "expression": "amused",
         }
         if stream:

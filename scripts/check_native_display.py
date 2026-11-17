@@ -46,7 +46,12 @@ def main() -> None:
                 sprite = load_sprites(pygame, head, size)
                 hashes = set()
                 for expression in FACE_EXPRESSIONS:
-                    for activity in manifest["frames"]:
+                    animation_frames = manifest["frames"] + [
+                        f"{blink}|{jaw}"
+                        for blink in ("half-blink", "blink")
+                        for jaw in ("jaw-small", "jaw-medium", "jaw-wide")
+                    ]
+                    for activity in animation_frames:
                         screen.fill((0, 0, 0))
                         pixels = sprite(expression, activity)
                         width, height = pixels.get_size()

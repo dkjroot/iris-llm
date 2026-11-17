@@ -33,6 +33,7 @@ from iris_droid.face_display import (
     FaceIdle,
     next_face,
 )
+from iris_droid.speech_motion import read_mouth, sample_mouth
 
 ACTIVITIES: tuple[FaceActivity, ...] = get_args(FaceActivity)
 
@@ -48,9 +49,11 @@ class DisplayState:
     wake_phrase: str | None = None
     preview: bool = False
     show_idle: bool = False
+    mouth: tuple[tuple[float, float], ...] | None = None
 
 
 def read_state(port: int) -> DisplayState | None:
+    received = monotonic()
     link = http.client.HTTPConnection("127.0.0.1", port, timeout=0.35)
     try:
         link.request("GET", "/state")
@@ -85,6 +88,7 @@ def read_state(port: int) -> DisplayState | None:
         wake if isinstance(wake, str) else None,
         preview=state.get("preview") is True,
         show_idle=state.get("show_idle") is True,
+        mouth=read_mouth(state["mouth"], received) if "mouth" in state else None,
     )
 
 
@@ -125,7 +129,7 @@ def live_feed(port: int) -> Iterator[Callable[[], DisplayState | None]]:
             value = read_state(port)
             with lock:
                 latest = value
-            stopped.wait(0.2)
+            stopped.wait(0.05 if value is not None and value.activity == "speaking" else 0.2)
 
     def current() -> DisplayState | None:
         with lock:
@@ -153,17 +157,31 @@ def demo_state(head: FaceHead, started: float) -> DisplayState:
 
 def frame_for(state: DisplayState, seconds: float) -> tuple[FaceExpression, str]:
     expression = "focused" if state.activity == "thinking" else state.expression
-    blink = seconds % 4.63
-    if blink < 0.19:
-        closure = math.sin(math.pi * blink / 0.19)
-        if closure >= 0.3:
-            return expression, "blink" if closure > 0.72 else "half-blink"
-    if state.activity == "thinking":
-        return expression, "thinking"
+    cycle = seconds % 13.7
+    closure = 0.0
+    for start in (0, 4.63, 9.8, 10.12):
+        t = (cycle - start) / 0.19
+        if 0 <= t <= 1:
+            closure = math.sin(math.pi * t)
+    eyes = "rest"
+    if closure >= 0.3:
+        eyes = "blink" if closure > 0.72 else "half-blink"
+    elif state.activity == "thinking":
+        eyes = "thinking"
+    elif state.activity != "speaking":
+        eyes = ("rest", "look-left", "rest", "look-right", "rest")[int(seconds / 2.7) % 5]
     if state.activity == "speaking":
-        jaw = max(0, math.sin(seconds * 18 + math.sin(seconds * 9))) ** 1.4
-        return expression, ("rest", "jaw-small", "jaw-medium", "jaw-wide")[round(jaw * 3)]
-    return expression, "rest"
+        # Demo states have no envelope; live playback includes explicit silence.
+        jaw = (
+            sample_mouth(state.mouth, seconds)
+            if state.mouth is not None
+            else max(0, math.sin(seconds * 18 + math.sin(seconds * 9))) ** 1.4
+        )
+        mouth = ("rest", "jaw-small", "jaw-medium", "jaw-wide")[round(jaw * 3)]
+        if eyes in ("blink", "half-blink") and mouth != "rest":
+            return expression, f"{eyes}|{mouth}"
+        return expression, eyes if mouth == "rest" else mouth
+    return expression, eyes
 
 
 def fit_size(source: tuple[int, int], bounds: tuple[int, int]) -> tuple[int, int]:
@@ -186,7 +204,7 @@ class Surface(Protocol):
     """The small part of the optional pygame surface API we use."""
 
     def get_size(self) -> tuple[int, int]: ...
-    def fill(self, color: tuple[int, int, int]) -> object: ...
+    def fill(self, color: tuple[int, int, int] | tuple[int, int, int, int]) -> object: ...
     def blit(self, source: Surface, dest: tuple[int, int]) -> object: ...
     def subsurface(self, rect: tuple[int, int, int, int]) -> Surface: ...
     def convert_alpha(self) -> Surface: ...
@@ -198,6 +216,7 @@ class SpriteManifest(TypedDict):
     crop: list[int]
     expressions: list[FaceExpression]
     frames: list[str]
+    mouthSplit: int
     tilts: dict[FaceHead, dict[FaceExpression, float]]
 
 
@@ -219,11 +238,23 @@ def load_sprites(
     position = round(x * sx), round(y * sy)
     feature_size = round(tile_w * sx), round(tile_h * sy)
 
-    @lru_cache(maxsize=10)
+    @lru_cache(maxsize=16)
     def frame(expression: FaceExpression, name: str) -> Surface:
-        col = manifest["frames"].index(name)
+        eyes, _, mouth = name.partition("|")
+        col = manifest["frames"].index(eyes)
         row = manifest["expressions"].index(expression)
         pixels = atlas.subsurface((tile_w * col, height + tile_h * row, tile_w, tile_h))
+        if mouth:
+            # Compose lids and jaw independently, without a combinatorial atlas.
+            pixels = pixels.copy()
+            split = manifest["mouthSplit"]
+            mouth_col = manifest["frames"].index(mouth)
+            lower = atlas.subsurface(
+                (tile_w * mouth_col, height + tile_h * row + split, tile_w, tile_h - split)
+            )
+            # Clear first: alpha-blitting a mouth over another leaves ghost lips.
+            pixels.subsurface((0, split, tile_w, tile_h - split)).fill((0, 0, 0, 0))
+            pixels.blit(lower, (0, split))
         features = cast(Surface, pygame.transform.smoothscale(pixels, feature_size))
         combined = base.copy()
         combined.blit(features, position)

@@ -5,14 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-FaceExpression = Literal["neutral", "curious", "amused", "concerned", "focused"]
+FaceExpression = Literal[
+    "neutral",
+    "curious",
+    "amused",
+    "concerned",
+    "focused",
+    "delighted",
+    "surprised",
+    "skeptical",
+    "sleepy",
+    "sad",
+    "playful",
+    "proud",
+]
 FACE_EXPRESSIONS: tuple[FaceExpression, ...] = get_args(FaceExpression)
 FACE_HEADER = "X-Iris-Face"
 _PREFIX = "[[expression:"
 FACE_PROMPT = (
     "\nFor the final spoken reply, put one face cue on the first line, for example "
     "[[expression:curious]]. Use only " + ", ".join(FACE_EXPRESSIONS) + ". "
-    "Choose a subtle expression that suits your reply, or neutral. "
+    "Choose the expression that suits the tone of your reply, or neutral. "
     "After that line, write the words Iris should say aloud. "
     "Keep cues out of tool calls and their arguments."
 )

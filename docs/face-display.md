@@ -19,9 +19,29 @@ minutes and it will close by itself.
 
 Update Iris on both the PC and the client, then restart the PC server using your
 usual command. There's no extra server flag. A client with a face asks the model
-to choose from neutral, curious, amused, concerned and focused. If the model
-skips the cue or picks an unknown expression, the face uses neutral. The cue is
+to choose from neutral, curious, amused, concerned, focused, delighted, surprised,
+skeptical, sleepy, sad, playful and proud. If the model skips the cue or picks an
+unknown expression, the face uses neutral. The cue is
 separate from the words Iris speaks and saves in conversation history.
+
+The four faces share those expressions, but each has its own character. Signal
+has a softly lit green display, Sprout has warm amber eyes and a softer organic
+shape, Rivet has a copper shell and a pale ceramic face, and the android has a
+cool blue finish. Their eyes, brows, cheeks and mouth work together, with small
+changes in gaze and an occasional double blink.
+
+During spoken replies, mouth movement follows the loudness of the audio actually
+playing. It settles during pauses, and the optional startup chirp doesn't make
+Iris talk. This works with both streamed and complete replies on the Pi, and
+with replies played by the phone's web interface. It's speech-energy animation;
+the current speech pipeline doesn't supply phoneme timings, so it doesn't try
+to match individual vowel and consonant shapes. Text-only replies still show
+the chosen expression. The browser respects your reduced-motion setting.
+
+The Pi uses pre-rendered artwork and a small cache of animation frames at up to
+24 frames per second. The phone draws the same artwork on a canvas, with smooth
+transitions between expressions. Neither needs a 3D engine or downloaded artwork.
+Update the PC and client together to get the full expression range.
 
 ## Choose a face
 

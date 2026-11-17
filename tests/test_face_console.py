@@ -24,7 +24,9 @@ def test_console_uses_the_running_voice_clients_display_state(monkeypatch, fake_
         assert port is not None
         assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black")
         with display.speaking("amused"):
-            assert read_state(port) == DisplayState("rivet", "speaking", "amused", "black")
+            assert read_state(port) == DisplayState(
+                "rivet", "speaking", "amused", "black", mouth=()
+            )
         fake_clock.advance(299)
         display.show("idle")  # The capture loop can report idle repeatedly.
         assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black", show_idle=True)
@@ -49,7 +51,7 @@ def test_console_cycles_previews_and_restores_the_selected_face(tmp_path, monkey
             for head in ("rivet", "humanoid-android", "sprout"):
                 assert request_face_cycle(port)
                 assert read_state(port) == DisplayState(
-                    head, "speaking", "amused", "black", preview=True
+                    head, "speaking", "amused", "black", preview=True, mouth=()
                 )
         assert read_state(port) == DisplayState(
             "sprout", "idle", "neutral", "black", preview=True, show_idle=True

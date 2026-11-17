@@ -1,5 +1,5 @@
 import { ChatController } from "/chat-controller.js";
-import { cycleSavedFace, mountFaceCycle, savedFace, updateFace } from "/face.js";
+import { cycleSavedFace, mountFaceCycle, savedFace, updateFace, followFaceAudio } from "/face.js";
 import { mountMenu } from "/menu.js";
 import { SpeechCapture, recordingWav } from "/speech.js";
 
@@ -155,12 +155,23 @@ async function playReply(active, wav) {
   const source = active.audio.createBufferSource();
   source.buffer = buffer;
   source.connect(active.audio.destination);
-  await new Promise(resolve => {
-    source.onended = resolve;
-    active.finishPlayback = resolve;
-    source.start();
-  });
-  active.finishPlayback = null;
+  const start = active.audio.currentTime + .025;
+  const stopMouth = followFaceAudio(active.audio, buffer, start);
+  try {
+    await new Promise(resolve => {
+      source.onended = resolve;
+      active.finishPlayback = () => {
+        try { source.stop(); } catch { /* Already ended. */ }
+        resolve();
+      };
+      source.start(start);
+    });
+  } finally {
+    stopMouth();
+    source.onended = null;
+    source.disconnect();
+    active.finishPlayback = null;
+  }
 }
 
 async function turn(body, active = null) {

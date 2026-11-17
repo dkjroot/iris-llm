@@ -4,17 +4,25 @@
     536
   ],
   "crop": [
-    96,
-    120,
-    368,
+    128,
+    128,
+    304,
     272
   ],
+  "mouthSplit": 160,
   "expressions": [
     "neutral",
     "curious",
     "amused",
     "concerned",
-    "focused"
+    "focused",
+    "delighted",
+    "surprised",
+    "skeptical",
+    "sleepy",
+    "sad",
+    "playful",
+    "proud"
   ],
   "frames": [
     "rest",
@@ -23,36 +31,66 @@
     "jaw-small",
     "jaw-medium",
     "jaw-wide",
-    "thinking"
+    "thinking",
+    "look-left",
+    "look-right"
   ],
   "tilts": {
     "humanoid-android": {
       "neutral": 0,
-      "curious": 2.9793805346802804,
-      "amused": -2.4637185190625397,
-      "concerned": 1.604281826366305,
-      "focused": -0.6875493541569879
+      "curious": 3.724225668350351,
+      "amused": -2.5783100780887045,
+      "concerned": 2.0053522829578814,
+      "focused": 0,
+      "delighted": 2.0053522829578814,
+      "surprised": 0,
+      "skeptical": -3.437746770784939,
+      "sleepy": 2.5783100780887045,
+      "sad": 3.151267873219528,
+      "playful": 4.870141258611998,
+      "proud": -1.432394487827058
     },
     "sprout": {
       "neutral": 0,
-      "curious": 4.051957527165182,
-      "amused": -3.350657185925054,
-      "concerned": 2.181823283858175,
-      "focused": -0.9350671216535036
+      "curious": 5.064946908956478,
+      "amused": -3.506501706200638,
+      "concerned": 2.727279104822719,
+      "focused": 0,
+      "delighted": 2.727279104822719,
+      "surprised": 0,
+      "skeptical": -4.675335608267518,
+      "sleepy": 3.506501706200638,
+      "sad": 4.285724307578558,
+      "playful": 6.623392111712318,
+      "proud": -1.948056503444799
     },
     "signal": {
       "neutral": 0,
-      "curious": 1.6386592940741544,
-      "amused": -1.3550451854843972,
-      "concerned": 0.8823550045014679,
-      "focused": -0.3781521447863434
+      "curious": 2.0483241175926934,
+      "amused": -1.4180705429487874,
+      "concerned": 1.1029437556268349,
+      "focused": 0,
+      "delighted": 1.1029437556268349,
+      "surprised": 0,
+      "skeptical": -1.8907607239317168,
+      "sleepy": 1.4180705429487874,
+      "sad": 1.7331973302707404,
+      "playful": 2.678577692236599,
+      "proud": -0.7878169683048821
     },
     "rivet": {
       "neutral": 0,
-      "curious": 3.4262876148823227,
-      "amused": -2.833276296921921,
-      "concerned": 1.8449241003212509,
-      "focused": -0.790681757280536
+      "curious": 4.282859518602904,
+      "amused": -2.96505658980201,
+      "concerned": 2.3061551254015638,
+      "focused": 0,
+      "delighted": 2.3061551254015638,
+      "surprised": 0,
+      "skeptical": -3.95340878640268,
+      "sleepy": 2.96505658980201,
+      "sad": 3.6239580542024568,
+      "playful": 5.6006624474037965,
+      "proud": -1.6472536610011168
     }
   }
 }

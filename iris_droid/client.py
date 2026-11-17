@@ -452,6 +452,7 @@ def play_wav(
     lead_in: float = 0,
     primer: bool = False,
     on_speech_start: Callable[[int | None], None] | None = None,
+    on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
 ) -> None:
     if not 0 <= lead_in <= 2:
         raise ValueError("Speech lead-in must be between 0 and 2 seconds")
@@ -488,12 +489,21 @@ def play_wav(
             )
         else:
             speech_frame = None
+        prefix_frames = sum(len(prefix) for prefix in prefixes)
         if prefixes:
             samples = np.concatenate([*prefixes, samples])
         if loop:
             sd.play(samples, rate, device=device, blocking=False, loop=True, latency="high")
-        elif on_speech_start is not None:
-            play_timed(samples, rate, device, speech_frame, on_speech_start)
+        elif on_speech_start is not None or on_audio is not None:
+            play_timed(
+                samples,
+                rate,
+                device,
+                speech_frame,
+                on_speech_start,
+                on_audio=on_audio,
+                prefix_frames=prefix_frames,
+            )
         else:
             sd.play(samples, rate, device=device, blocking=False, latency="high")
             stream = sd.get_stream()
@@ -530,8 +540,17 @@ class OutputStatus(Protocol):
     def output_underflow(self) -> bool: ...
 
 
+class AudioAnimation(TypedDict, total=False):
+    on_audio: Callable[[npt.NDArray[np.int16], int, float], None]
+
+
 class PlaybackTrace(TypedDict, total=False):
     on_speech_start: Callable[[int | None], None]
+
+
+def output_delay(timing: AudioClock) -> float:
+    delay = timing.outputBufferDacTime - timing.currentTime
+    return delay if isfinite(delay) and 0 <= delay <= 2 else 0.0
 
 
 def scheduled_output(timing: AudioClock, frame: int, rate: int) -> int | None:
@@ -549,7 +568,10 @@ def play_timed(
     rate: int,
     device: int | None,
     speech_frame: int | None,
-    on_speech_start: Callable[[int | None], None],
+    on_speech_start: Callable[[int | None], None] | None,
+    *,
+    on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
+    prefix_frames: int = 0,
 ) -> None:
     import sounddevice as sd
 
@@ -568,6 +590,10 @@ def play_timed(
         count = min(frames, len(samples) - position)
         outdata[:count, 0] = samples[position : position + count]
         outdata[count:].fill(0)
+        if on_audio is not None:
+            visual = outdata[:, 0].copy()
+            visual[: max(0, min(count, prefix_frames - position))] = 0
+            on_audio(visual, rate, output_delay(timing))
         position += count
         if position == len(samples):
             raise sd.CallbackStop
@@ -583,14 +609,21 @@ def play_timed(
     ):
         if not finished.wait(len(samples) / rate + 5):
             raise OSError("Speaker playback did not finish")
-    on_speech_start(scheduled_ns)
+    if on_speech_start is not None:
+        on_speech_start(scheduled_ns)
     if underrun:
         print("Speaker playback underrun: some audio may have been lost.", flush=True)
 
 
 @measured("playback")
 def play_stream(
-    chunks: Iterator[bytes], rate: int, device: int | None, *, lead_in: float, primer: bool
+    chunks: Iterator[bytes],
+    rate: int,
+    device: int | None,
+    *,
+    lead_in: float,
+    primer: bool,
+    on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
 ) -> int | None:
     import numpy as np
     import sounddevice as sd
@@ -653,27 +686,36 @@ def play_stream(
             nonlocal current, offset, scheduled_ns, found_speech, underrun
             underrun |= status.output_underflow
             outdata.fill(0)
+            visual = np.zeros(frames, dtype=np.int16) if on_audio is not None else None
             written = 0
-            while written < frames:
-                if current is None:
-                    try:
-                        current = queue.get_nowait()
-                    except Empty:
-                        underrun = True
-                        return
+            try:
+                while written < frames:
                     if current is None:
-                        raise sd.CallbackStop
-                    offset = 0
-                samples, first = current
-                count = min(frames - written, len(samples) - offset)
-                if not found_speech and first is not None and offset <= first < offset + count:
-                    scheduled_ns = scheduled_output(timing, written + first - offset, output_rate)
-                    found_speech = True
-                outdata[written : written + count, 0] = samples[offset : offset + count]
-                written += count
-                offset += count
-                if offset == len(samples):
-                    current = None
+                        try:
+                            current = queue.get_nowait()
+                        except Empty:
+                            underrun = True
+                            return
+                        if current is None:
+                            raise sd.CallbackStop
+                        offset = 0
+                    samples, first = current
+                    count = min(frames - written, len(samples) - offset)
+                    if not found_speech and first is not None and offset <= first < offset + count:
+                        scheduled_ns = scheduled_output(
+                            timing, written + first - offset, output_rate
+                        )
+                        found_speech = True
+                    outdata[written : written + count, 0] = samples[offset : offset + count]
+                    if visual is not None and first is not None:
+                        visual[written : written + count] = samples[offset : offset + count]
+                    written += count
+                    offset += count
+                    if offset == len(samples):
+                        current = None
+            finally:
+                if on_audio is not None and visual is not None:
+                    on_audio(visual, output_rate, output_delay(timing))
 
         with sd.OutputStream(
             samplerate=output_rate,
@@ -1035,6 +1077,9 @@ def main(argv: list[str] | None = None) -> int:
                 play_wav(body, speaker)
                 return 0
             display = FaceDisplay(args.face, args.face_idle, remember=True)
+            face_audio: AudioAnimation = {}
+            if display.head is not None:
+                face_audio["on_audio"] = display.speech.feed
             with (
                 httpx.Client(
                     trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
@@ -1061,6 +1106,7 @@ def main(argv: list[str] | None = None) -> int:
                             speaker,
                             lead_in=args.speech_lead_in,
                             primer=args.speech_primer,
+                            **face_audio,
                         )
 
                 detector = None
@@ -1287,6 +1333,7 @@ def main(argv: list[str] | None = None) -> int:
                                 speaker,
                                 lead_in=args.speech_lead_in,
                                 primer=args.speech_primer,
+                                **face_audio,
                                 **playback_trace,
                             )
                     elif face_port is not None and args.text and reply.text:
