@@ -60,7 +60,15 @@ from iris_settings import load_settings
 from iris_stt_engines import make_stt
 from iris_tts_engines import open_tts
 from iris_tts_engines.text import plain_speech_text
-from iris_turn import TurnExpired, check_deadline, remaining_timeout, turn_budget
+from iris_tts_engines.worker import SpeechWorker
+from iris_turn import (
+    TurnExpired,
+    check_deadline,
+    configure_diagnostics,
+    diagnostic_turn,
+    remaining_timeout,
+    turn_budget,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -198,6 +206,30 @@ def handler_for(
             self.end_headers()
 
         def do_GET(self) -> None:
+            if self.path == "/v1/health":
+                if not self.authenticated():
+                    return
+                speech = (
+                    brain.tts.health()
+                    if isinstance(brain.tts, SpeechWorker)
+                    else {"state": "in_process"}
+                )
+                with turn_queue.condition:
+                    queue = {
+                        "active": bool(turn_queue.waiters),
+                        "waiting": max(0, len(turn_queue.waiters) - 1),
+                    }
+                status = (
+                    "stopping"
+                    if brain.lifetime.stopping.is_set()
+                    else "degraded"
+                    if speech["state"] in {"failed", "closed"}
+                    else "ready"
+                )
+                self.respond(
+                    200, json.dumps({"status": status, "queue": queue, "speech": speech}).encode()
+                )
+                return
             if web_chat and self.path == "/v1/web-personalities":
                 if web_personalities is None or self.authenticated():
                     self.respond(200, json.dumps(list(personalities)).encode())
@@ -238,7 +270,11 @@ def handler_for(
                 self.respond(503, b'{"error":"Iris is busy; no turn was started"}')
                 return
             try:
-                with brain.lifetime.lease(), turn_budget(brain.settings.turn_timeout):
+                with (
+                    diagnostic_turn(),
+                    brain.lifetime.lease(),
+                    turn_budget(brain.settings.turn_timeout),
+                ):
                     request = self.read_turn()
                     if request is not None:
                         # Reading uploads never occupies the brain. The queue
@@ -543,6 +579,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    configure_diagnostics()
     try:
         token = os.environ.get("IRIS_DROID_TOKEN", "")
         validate_token(token)

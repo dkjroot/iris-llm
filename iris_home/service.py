@@ -88,10 +88,11 @@ class HomeAPI:
     def execute(self, request: Request, operation: str) -> dict[str, object]:
         if not isinstance(request, DeviceRequest):
             return {
+                "scheduler": self.scheduler.health(),
                 "devices": [
                     {"device": name, "meters": list(device.meters)}
                     for name, device in self.devices.items()
-                ]
+                ],
             }
         name = self.names.get(request.device.strip().casefold())
         if name is None:

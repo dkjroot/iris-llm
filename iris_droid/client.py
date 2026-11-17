@@ -59,6 +59,7 @@ from iris_droid.protocol import (
 from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
 from iris_droid.wake import WakeDetector
 from iris_frames import ndjson_lines
+from iris_turn import configure_diagnostics, measured
 
 if TYPE_CHECKING:
     import numpy as np
@@ -542,6 +543,7 @@ def scheduled_output(timing: AudioClock, frame: int, rate: int) -> int | None:
     return None
 
 
+@measured("playback")
 def play_timed(
     samples: npt.NDArray[np.int16],
     rate: int,
@@ -586,6 +588,7 @@ def play_timed(
         print("Speaker playback underrun: some audio may have been lost.", flush=True)
 
 
+@measured("playback")
 def play_stream(
     chunks: Iterator[bytes], rate: int, device: int | None, *, lead_in: float, primer: bool
 ) -> int | None:
@@ -938,6 +941,7 @@ def resolve_speaker(name: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_diagnostics()
     try:
         startup = parse_client_args(argv)
         if startup.download_vad_model is not None:

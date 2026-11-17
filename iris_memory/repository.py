@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from iris_turn import measured
+
 if TYPE_CHECKING:
     from iris_memory.hierarchy import Prepared
 from uuid import uuid4
@@ -212,6 +214,7 @@ class SQLiteMemory:
             ).fetchone()
             return str(row[0]) if row else None
 
+    @measured("archive_commit")
     def append(
         self,
         owner: str,

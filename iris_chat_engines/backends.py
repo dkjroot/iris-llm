@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from iris_chat_engines.messages import ChatError, Message
 from iris_settings import Settings
-from iris_turn import check_deadline, remaining_timeout
+from iris_turn import check_deadline, measured, remaining_timeout
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,7 @@ class ChatCompletionsBackend:
         self.settings = settings
         self.client = client
 
+    @measured("model")
     def complete(self, messages: list[Message], tools: list[dict[str, object]]) -> Message:
         headers = chat_headers(self.settings)
         check_deadline()

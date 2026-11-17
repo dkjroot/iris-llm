@@ -98,14 +98,30 @@ def serve(model: Model, voice: Path, output: TextIO) -> None:
     state = model.get_state_for_audio_prompt(voice)
 
     def emit(status: str, samples: str = "") -> None:
-        print(json.dumps({"status": status, "samples": samples}), file=output, flush=True)
+        print(
+            json.dumps({"status": status, "samples": samples, "request_id": request_id}),
+            file=output,
+            flush=True,
+        )
 
+    request_id = None
     emit("ready")
-    for line in sys.stdin:
+    for line in iter(lambda: sys.stdin.readline(65537), ""):
+        request_id = None
         try:
-            text = json.loads(line)
-            if not isinstance(text, str):
-                raise ValueError("Expected speech text")
+            request = json.loads(line)
+            if (
+                len(line.encode("utf-8")) > 65536
+                or not line.endswith("\n")
+                or not isinstance(request, dict)
+                or set(request) != {"protocol", "request_id", "text"}
+                or request["protocol"] != 1
+                or type(request["request_id"]) is not int
+                or not isinstance(request["text"], str)
+            ):
+                raise ValueError("Invalid speech request")
+            request_id = request["request_id"]
+            text = request["text"]
             size = 0
             for chunk in model.generate_audio_stream(state, text):
                 samples = np.asarray(chunk.numpy(), dtype=np.float32).reshape(-1)

@@ -23,7 +23,14 @@ from iris_domain.replies import (
 )
 from iris_domain.turn import TurnExecution
 from iris_memory import AUTOMATIC_EVENT, Exchange
-from iris_turn import TurnExpired, check_deadline, remaining_timeout, turn_budget
+from iris_turn import (
+    TurnExpired,
+    check_deadline,
+    diagnostic_turn,
+    remaining_timeout,
+    stage,
+    turn_budget,
+)
 
 if TYPE_CHECKING:
     from iris_app.runtime import Brain
@@ -40,8 +47,9 @@ class TurnCoordinator:
 
     @contextmanager
     def _exclusive(self) -> Iterator[None]:
-        if not self._serial.acquire(timeout=remaining_timeout(self.app.settings.queue_timeout)):
-            raise TurnExpired("The application turn queue timed out")
+        with stage("application_queue"):
+            if not self._serial.acquire(timeout=remaining_timeout(self.app.settings.queue_timeout)):
+                raise TurnExpired("The application turn queue timed out")
         try:
             check_deadline()
             yield
@@ -62,6 +70,8 @@ class TurnCoordinator:
         never participate in this in-memory rollback. Policy changes supersede it.
         """
         with (
+            diagnostic_turn(),
+            stage("turn"),
             self.app.lifetime.lease(),
             turn_budget(self.app.settings.turn_timeout),
             self._exclusive(),
@@ -152,7 +162,8 @@ class TurnCoordinator:
                 raise ValueError("Recording exceeds the configured phrase_time_limit")
             if decision is not None:
                 decision.check()
-            heard = self.app.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
+            with stage("recognition"):
+                heard = self.app.stt.recognize(sr.AudioData(pcm, rate, 2)).strip()
         check_deadline()
         if decision is not None:
             decision.check()

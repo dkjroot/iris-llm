@@ -12,7 +12,13 @@ import numpy as np
 import numpy.typing as npt
 
 from iris_settings import PocketSettings
-from iris_tts_engines.worker import ROOT, VOICE_DIRECTORY, Response, SpeechWorker, open_worker
+from iris_tts_engines.worker import (
+    ROOT,
+    VOICE_DIRECTORY,
+    SpeechWorker,
+    isolated_environment,
+    open_worker,
+)
 from iris_turn import TurnExpired
 
 MODEL_DIRECTORY = ROOT / ".cache" / "pocket-tts"
@@ -29,9 +35,9 @@ def worker_command(settings: PocketSettings, action: str) -> list[str]:
     return [str(python.absolute()), "-I", "-u", str(WORKER), action, "--model-dir", str(model)]
 
 
-def worker_environment() -> dict[str, str]:
+def worker_environment(*, download: bool = False) -> dict[str, str]:
     return {
-        **os.environ,
+        **isolated_environment(download=download),
         "HF_HOME": str(ROOT / ".cache" / "pocket-hub"),
         "CUDA_VISIBLE_DEVICES": "",
     }
@@ -39,7 +45,9 @@ def worker_environment() -> dict[str, str]:
 
 def run_setup(settings: PocketSettings, action: str, *args: str) -> None:
     result = subprocess.run(
-        [*worker_command(settings, action), *args], env=worker_environment(), check=False
+        [*worker_command(settings, action), *args],
+        env=worker_environment(download=action == "download"),
+        check=False,
     )
     if result.returncode:
         raise ValueError("Pocket TTS setup failed. See the error above.")
@@ -49,42 +57,25 @@ class Pocket(SpeechWorker):
     sample_rate = SAMPLE_RATE
 
     def stream(self, text: str) -> Generator[bytes]:
-        self.send(text)
-        complete = False
-        expires = monotonic() + 180
-        size = 0
-
-        def receive() -> Response:
-            remaining = expires - monotonic()
-            if remaining <= 0:
-                self.process.kill()
-                raise TurnExpired("Pocket TTS response deadline expired")
-            return self.receive(timeout=remaining)
-
-        try:
+        with self.request(text):
+            expires = monotonic() + 180
+            size = 0
             while True:
-                reply = receive()
-                if reply.status in {"done", "error"}:
-                    complete = True
-                    if reply.status == "error":
-                        raise RuntimeError("Pocket TTS could not finish this reply.")
+                remaining = expires - monotonic()
+                if remaining <= 0:
+                    raise TurnExpired("Pocket TTS response deadline expired")
+                reply = self.receive(timeout=remaining)
+                if reply.status == "done":
                     return
                 if reply.status != "audio":
-                    raise RuntimeError("Pocket TTS returned an unexpected response.")
+                    raise RuntimeError("Pocket TTS could not finish this reply.")
                 pcm = base64.b64decode(reply.samples, validate=True)
                 size += len(pcm)
                 if size > 10_000_000:
-                    self.process.kill()
                     raise RuntimeError("Pocket TTS reply exceeds the transport limit")
                 if not pcm or len(pcm) % 2:
                     raise RuntimeError("Pocket TTS returned invalid PCM.")
                 yield pcm
-        finally:
-            # A disconnected HTTP client stops receiving audio. Drain this request
-            # before reusing the pipe so its remaining frames can't reach the next turn.
-            if not complete and self.process.poll() is None:
-                while receive().status not in {"done", "error"}:
-                    pass
 
     def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:
         pcm = b"".join(self.stream(text))

@@ -7,10 +7,10 @@ import sqlite3
 from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Condition, Thread
+from threading import Condition, Lock, Thread
 from zoneinfo import ZoneInfo
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from iris_home.devices import Device, DeviceError
 from iris_home.protocol import DAYS, PowerState, Rule, ScheduleRequest
@@ -67,6 +67,11 @@ class Scheduler:
         self.clock_ready = clock_ready
         self.condition = Condition()
         self.stopping = False
+        self._device_locks = {name: Lock() for name in devices}
+        self._errors: dict[str, str] = {}
+        self._generation = 0
+        self._closed = False
+        self._clock_synchronized = False
         self.db = sqlite3.connect(database, check_same_thread=False)
         self.db.execute("""
             CREATE TABLE IF NOT EXISTS schedules (
@@ -76,7 +81,7 @@ class Scheduler:
                 cursor TEXT NOT NULL
             )
         """)
-        self.worker = Thread(target=self._run, name="home-scheduler")
+        self.worker = Thread(target=self._run, name="home-scheduler", daemon=True)
 
     def __enter__(self) -> Scheduler:
         self.worker.start()
@@ -86,8 +91,27 @@ class Scheduler:
         with self.condition:
             self.stopping = True
             self.condition.notify()
-        self.worker.join()
-        self.db.close()
+        if self.worker.ident is not None:
+            self.worker.join(timeout=10)
+        with self.condition:
+            if not self.worker.is_alive() and not self._closed:
+                self.db.close()
+                self._closed = True
+            elif self.worker.is_alive():
+                self._errors["worker"] = "shutdown_timeout"
+                LOG.error("Home scheduler is still waiting for a device during shutdown")
+
+    def health(self) -> dict[str, object]:
+        with self.condition:
+            if self.stopping:
+                state = "stopping"
+            elif not self.worker.is_alive():
+                state = "stopped"
+            elif self._errors:
+                state = "degraded"
+            else:
+                state = "ready" if self._clock_synchronized else "waiting_for_clock"
+            return {"state": state, "errors": dict(self._errors)}
 
     def read(self, device: str) -> dict[str, object]:
         with self.condition:
@@ -95,7 +119,14 @@ class Scheduler:
                 "SELECT rules, revision FROM schedules WHERE device = ?",
                 (device,),
             ).fetchone()
-        rules, revision = (RULES.validate_json(row[0]), row[1]) if row else ([], 0)
+        try:
+            rules, revision = (RULES.validate_json(row[0]), row[1]) if row else ([], 0)
+        except (ValueError, TypeError):
+            with self.condition:
+                self._errors[device] = "invalid_schedule"
+            raise DeviceError(
+                "The saved schedule is invalid; repair or replace it before use."
+            ) from None
         return {
             "device": device,
             "timezone": self.zone.key,
@@ -107,8 +138,10 @@ class Scheduler:
         with self.condition:
             if not self.clock_ready():
                 raise DeviceError("The home service is waiting for its clock to synchronise.")
-            current = self.read(device)
-            if current["revision"] != request.revision:
+            row = self.db.execute(
+                "SELECT revision FROM schedules WHERE device=?", (device,)
+            ).fetchone()
+            if (row[0] if row else 0) != request.revision:
                 raise ScheduleConflict("The schedule changed. Read it again before editing.")
             with self.db:
                 self.db.execute(
@@ -124,59 +157,116 @@ class Scheduler:
                         self.clock().isoformat(),
                     ),
                 )
+            self._generation += 1
+            self._errors.pop(device, None)
             self.condition.notify()
             return self.read(device)
 
     def switch(self, device: str, state: PowerState) -> None:
-        with self.condition:
+        # Device ordering is distinct from database access. Reads and schedule
+        # edits remain available while a controller is waiting for a plug.
+        lock = self._device_locks[device]
+        if not lock.acquire(timeout=10):
+            raise DeviceError("The device is busy. Check its state before retrying.")
+        try:
             now = self.clock()
             self.devices[device].switch.set_state(state)
-            if not self.clock_ready():
-                return
-            # A successful manual command supersedes older, still-pending schedule events.
-            with self.db:
-                self.db.execute(
-                    "UPDATE schedules SET cursor = ? WHERE device = ? AND cursor < ?",
-                    (now.isoformat(), device, now.isoformat()),
-                )
+            with self.condition:
+                if not self.clock_ready():
+                    return
+                with self.db:
+                    self.db.execute(
+                        "UPDATE schedules SET cursor = ? WHERE device = ? AND cursor < ?",
+                        (now.isoformat(), device, now.isoformat()),
+                    )
+                self._generation += 1
+                self.condition.notify()
+        finally:
+            lock.release()
 
     def _next_delay(self, now: datetime) -> float:
-        delay = 60.0  # Recheck the wall clock after corrections and long sleeps.
-        rows = self.db.execute("SELECT device, rules, cursor FROM schedules").fetchall()
-        for device, raw_rules, raw_cursor in rows:
+        delay = 60.0
+        with self.condition:
+            rows = self.db.execute("SELECT device,rules,cursor,revision FROM schedules").fetchall()
+        for device, raw_rules, raw_cursor, revision in rows:
             if device not in self.devices:
                 continue
-            cursor = datetime.fromisoformat(raw_cursor)
-            due: tuple[datetime, Rule] | None = None
-            for instant, rule in occurrences(RULES.validate_json(raw_rules), now, self.zone):
-                if instant <= cursor:
-                    continue
-                if instant > now:
-                    delay = min(delay, (instant - now).total_seconds())
-                elif due is None or instant > due[0]:
-                    due = (instant, rule)
+            try:
+                cursor = datetime.fromisoformat(raw_cursor)
+                if cursor.tzinfo is None:
+                    raise ValueError("Schedule cursor needs a timezone")
+                due: tuple[datetime, Rule] | None = None
+                for instant, rule in occurrences(RULES.validate_json(raw_rules), now, self.zone):
+                    if instant <= cursor:
+                        continue
+                    if instant > now:
+                        delay = min(delay, (instant - now).total_seconds())
+                    elif due is None or instant > due[0]:
+                        due = (instant, rule)
+            except (ValueError, TypeError, ValidationError):
+                with self.condition:
+                    self._errors[device] = "invalid_schedule"
+                LOG.warning("Home scheduler rejected invalid persisted schedule state")
+                delay = min(delay, 30.0)
+                continue
             if due is None:
                 continue
             instant, rule = due
-            try:
-                self.devices[device].switch.set_state(rule.state)
-            except DeviceError:
-                LOG.warning("Scheduled action for %s could not be confirmed. Will retry.", device)
-                delay = min(delay, 30.0)
+            lock = self._device_locks[device]
+            if not lock.acquire(blocking=False):
+                delay = min(delay, 1.0)
                 continue
-            with self.db:
-                self.db.execute(
-                    "UPDATE schedules SET cursor = ? WHERE device = ?",
-                    (instant.isoformat(), device),
-                )
+            try:
+                with self.condition:
+                    current = self.db.execute(
+                        "SELECT cursor,revision FROM schedules WHERE device=?", (device,)
+                    ).fetchone()
+                    if self.stopping or current != (raw_cursor, revision):
+                        continue
+                try:
+                    self.devices[device].switch.set_state(rule.state)
+                except Exception:
+                    # A bad adapter must not silently kill scheduling for every device.
+                    # Do not log its exception body, which can include credentials.
+                    with self.condition:
+                        self._errors[device] = "device_unconfirmed"
+                    LOG.warning("Scheduled device action could not be confirmed; will retry")
+                    delay = min(delay, 30.0)
+                    continue
+                with self.condition, self.db:
+                    self.db.execute(
+                        "UPDATE schedules SET cursor=? WHERE device=? AND revision=? AND cursor=?",
+                        (instant.isoformat(), device, revision, raw_cursor),
+                    )
+                    self._errors.pop(device, None)
+            finally:
+                lock.release()
         return delay
 
     def _run(self) -> None:
-        with self.condition:
-            while not self.stopping:
+        try:
+            while True:
+                with self.condition:
+                    if self.stopping:
+                        return
+                    generation = self._generation
                 try:
-                    delay = self._next_delay(self.clock()) if self.clock_ready() else 10.0
-                except sqlite3.Error:
-                    LOG.exception("Could not access the schedule database. Will retry.")
+                    ready = self.clock_ready()
+                    with self.condition:
+                        self._clock_synchronized = ready
+                    delay = self._next_delay(self.clock()) if ready else 10.0
+                    with self.condition:
+                        self._errors.pop("worker", None)
+                except Exception:
+                    with self.condition:
+                        self._errors["worker"] = "scheduler_failure"
+                    LOG.warning("Home scheduler step failed; will retry")
                     delay = 30.0
-                self.condition.wait(delay)
+                with self.condition:
+                    if not self.stopping and generation == self._generation:
+                        self.condition.wait(delay)
+        finally:
+            with self.condition:
+                if self.stopping and not self._closed:
+                    self.db.close()
+                    self._closed = True

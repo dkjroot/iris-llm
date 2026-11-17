@@ -14,7 +14,7 @@ import numpy as np
 from iris_memory.embeddings import EmbeddingError, Encoder
 from iris_memory.records import SearchHit
 from iris_memory.schema import VECTOR_SCHEMA
-from iris_turn import check_deadline
+from iris_turn import check_deadline, measured
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
@@ -45,6 +45,7 @@ class SemanticMemory:
                     "Stored embedding dimensions don't match the selected model version"
                 )
 
+    @measured("indexing")
     def index_batch(self, owner: str, limit: int = 8) -> int:
 
         if not 1 <= limit <= 32:
@@ -186,6 +187,7 @@ class SemanticMemory:
                 (self.encoder.model_id, owner),
             )
 
+    @measured("retrieval")
     def search(
         self,
         owner: str,
@@ -203,11 +205,15 @@ class SemanticMemory:
             start.isoformat() if start else None,
             end.isoformat() if end else None,
         )
+        # Select bounded candidate IDs before fetching vector/text payloads.
+        # Sorting large blobs for the entire archive needlessly spills temporary
+        # data; the inner LIMIT preserves the exact candidate policy and order.
         with self.archive.connect() as db:
             rows = list(
                 db.execute(
                     "SELECT c.id,c.exchange,c.owner,c.conversation,c.text,e.created_at,"
                     "substr(e.user_text,1,8000) AS user_text,e.sequence,v.vector "
+                    "FROM (SELECT c.id "
                     "FROM embedding_vectors v "
                     "JOIN chunks c ON c.id=v.chunk JOIN exchanges e ON e.id=c.exchange "
                     "WHERE v.model=? AND c.owner=? AND c.superseded=0 AND length(v.vector)>0 "
@@ -215,7 +221,11 @@ class SemanticMemory:
                     "AND (? IS NULL OR julianday(e.created_at)<julianday(?)) "
                     "AND (? OR c.conversation=? OR NOT EXISTS(SELECT 1 FROM recall_blocks b "
                     "WHERE b.owner=c.owner AND b.conversation=c.conversation)) "
-                    "ORDER BY e.sequence DESC,c.id DESC LIMIT ?",
+                    "ORDER BY e.sequence DESC,c.id DESC LIMIT ?) chosen "
+                    "JOIN chunks c ON c.id=chosen.id "
+                    "JOIN exchanges e ON e.id=c.exchange "
+                    "JOIN embedding_vectors v ON v.chunk=c.id AND v.model=? "
+                    "ORDER BY e.sequence DESC,c.id DESC",
                     (
                         self.encoder.model_id,
                         owner,
@@ -226,6 +236,7 @@ class SemanticMemory:
                         explicit,
                         active,
                         SEMANTIC_CANDIDATE_LIMIT,
+                        self.encoder.model_id,
                     ),
                 )
             )

@@ -169,3 +169,7 @@ actual model and home device.
 
 For repository result types, read snapshots, migration ownership and the complete
 table dictionary, see [memory storage and recovery](memory-storage.md).
+
+See [performance and recovery](performance-and-recovery.md) for redacted stage
+timings, health checks, speech-worker recovery, scheduler ordering and reproducible
+synthetic benchmarks.

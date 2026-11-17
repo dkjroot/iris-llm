@@ -51,9 +51,12 @@ from pathlib import Path
 assert Path(sys.argv[-1]).name == 'test-voice.pt'
 print(json.dumps({'status': 'ready'}))
 for number, line in enumerate(sys.stdin, start=1):
-    assert json.loads(line) == 'Hello!'
+    request = json.loads(line)
+    assert request['text'] == 'Hello!'
     pcm = base64.b64encode(struct.pack('<f', number / 4)).decode('ascii')
-    print(json.dumps({'status': 'audio', 'rate': 24000, 'samples': pcm}))
+    print(json.dumps({'status': 'audio', 'rate': 24000, 'samples': pcm,
+                      'request_id': request['request_id']}))
+    print(json.dumps({'status': 'done', 'request_id': request['request_id']}))
 """,
         encoding="utf-8",
     )

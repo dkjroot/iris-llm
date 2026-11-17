@@ -8,7 +8,7 @@ from socket import socket
 from threading import BoundedSemaphore, Condition
 from time import monotonic
 
-from iris_turn import check_deadline, remaining_timeout
+from iris_turn import check_deadline, remaining_timeout, stage
 
 
 class QueueTimeout(Exception):
@@ -24,7 +24,7 @@ class TurnQueue:
     def enter(self, timeout: float) -> Iterator[None]:
         ticket = object()
         expires = monotonic() + remaining_timeout(timeout)
-        with self.condition:
+        with stage("queue"), self.condition:
             self.waiters.append(ticket)
             try:
                 while self.waiters[0] is not ticket:

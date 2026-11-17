@@ -179,3 +179,7 @@ The JSON result goes to `.cache/checks/memory-benchmark.json`. It reports Python
 allocation peaks separately from timings and excludes real model inference. Run
 benchmarks without the full suite competing for CPU if you want useful timing
 comparisons. This is a diagnostic benchmark, not a machine-specific CI speed gate.
+
+See [performance and recovery](performance-and-recovery.md) for redacted stage
+timings, health checks, speech-worker recovery, scheduler ordering and reproducible
+synthetic benchmarks.

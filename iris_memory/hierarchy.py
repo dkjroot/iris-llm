@@ -20,7 +20,7 @@ from iris_memory.controls import MemoryPolicyError
 from iris_memory.model_output import parse_memory_json, validation_reason
 from iris_memory.records import FactRecord, NoteRecord, RecallSource, SearchHit, TopicRecord
 from iris_memory.schema import HIERARCHY_SCHEMA
-from iris_turn import check_deadline
+from iris_turn import check_deadline, measured
 
 if TYPE_CHECKING:
     from iris_chat_engines.backends import ChatBackend
@@ -200,6 +200,7 @@ class Hierarchy:
                 )
             ]
 
+    @measured("memory_interpretation")
     def prepare(
         self, owner: str, conversation: str, text: str, selected_topic: str = ""
     ) -> Prepared | None:

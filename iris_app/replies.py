@@ -20,13 +20,27 @@ from iris_domain.replies import (
     VoiceTiming,
 )
 from iris_tts_engines.text import plain_speech_text
-from iris_turn import check_deadline
+from iris_turn import check_deadline, stage
 
 if TYPE_CHECKING:
     from iris_app.runtime import Brain
 STREAM_REPLY: ContextVar[Callable[[TurnReply, Generator[bytes], int], None] | None] = ContextVar(
     "stream_reply", default=None
 )
+
+
+def timed_audio(chunks: Generator[bytes]) -> Generator[bytes]:
+    """Time synthesis between yields, excluding the sink's socket/backpressure wait."""
+    try:
+        while True:
+            with stage("tts"):
+                try:
+                    chunk = next(chunks)
+                except StopIteration:
+                    return
+            yield chunk
+    finally:
+        chunks.close()
 
 
 class ReplyService:
@@ -60,14 +74,16 @@ class ReplyService:
         # be retracted if the subsequent database/policy operation fails.
         if not text_only and stream_reply is not None and not transactional:
             tts = cast(StreamingSynthesizer, self.app.tts)
-            stream_reply(result, tts.stream(text), tts.sample_rate)
+            with stage("stream_delivery"):
+                stream_reply(result, timed_audio(tts.stream(text)), tts.sample_rate)
             return result
         audio = ""
         timing = None
         if not text_only:
             started_ns = time_ns()
             started = perf_counter_ns()
-            samples, rate = self.app.tts.synthesize(text)
+            with stage("tts"):
+                samples, rate = self.app.tts.synthesize(text)
             check_deadline()
             synthesis_ns = perf_counter_ns() - started
             timing = VoiceTiming(

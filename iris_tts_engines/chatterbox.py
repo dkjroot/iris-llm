@@ -31,6 +31,7 @@ from iris_tts_engines.worker import (
 from iris_tts_engines.worker import (
     Worker as Worker,
 )
+from iris_tts_engines.worker import isolated_environment
 from iris_tts_engines.worker import (
     open_worker as open_worker,
 )
@@ -65,26 +66,33 @@ def worker_command(settings: ChatterboxSettings, action: str) -> list[str]:
 
 def run_setup(settings: ChatterboxSettings, action: str, *args: str) -> None:
     result = subprocess.run(
-        [*worker_command(settings, action), *args], env=worker_environment(), check=False
+        [*worker_command(settings, action), *args],
+        env=worker_environment(download=action == "download"),
+        check=False,
     )
     if result.returncode:
         raise ValueError("Chatterbox setup failed. See the error above.")
 
 
-def worker_environment() -> dict[str, str]:
-    return {**os.environ, "HF_HOME": str(ROOT / ".cache" / "chatterbox-hub")}
+def worker_environment(*, download: bool = False) -> dict[str, str]:
+    return {
+        **isolated_environment(download=download),
+        "HF_HOME": str(ROOT / ".cache" / "chatterbox-hub"),
+    }
 
 
 class Chatterbox(SpeechWorker):
     def synthesize(self, text: str) -> tuple[npt.NDArray[np.float32], int]:
-        self.send(text)
-        reply = self.receive(timeout=180)
-        if reply.status != "audio" or reply.rate <= 0:
-            raise RuntimeError("Chatterbox could not synthesize this reply.")
-        samples = np.frombuffer(base64.b64decode(reply.samples, validate=True), dtype="<f4")
-        if not samples.size or not np.isfinite(samples).all() or not samples.any():
-            raise RuntimeError("Chatterbox returned empty, invalid or silent audio.")
-        return samples, reply.rate
+        with self.request(text):
+            reply = self.receive(timeout=180)
+            if reply.status != "audio" or reply.rate <= 0:
+                raise RuntimeError("Chatterbox could not synthesize this reply.")
+            samples = np.frombuffer(base64.b64decode(reply.samples, validate=True), dtype="<f4")
+            if not samples.size or not np.isfinite(samples).all() or not samples.any():
+                raise RuntimeError("Chatterbox returned empty, invalid or silent audio.")
+            if self.receive(timeout=180).status != "done":
+                raise RuntimeError("Chatterbox did not finish its reply.")
+            return samples, reply.rate
 
 
 @contextmanager

@@ -45,7 +45,7 @@ class Model(Protocol):
     def generate(self, text: str) -> Waveform: ...
 
 
-def emit(stream: TextIO, payload: dict[str, str | int]) -> None:
+def emit(stream: TextIO, payload: dict[str, str | int | None]) -> None:
     print(json.dumps(payload), file=stream, flush=True)
 
 
@@ -53,23 +53,38 @@ def serve(model: Model, output: TextIO) -> None:
     import numpy as np
 
     emit(output, {"status": "ready"})
-    for line in sys.stdin:
+    for line in iter(lambda: sys.stdin.readline(65537), ""):
+        request_id = None
         try:
-            text = json.loads(line)
-            if not isinstance(text, str):
-                raise ValueError("Expected speech text")
+            request = json.loads(line)
+            if (
+                len(line.encode("utf-8")) > 65536
+                or not line.endswith("\n")
+                or not isinstance(request, dict)
+                or set(request) != {"protocol", "request_id", "text"}
+                or request["protocol"] != 1
+                or type(request["request_id"]) is not int
+                or not isinstance(request["text"], str)
+            ):
+                raise ValueError("Invalid speech request")
+            request_id = request["request_id"]
+            text = request["text"]
             samples = np.asarray(model.generate(text).numpy(), dtype="<f4").reshape(-1)
+            if samples.nbytes > 20_000_000:
+                raise ValueError("Speech reply exceeds transport limit")
             emit(
                 output,
                 {
                     "status": "audio",
+                    "request_id": request_id,
                     "rate": model.sr,
                     "samples": base64.b64encode(samples.tobytes()).decode("ascii"),
                 },
             )
+            emit(output, {"status": "done", "request_id": request_id})
         except Exception as error:
             print(f"Chatterbox synthesis failed ({type(error).__name__})", file=sys.stderr)
-            emit(output, {"status": "error"})
+            emit(output, {"status": "error", "request_id": request_id})
 
 
 def save_voice(voice: Voice, path: Path) -> None:

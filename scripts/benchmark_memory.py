@@ -35,14 +35,18 @@ class SyntheticEncoder:
     model_id = "benchmark-only:three-dimensions"
     dimensions = 3
 
+    def __init__(self, dimensions=3):
+        self.dimensions = dimensions
+
     def encode(self, texts):
-        return np.asarray(
+        vectors = np.asarray(
             [[1, 0, 0] if "rainwater" in t or "collection" in t else [0, 1, 0] for t in texts],
             dtype=np.float32,
         ).reshape((-1, 3))
+        return np.pad(vectors, ((0, 0), (0, self.dimensions - 3)))
 
 
-def benchmark(exchanges, repetitions):
+def benchmark(exchanges, repetitions, dimensions=3, batch_size=32):
     with tempfile.TemporaryDirectory(prefix="iris-memory-benchmark-") as directory:
         archive = SQLiteMemory(Path(directory) / "archive.sqlite3")
         conversation = archive.start_conversation("synthetic")
@@ -65,9 +69,14 @@ def benchmark(exchanges, repetitions):
                 index_exchange(db, row)
         index = MemoryIndex(archive)
         index.enqueue("synthetic", conversation)
-        semantic = SemanticMemory(archive, SyntheticEncoder())
+        semantic = SemanticMemory(archive, SyntheticEncoder(dimensions))
+        indexing_samples = []
+        indexing_started = perf_counter()
         while semantic.pending("synthetic"):
-            assert semantic.index_batch("synthetic", 32)
+            started = perf_counter()
+            assert semantic.index_batch("synthetic", batch_size)
+            indexing_samples.append((perf_counter() - started) * 1000)
+        indexing_ms = (perf_counter() - indexing_started) * 1000
         operations = {
             "recent": lambda: archive.recent("synthetic", conversation, 12, 24000),
             "summary_snapshot": lambda: index.summary_snapshot("synthetic", conversation),
@@ -75,6 +84,7 @@ def benchmark(exchanges, repetitions):
                 "synthetic", ["rainwater", "greenhouse"], None, None
             ),
             "semantic_undated": lambda: semantic.search("synthetic", "collection", explicit=True),
+            "semantic_recent": lambda: semantic.search("synthetic", "cinema", explicit=True),
             "semantic_dated": lambda: semantic.search(
                 "synthetic", "collection", explicit=True, end=datetime(2001, 1, 1, tzinfo=UTC)
             ),
@@ -105,6 +115,10 @@ def benchmark(exchanges, repetitions):
             results[name] = {**summarize(samples), "peak_python_bytes": peak}
             if name in ("lexical_old_topic", "semantic_dated", "semantic_undated"):
                 results[name]["found_old_topic"] = any(r["exchange"] == "0" for r in result)
+            if name == "semantic_recent":
+                results[name]["found_newest_topic"] = any(
+                    r["exchange"] == str(exchanges - 1) for r in result
+                )
             with archive.connect() as db:
                 for statement in sorted(statements):
                     if statement.lstrip().upper().startswith("SELECT"):
@@ -117,6 +131,12 @@ def benchmark(exchanges, repetitions):
             "sqlite": sqlite3.sqlite_version,
             "exchanges": exchanges,
             "chunks": exchanges * 2,
+            "dimensions": dimensions,
+            "indexing": {
+                "batch_size": batch_size,
+                "total_ms": round(indexing_ms, 3),
+                **summarize(indexing_samples),
+            },
             "archive_bytes": archive.path.stat().st_size,
             "note": "Synthetic warmed reads; no real inference. Memory is Python allocations, "
             "not SQLite/native RSS. Query plans come from the executed SELECT statements.",
@@ -127,13 +147,15 @@ def benchmark(exchanges, repetitions):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--batch-size", type=int, choices=(1, 4, 8, 16, 32), default=32)
+    parser.add_argument("--dimensions", type=int, choices=(3, 384), default=3)
     parser.add_argument("--exchanges", type=int, default=10000)
     parser.add_argument("--repetitions", type=int, default=20)
     parser.add_argument("--output", type=Path, default=Path(".cache/checks/memory-benchmark.json"))
     args = parser.parse_args()
     if not 1 <= args.exchanges <= 100000 or not 2 <= args.repetitions <= 1000:
         parser.error("Use 1–100000 exchanges and 2–1000 repetitions")
-    result = benchmark(args.exchanges, args.repetitions)
+    result = benchmark(args.exchanges, args.repetitions, args.dimensions, args.batch_size)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(f"Synthetic memory benchmark saved to {args.output}")

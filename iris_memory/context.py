@@ -20,7 +20,7 @@ from iris_memory.model_output import parse_memory_json, validation_reason
 from iris_memory.models import Summary
 from iris_memory.records import Source, SourceExcerpt
 from iris_settings import Settings
-from iris_turn import check_deadline
+from iris_turn import check_deadline, measured
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +66,7 @@ class MemoryContext:
         )
         index.hierarchy = self.hierarchy
 
+    @measured("summary")
     def checkpoint(self, owner: str, conversation: str, *, force: bool = False) -> bool:
         """Do at most one bounded job, serially. No model calls hold a DB transaction."""
         snapshot = self.index.summary_snapshot(owner, conversation)
