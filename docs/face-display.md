@@ -8,7 +8,7 @@ Silero enabled, it also comes on as soon as the client detects speech in a
 follow-up. Without Silero, those follow-ups light up when the recording is sent
 to the PC.
 
-Tap anywhere on the screen to open Iris's menu. Go to **Command list** and pick
+Tap the face area to open Iris's menu. Go to **Command list** and pick
 a category to see what you can say. You can read the list while you talk to Iris
 as usual. **Personalities** shows the choices from this client's
 `--personalities-file`. Tap one and Iris will use it the next time you speak.
@@ -24,8 +24,13 @@ separate from the words Iris speaks and saves in conversation history.
 
 ## Choose a face
 
-Add `--face signal` to your usual client command. Swap `signal` for
-`humanoid-android`, `sprout` or `rivet` to try another head. Add
+Tap **Next face** in the top left to cycle through the faces. If Iris is idle,
+the new face appears for a few seconds so you can see what you picked. The Pi
+and its local preview share a choice and remember it when the client restarts.
+
+Add `--face signal` to your usual client command to enable the display and
+pick its starting face. You can also start with `humanoid-android`, `sprout`
+or `rivet`. Once you've used the button, Iris starts with your saved choice. Add
 `--face-idle black` for plain black between turns, or use `--face-idle snow`
 for the default drifting flecks. In the browser preview, reduced motion also
 switches the idle screen to plain black.

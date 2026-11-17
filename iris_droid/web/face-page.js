@@ -1,4 +1,4 @@
-import { updateFace } from "/face.js";
+import { mountFaceCycle, updateFace } from "/face.js";
 import { mountMenu } from "/menu.js";
 
 const menu = mountMenu({
@@ -17,6 +17,27 @@ const menu = mountMenu({
   },
 });
 
+let connected = false;
+let cycling = false;
+const cycleButton = mountFaceCycle(async () => {
+  cycling = true;
+  cycleButton.disabled = true;
+  try {
+    await fetch("/cycle-face", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "null",
+      signal: AbortSignal.timeout(1800),
+    });
+  } catch {
+    // The state poll handles reconnecting after a client restart.
+  } finally {
+    cycling = false;
+    cycleButton.disabled = !connected;
+  }
+});
+cycleButton.disabled = true;
+
 async function poll() {
   if (!document.hidden) {
     let state = null;
@@ -26,7 +47,9 @@ async function poll() {
     } catch {
       // Keep the menus available while the voice client restarts.
     }
-    updateFace(state);
+    connected = Boolean(state);
+    cycleButton.disabled = cycling || !connected;
+    updateFace(state && { ...state, showIdle: state.preview });
     menu.update(state);
   }
   setTimeout(poll, document.hidden ? 1000 : 200);

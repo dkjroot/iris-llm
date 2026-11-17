@@ -1,4 +1,4 @@
-import { updateFace } from "/face.js";
+import { cycleSavedFace, mountFaceCycle, savedFace, updateFace } from "/face.js";
 import { mountMenu } from "/menu.js";
 import { SpeechCapture, recordingWav } from "/speech.js";
 
@@ -22,6 +22,7 @@ let privateMode = false;
 let savedToken = null;
 let personality = null;
 let faceTimer;
+const face = { head: savedFace(), activity: "idle", expression: "neutral", showIdle: true };
 
 const menu = mountMenu({
   web: true,
@@ -54,9 +55,15 @@ const menu = mountMenu({
   },
 });
 
+mountFaceCycle(() => {
+  face.head = cycleSavedFace(face.head);
+  updateFace(face);
+});
+
 function showFace(activity, expression = "neutral", milliseconds = 0) {
   clearTimeout(faceTimer);
-  updateFace({ head: "signal", activity, expression, showIdle: true });
+  Object.assign(face, { activity, expression });
+  updateFace(face);
   if (milliseconds) faceTimer = setTimeout(() => showFace(voice ? "listening" : "idle"), milliseconds);
 }
 

@@ -931,7 +931,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 play_wav(body, args.speaker)
                 return 0
-            display = FaceDisplay(args.face, args.face_idle)
+            display = FaceDisplay(args.face, args.face_idle, remember=True)
             with (
                 httpx.Client(
                     trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)

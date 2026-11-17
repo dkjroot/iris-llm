@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from threading import Lock, Thread
 from time import monotonic
 from typing import Literal, cast, get_args
@@ -19,6 +23,13 @@ FaceActivity = Literal["idle", "listening", "thinking", "speaking"]
 FACE_HEADS: tuple[FaceHead, ...] = get_args(FaceHead)
 FACE_IDLE_MODES: tuple[FaceIdle, ...] = get_args(FaceIdle)
 DEFAULT_FACE_PORT = 8767
+FACE_PREVIEW_SECONDS = 4
+LOGGER = logging.getLogger(__name__)
+
+
+def next_face(head: FaceHead) -> FaceHead:
+    return FACE_HEADS[(FACE_HEADS.index(head) + 1) % len(FACE_HEADS)]
+
 
 BROWSER_FACE_ASSETS = {
     "/face.css": ("face.css", "text/css; charset=utf-8"),
@@ -37,7 +48,23 @@ ASSETS = {
 
 
 class FaceDisplay:
-    def __init__(self, head: FaceHead | None, screensaver: FaceIdle = "snow") -> None:
+    def __init__(
+        self, head: FaceHead | None, screensaver: FaceIdle = "snow", *, remember: bool = False
+    ) -> None:
+        self._state_path: Path | None = None
+        if head is not None and remember:
+            state_home = Path(os.environ.get("XDG_STATE_HOME", ""))
+            if not state_home.is_absolute():
+                state_home = Path.home() / ".local" / "state"
+            self._state_path = state_home / "iris" / "face"
+            try:
+                saved = self._state_path.read_text(encoding="utf-8").strip()
+                if saved in FACE_HEADS:
+                    head = saved
+            except FileNotFoundError:
+                pass
+            except (OSError, ValueError) as error:
+                LOGGER.warning("Could not restore the selected face: %s", error)
         self.head = head
         self.screensaver = screensaver
         self.personalities: tuple[str, ...] = ()
@@ -48,6 +75,38 @@ class FaceDisplay:
         self._activity: FaceActivity = "idle"
         self._expression: FaceExpression = "neutral"
         self._deadline: float | None = None
+        self._preview_until = 0.0
+
+    def cycle_face(self) -> bool:
+        with self._lock:
+            if self.head is None:
+                return False
+            self.head = next_face(self.head)
+            self._preview_until = monotonic() + FACE_PREVIEW_SECONDS
+            self._save_face(self.head)
+            return True
+
+    def _save_face(self, head: FaceHead) -> None:
+        path = self._state_path
+        if path is None:
+            return
+        temporary = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, delete=False
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(head + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+        except OSError as error:
+            LOGGER.warning("Could not save the selected face: %s", error)
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    temporary.unlink(missing_ok=True)
 
     def show(
         self,
@@ -73,13 +132,16 @@ class FaceDisplay:
 
     def state(self) -> bytes:
         with self._lock:
-            expired = self._deadline is not None and monotonic() >= self._deadline
+            now = monotonic()
+            expired = self._deadline is not None and now >= self._deadline
             state: dict[str, object] = {
                 "head": self.head,
                 "screensaver": self.screensaver,
                 "activity": "idle" if expired else self._activity,
                 "expression": "neutral" if expired else self._expression,
             }
+            if now < self._preview_until:
+                state["preview"] = True
         if self.personalities:
             state.update(personalities=self.personalities, personality=self.active_personality())
         if self.wake_phrase:
@@ -145,7 +207,7 @@ class FaceDisplay:
                 if not self.valid_host():
                     self.send_error(400)
                     return
-                if self.path != "/personality":
+                if self.path not in {"/personality", "/cycle-face"}:
                     self.send_error(404)
                     return
                 if self.headers.get("Origin") not in (None, f"http://{self.headers['Host']}"):
@@ -158,11 +220,15 @@ class FaceDisplay:
                     length = int(self.headers.get("Content-Length", "0"))
                     if self.headers.get("Transfer-Encoding") or not 0 < length <= 512:
                         raise ValueError
-                    name: object = json.loads(self.rfile.read(length))
+                    value: object = json.loads(self.rfile.read(length))
                 except (OSError, ValueError):
                     self.send_error(400)
                     return
-                if not isinstance(name, str) or not display.select_personality(name):
+                if self.path == "/cycle-face":
+                    accepted = value is None and display.cycle_face()
+                else:
+                    accepted = isinstance(value, str) and display.select_personality(value)
+                if not accepted:
                     self.send_error(400)
                     return
                 self.send_response(204)

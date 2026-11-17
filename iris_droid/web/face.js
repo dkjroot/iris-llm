@@ -4,6 +4,8 @@ const canvas = document.querySelector("canvas");
 const ctx = canvas.getContext("2d");
 const motionPreference = matchMedia("(prefers-reduced-motion: reduce)");
 const phases = new Set(["idle", "listening", "thinking", "speaking"]);
+const faceNames = Object.keys(portraits);
+const faceStorageKey = "iris.face";
 let face = null;
 let bust = null;
 let activity = "idle";
@@ -13,6 +15,36 @@ let showIdle = false;
 let frame = null;
 let lastDraw = null;
 const pose = { ...expressions.neutral };
+
+export function savedFace() {
+  try {
+    const saved = localStorage.getItem(faceStorageKey);
+    if (faceNames.includes(saved)) return saved;
+  } catch {
+    // The browser can still switch faces if storage is unavailable.
+  }
+  return "signal";
+}
+
+export function cycleSavedFace(current) {
+  const next = faceNames[(faceNames.indexOf(current) + 1) % faceNames.length];
+  try {
+    localStorage.setItem(faceStorageKey, next);
+  } catch {
+    // Keep the selection for the current page.
+  }
+  return next;
+}
+
+export function mountFaceCycle(cycle) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "iris-face-cycle";
+  button.textContent = "Next face";
+  button.addEventListener("click", cycle);
+  canvas.parentElement.append(button);
+  return button;
+}
 
 // Nine slow flecks on a black field. Coordinates scale with the panel.
 const flakes = Array.from({ length: 9 }, (_, index) => ({

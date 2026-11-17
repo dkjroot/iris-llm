@@ -64,7 +64,21 @@
 }
 
 .iris-face-page .iris-menu-trigger:not(:focus-visible) span { opacity: 0; }
-.iris-menu-open .iris-menu-trigger { visibility: hidden; }
+.iris-stage .iris-face-cycle {
+  position: absolute;
+  top: .7rem;
+  left: .7rem;
+  min-height: 2.8rem;
+  padding: 0 .85rem;
+  border: 1px solid #534e6d;
+  border-radius: .85rem;
+  background: #19162a;
+  color: #f9f6ff;
+  font: 700 .95rem/1 system-ui, sans-serif;
+}
+.iris-face-cycle:active { background: #302743; }
+.iris-face-cycle:disabled { opacity: .55; cursor: default; }
+.iris-menu-open .iris-menu-trigger, .iris-menu-open .iris-face-cycle { visibility: hidden; }
 .iris-menu-open canvas { visibility: hidden; }
 
 .iris-menu {

@@ -101,7 +101,7 @@ def test_face_is_negotiated_per_turn_and_cue_is_removed_before_history():
 
 
 @pytest.mark.parametrize("stream", [False, True])
-def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, stream):
+def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, tmp_path, stream):
     display_url = ""
     serve = FaceDisplay.serve
     tts = Mock(synthesize=Mock(return_value=(np.ones(100, dtype=np.float32), 24000)))
@@ -150,6 +150,7 @@ def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, strea
     tts.stream = generate_audio
     tts.sample_rate = 24000
     monkeypatch.setenv("IRIS_DROID_TOKEN", TOKEN)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setattr(FaceDisplay, "serve", on_test_port)
     monkeypatch.setattr(client, "record_turn", record)
     player = Mock(side_effect=play_audio)

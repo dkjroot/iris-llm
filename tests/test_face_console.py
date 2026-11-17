@@ -6,7 +6,14 @@ from importlib.resources import files
 import pytest
 
 from iris_droid.expression import FACE_EXPRESSIONS
-from iris_droid.face_console import DisplayState, fit_size, frame_for, read_state, window_size
+from iris_droid.face_console import (
+    DisplayState,
+    fit_size,
+    frame_for,
+    read_state,
+    request_face_cycle,
+    window_size,
+)
 from iris_droid.face_display import FACE_HEADS, FaceDisplay
 
 
@@ -19,6 +26,30 @@ def test_console_uses_the_running_voice_clients_display_state() -> None:
             assert read_state(port) == DisplayState("rivet", "speaking", "amused", "black")
         assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black")
     assert read_state(port) is None
+
+
+def test_console_cycles_previews_and_restores_the_selected_face(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    now = 100
+    monkeypatch.setattr("iris_droid.face_display.monotonic", lambda: now)
+    display = FaceDisplay("signal", "black", remember=True)
+    with display.serve(0) as port:
+        assert port is not None
+        with display.speaking("amused"):
+            for head in ("rivet", "humanoid-android", "sprout"):
+                assert request_face_cycle(port)
+                assert read_state(port) == DisplayState(
+                    head, "speaking", "amused", "black", preview=True
+                )
+        assert read_state(port) == DisplayState("sprout", "idle", "neutral", "black", preview=True)
+        now += 5
+        assert read_state(port) == DisplayState("sprout", "idle", "neutral", "black")
+
+    restored = FaceDisplay("signal", remember=True)
+    assert restored.head == "sprout"
+    assert FaceDisplay(None, remember=True).head is None
+    (tmp_path / "iris" / "face").write_text("unknown\n")
+    assert FaceDisplay("signal", remember=True).head == "signal"
 
 
 def test_console_sprite_frames_follow_activity_and_expression() -> None:

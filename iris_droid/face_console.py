@@ -12,8 +12,8 @@ import sys
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
-from functools import lru_cache, partial
+from dataclasses import dataclass, replace
+from functools import lru_cache
 from importlib import import_module
 from importlib.resources import files
 from threading import Event, Lock, Thread
@@ -27,9 +27,11 @@ from iris_droid.face_display import (
     DEFAULT_FACE_PORT,
     FACE_HEADS,
     FACE_IDLE_MODES,
+    FACE_PREVIEW_SECONDS,
     FaceActivity,
     FaceHead,
     FaceIdle,
+    next_face,
 )
 
 ACTIVITIES: tuple[FaceActivity, ...] = get_args(FaceActivity)
@@ -44,6 +46,7 @@ class DisplayState:
     personalities: tuple[str, ...] = ()
     personality: str | None = None
     wake_phrase: str | None = None
+    preview: bool = False
 
 
 def read_state(port: int) -> DisplayState | None:
@@ -79,16 +82,25 @@ def read_state(port: int) -> DisplayState | None:
         personalities,
         active if isinstance(active, str) and active in personalities else None,
         wake if isinstance(wake, str) else None,
+        preview=state.get("preview") is True,
     )
 
 
 def request_personality(port: int, name: str) -> bool:
+    return post_control(port, "/personality", name)
+
+
+def request_face_cycle(port: int) -> bool:
+    return post_control(port, "/cycle-face", None)
+
+
+def post_control(port: int, path: str, value: str | None) -> bool:
     link = http.client.HTTPConnection("127.0.0.1", port, timeout=0.7)
     try:
         link.request(
             "POST",
-            "/personality",
-            json.dumps(name, ensure_ascii=False).encode(),
+            path,
+            json.dumps(value, ensure_ascii=False).encode(),
             {"Content-Type": "application/json"},
         )
         return link.getresponse().status == 204
@@ -235,14 +247,19 @@ def render(
     screen: Surface,
     current: Callable[[], DisplayState | None],
     select: Callable[[str], Future[bool]],
+    cycle_face: Callable[[], None],
 ) -> None:
     clock = pygame.time.Clock()
     head: FaceHead | None = None
     sprites: Callable[[FaceExpression, str], Surface] | None = None
-    previous_black = False
+    previous_blank: tuple[bool, bool] | None = None
     menu = ConsoleMenu(pygame, screen, select)
+    cycle_button = pygame.Rect(menu.px(12), menu.px(12), menu.px(126), menu.px(50))
+    cycle_label = menu.font(18, True).render("Next face", True, (249, 246, 255))
+    label_width, label_height = cycle_label.get_size()
     while True:
         seconds = monotonic()
+        state = current()
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
@@ -251,20 +268,21 @@ def render(
                     return
                 menu.go(None)
             if (position := tap_position(pygame, event, screen.get_size())) is not None:
-                menu.tap(*position, seconds)
-        state = current()
+                if menu.page is None and state is not None and cycle_button.collidepoint(position):
+                    cycle_face()
+                else:
+                    menu.tap(*position, seconds)
         if menu.draw(state, seconds):
-            previous_black = False
+            previous_blank = None
             clock.tick(24)
             continue
-        black = state is None or (state.activity == "idle" and state.screensaver == "black")
-        if not black or not previous_black:
+        visible_face = state is not None and (state.preview or state.activity != "idle")
+        black = not visible_face and (state is None or state.screensaver == "black")
+        blank = (black, state is not None)
+        if not black or previous_blank != blank:
             screen.fill((0, 0, 0))
             if state is not None:
-                if state.activity == "idle":
-                    if state.screensaver == "snow":
-                        draw_snow(pygame, screen, seconds)
-                else:
+                if visible_face:
                     width, height = screen.get_size()
                     if sprites is None or head != state.head:
                         head = state.head
@@ -273,8 +291,21 @@ def render(
                     sw, sh = sprite.get_size()
                     center = (width - sw) // 2, (height - sh) // 2 + round(math.sin(seconds * 1.4))
                     screen.blit(sprite, center)
+                elif state.screensaver == "snow":
+                    draw_snow(pygame, screen, seconds)
+                pygame.draw.rect(screen, (25, 22, 42), cycle_button, border_radius=menu.px(14))
+                pygame.draw.rect(
+                    screen, (83, 78, 109), cycle_button, width=1, border_radius=menu.px(14)
+                )
+                screen.blit(
+                    cycle_label,
+                    (
+                        cycle_button.centerx - label_width // 2,
+                        cycle_button.centery - label_height // 2,
+                    ),
+                )
             pygame.display.flip()
-        previous_black = black
+        previous_blank = blank
         clock.tick(12 if state is None or state.activity == "idle" else 24)
 
 
@@ -357,6 +388,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     previous = signal.signal(signal.SIGTERM, _stop)
+    demo_head: FaceHead | None = args.demo
+    demo_started = monotonic()
+    demo_preview_until = 0.0
+
+    def demo_current() -> DisplayState:
+        assert demo_head is not None
+        return replace(
+            demo_state(demo_head, demo_started), preview=monotonic() < demo_preview_until
+        )
+
     try:
         with graphics_console(not args.window):
             pygame.display.init()
@@ -371,17 +412,24 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"Iris display: {pygame.display.get_driver()}, {width} × {height}", flush=True
                 )
-                feed = (
-                    nullcontext(partial(demo_state, args.demo, monotonic()))
-                    if args.demo
-                    else live_feed(args.port)
-                )
+                feed = nullcontext(demo_current) if demo_head is not None else live_feed(args.port)
                 with feed as current, ThreadPoolExecutor(max_workers=1) as worker:
+                    cycle_request: Future[bool] | None = None
+
+                    def cycle_face() -> None:
+                        nonlocal cycle_request, demo_head, demo_preview_until
+                        if demo_head is not None:
+                            demo_head = next_face(demo_head)
+                            demo_preview_until = monotonic() + FACE_PREVIEW_SECONDS
+                        elif cycle_request is None or cycle_request.done():
+                            cycle_request = worker.submit(request_face_cycle, args.port)
+
                     render(
                         pygame,
                         screen,
                         current,
                         lambda name: worker.submit(request_personality, args.port, name),
+                        cycle_face,
                     )
             finally:
                 pygame.display.quit()
