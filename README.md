@@ -2237,7 +2237,9 @@ saved, and confirmed forgetting still deletes its stated scope.
 To back up the archive, stop the server and copy the
 database file somewhere safe. Restore that copy to the configured path with the
 server stopped. Keep backups out of your source checkout, and delete test exports
-when you're finished with them.
+when you're finished with them. The [memory storage guide](docs/memory-storage.md)
+explains how to check a backup, recover after an unclean shutdown and keep the
+archive compatible when rolling back an update.
 
 The local setup keeps model traffic on the PC and sends recordings and replies
 between the client and PC. There is no automatic fallback to a hosted service.

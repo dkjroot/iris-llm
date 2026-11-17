@@ -18,28 +18,13 @@ from iris_domain.memory import (
     detail_command as detail_command,
 )
 from iris_memory.controls import MemoryPolicyError
+from iris_memory.schema import DETAIL_SCHEMA
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
 
-SCHEMA = (
-    "CREATE TABLE memory_details (owner TEXT NOT NULL REFERENCES owners(id), label TEXT NOT NULL, "
-    "text TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(owner,label))",
-    "CREATE TABLE detail_uses (owner TEXT NOT NULL, label TEXT NOT NULL, "
-    "conversation TEXT NOT NULL, "
-    "FOREIGN KEY(owner,label) REFERENCES memory_details(owner,label) ON DELETE CASCADE, "
-    "FOREIGN KEY(owner,conversation) REFERENCES conversations(owner,id) ON DELETE CASCADE, "
-    "PRIMARY KEY(owner,label,conversation))",
-    "CREATE TABLE companion_topics (owner TEXT NOT NULL, conversation TEXT NOT NULL, "
-    "blocked INTEGER NOT NULL DEFAULT 0, offered_at TEXT, "
-    "PRIMARY KEY(owner,conversation), FOREIGN KEY(owner,conversation) "
-    "REFERENCES conversations(owner,id) ON DELETE CASCADE)",
-    "CREATE TABLE conversation_uses (owner TEXT NOT NULL, source TEXT NOT NULL, "
-    "target TEXT NOT NULL, PRIMARY KEY(owner,source,target), "
-    "FOREIGN KEY(owner,source) REFERENCES conversations(owner,id) ON DELETE CASCADE, "
-    "FOREIGN KEY(owner,target) REFERENCES conversations(owner,id) ON DELETE CASCADE)",
-    "PRAGMA user_version=5",
-)
+
+SCHEMA = DETAIL_SCHEMA
 
 
 class Details:

@@ -24,6 +24,7 @@ FACE_HEADS: tuple[FaceHead, ...] = get_args(FaceHead)
 FACE_IDLE_MODES: tuple[FaceIdle, ...] = get_args(FaceIdle)
 DEFAULT_FACE_PORT = 8767
 FACE_PREVIEW_SECONDS = 4
+FACE_IDLE_SECONDS = 5 * 60
 LOGGER = logging.getLogger(__name__)
 
 
@@ -75,6 +76,7 @@ class FaceDisplay:
         self._activity: FaceActivity = "idle"
         self._expression: FaceExpression = "neutral"
         self._deadline: float | None = None
+        self._idle_since: float | None = None
         self._preview_until = 0.0
 
     def cycle_face(self) -> bool:
@@ -118,6 +120,9 @@ class FaceDisplay:
         if self.head is None:
             return
         with self._lock:
+            if activity == "idle" and self._activity != "idle":
+                now = monotonic()
+                self._idle_since = min(self._deadline, now) if self._deadline is not None else now
             self._activity = activity
             self._expression = expression or "neutral"
             self._deadline = None if seconds is None else monotonic() + seconds
@@ -134,14 +139,22 @@ class FaceDisplay:
         with self._lock:
             now = monotonic()
             expired = self._deadline is not None and now >= self._deadline
+            activity = "idle" if expired else self._activity
+            idle_since = self._deadline if expired else self._idle_since
             state: dict[str, object] = {
                 "head": self.head,
                 "screensaver": self.screensaver,
-                "activity": "idle" if expired else self._activity,
+                "activity": activity,
                 "expression": "neutral" if expired else self._expression,
             }
             if now < self._preview_until:
                 state["preview"] = True
+            if (
+                activity == "idle"
+                and idle_since is not None
+                and now - idle_since < FACE_IDLE_SECONDS
+            ):
+                state["show_idle"] = True
         if self.personalities:
             state.update(personalities=self.personalities, personality=self.active_personality())
         if self.wake_phrase:

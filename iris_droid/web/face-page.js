@@ -49,7 +49,7 @@ async function poll() {
     }
     connected = Boolean(state);
     cycleButton.disabled = cycling || !connected;
-    updateFace(state && { ...state, showIdle: state.preview });
+    updateFace(state && { ...state, showIdle: state.preview || state.show_idle });
     menu.update(state);
   }
   setTimeout(poll, document.hidden ? 1000 : 200);

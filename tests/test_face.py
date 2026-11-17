@@ -139,10 +139,13 @@ def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, tmp_p
 
     def record(*args, **kwargs):
         nonlocal captures
-        assert read_state()["activity"] == "idle"
+        state = read_state()
+        assert state["activity"] == "idle"
         captures += 1
         if captures > 1:
+            assert state["show_idle"] is True
             raise KeyboardInterrupt
+        assert "show_idle" not in state
         kwargs["on_listening"]()
         assert read_state()["activity"] == "listening"
         return RECORDING
@@ -178,7 +181,8 @@ def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, tmp_p
         tts.synthesize.assert_called_once_with(REPLY)
 
 
-def test_face_display_assets_and_idle_state():
+def test_face_display_assets_and_idle_state(monkeypatch, fake_clock):
+    monkeypatch.setattr("iris_droid.face_display.monotonic", fake_clock.monotonic)
     display = FaceDisplay("humanoid-android")
     with display.serve(0) as port, httpx.Client(trust_env=False, timeout=5) as http:
         url = f"http://127.0.0.1:{port}"
@@ -196,7 +200,12 @@ def test_face_display_assets_and_idle_state():
             "expression": "neutral",
         }
         display.show("listening", "amused", seconds=0)
-        assert http.get(f"{url}/state").json()["activity"] == "idle"
+        idle = http.get(f"{url}/state").json()
+        assert idle["activity"] == "idle"
+        assert idle["show_idle"] is True
+        fake_clock.advance(300)
+        display.show("idle")
+        assert "show_idle" not in http.get(f"{url}/state").json()
 
 
 def test_display_selection_updates_the_live_droid_and_tracks_voice_switches(tmp_path):

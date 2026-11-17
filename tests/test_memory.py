@@ -161,7 +161,7 @@ def test_schema_idempotency_order_ownership_and_deletion(settings):
         memory.delete("other", conversation)
     assert memory.conversations("dave")[0]["turns"] == 2
     with memory.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     memory.delete("dave", conversation)
     assert memory.export("dave")["exchanges"] == []
@@ -397,9 +397,9 @@ def test_wizard_memory_opt_in(tmp_path):
 )
 def test_platform_data_locations(platform, env, expected):
     with (
-        patch("iris_memory.sys.platform", platform),
+        patch("iris_memory.repository.sys.platform", platform),
         patch.dict("os.environ", env, clear=True),
-        patch("iris_memory.Path.home", return_value=Path("/home/dave")),
+        patch("iris_memory.repository.Path.home", return_value=Path("/home/dave")),
     ):
         assert default_database_path() == Path(expected)
 

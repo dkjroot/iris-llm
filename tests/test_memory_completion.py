@@ -435,6 +435,8 @@ def test_schema_four_upgrade_preserves_archive_and_policy(tmp_path):
             "companion_topics",
         ):
             db.execute(f"DROP TABLE {table}")
+        db.execute("DROP TABLE embedding_failures")
+        db.execute("ALTER TABLE summary_jobs DROP COLUMN last_served")
         db.execute("PRAGMA user_version=4")
     upgraded = SQLiteMemory(path)
     assert upgraded.policy("default") == (True, 1)

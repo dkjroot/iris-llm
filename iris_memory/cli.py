@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser(
         "rebuild", help="Rebuild search and queue fresh summaries from source history"
     )
-    commands.add_parser("retry", help="Reset failed summary jobs for this owner")
+    commands.add_parser("retry", help="Reset failed summary and vector jobs for this owner")
     commands.add_parser("export", help="Write the owner's archive as JSON to standard output")
     inspect = commands.add_parser(
         "inspect", help="Inspect bounded hierarchy facts and topic attention"
@@ -96,7 +96,15 @@ def main(argv: list[str] | None = None) -> int:
                 semantic.reset(settings.memory_owner)
             total = 0
             while semantic.pending(settings.memory_owner):
-                total += semantic.index_batch(settings.memory_owner, 32)
+                processed = semantic.index_batch(settings.memory_owner, 32)
+                if not processed:
+                    print(
+                        "Semantic indexing deferred with "
+                        f"{semantic.pending(settings.memory_owner)} "
+                        "chunks pending. Check private mode or retry failed memory work."
+                    )
+                    return 1
+                total += processed
             print(f"Semantic index ready; processed {total} chunks for this model version.")
         elif args.action == "list":
             print(json.dumps(memory.conversations(settings.memory_owner), indent=2))

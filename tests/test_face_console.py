@@ -17,14 +17,24 @@ from iris_droid.face_console import (
 from iris_droid.face_display import FACE_HEADS, FaceDisplay
 
 
-def test_console_uses_the_running_voice_clients_display_state() -> None:
+def test_console_uses_the_running_voice_clients_display_state(monkeypatch, fake_clock) -> None:
+    monkeypatch.setattr("iris_droid.face_display.monotonic", fake_clock.monotonic)
     display = FaceDisplay("rivet", "black")
     with display.serve(0) as port:
         assert port is not None
         assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black")
         with display.speaking("amused"):
             assert read_state(port) == DisplayState("rivet", "speaking", "amused", "black")
+        fake_clock.advance(299)
+        display.show("idle")  # The capture loop can report idle repeatedly.
+        assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black", show_idle=True)
+        fake_clock.advance(1)
         assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black")
+        display.show("listening")
+        assert read_state(port) == DisplayState("rivet", "listening", "neutral", "black")
+        with display.speaking("amused"):
+            fake_clock.advance(120)
+        assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black", show_idle=True)
     assert read_state(port) is None
 
 
@@ -41,9 +51,13 @@ def test_console_cycles_previews_and_restores_the_selected_face(tmp_path, monkey
                 assert read_state(port) == DisplayState(
                     head, "speaking", "amused", "black", preview=True
                 )
-        assert read_state(port) == DisplayState("sprout", "idle", "neutral", "black", preview=True)
+        assert read_state(port) == DisplayState(
+            "sprout", "idle", "neutral", "black", preview=True, show_idle=True
+        )
         now += 5
-        assert read_state(port) == DisplayState("sprout", "idle", "neutral", "black")
+        assert read_state(port) == DisplayState(
+            "sprout", "idle", "neutral", "black", show_idle=True
+        )
 
     restored = FaceDisplay("signal", remember=True)
     assert restored.head == "sprout"

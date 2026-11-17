@@ -166,3 +166,6 @@ and an installed-wheel check outside the checkout. See
 [testing](testing.md) for the commands. Synthetic audio and fake services make
 these checks repeatable; they don't replace listening on the Pi or checking an
 actual model and home device.
+
+For repository result types, read snapshots, migration ownership and the complete
+table dictionary, see [memory storage and recovery](memory-storage.md).

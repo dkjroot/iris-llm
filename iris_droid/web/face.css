@@ -109,6 +109,7 @@
 }
 .iris-face-cycle:active { background: #302743; }
 .iris-face-cycle:disabled { opacity: .55; cursor: default; }
+.iris-stage:not(.iris-face-visible) .iris-face-cycle { display: none; }
 .iris-menu-open .iris-menu-trigger, .iris-menu-open .iris-face-cycle { visibility: hidden; }
 .iris-menu-open canvas { visibility: hidden; }
 

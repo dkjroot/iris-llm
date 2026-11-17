@@ -6,7 +6,6 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from iris_chat_engines.messages import Message
@@ -20,6 +19,7 @@ from iris_domain.memory import (
     PendingRecall as PendingRecall,
 )
 from iris_memory.index import MemoryIndex, query_terms
+from iris_memory.records import RecallSource, SourceExcerpt
 
 # Strip conversational scaffolding before lexical retrieval. These words do not
 # identify a topic; in particular, "that thing" must not match an arbitrary archive.
@@ -99,7 +99,7 @@ def date_window(text: str, now: datetime, timezone: str) -> DateWindow | None:
 class RecallResult:
     handled: bool = False
     response: str | None = None
-    excerpts: tuple[dict[str, Any], ...] = ()
+    excerpts: tuple[SourceExcerpt, ...] = ()
     pending: PendingRecall | None = None
 
 
@@ -251,8 +251,8 @@ class RecallResolver:
         )
         return RecallResult(True, excerpts=tuple(rows), pending=state)
 
-    def _candidates(self, rows: list[dict[str, Any]], terms: list[str]) -> list[Candidate]:
-        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    def _candidates(self, rows: list[RecallSource], terms: list[str]) -> list[Candidate]:
+        groups: dict[tuple[str, str], list[RecallSource]] = {}
         for row in rows:
             day = (
                 datetime.fromisoformat(row["created_at"])

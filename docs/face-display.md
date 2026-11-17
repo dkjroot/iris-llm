@@ -2,8 +2,9 @@
 
 Iris can put a face on the screen attached to the voice client. It comes on for
 the wake phrase or Enter-to-talk, changes while the PC is working, and shows the
-expression the model chooses while the reply plays. After the reply, the screen
-goes black again, with a few faint flecks drifting down. In hands-free mode with
+expression the model chooses while the reply plays. After the reply, Iris's
+face stays on screen. After five minutes without activity, the screensaver
+comes on with a few faint flecks drifting down. In hands-free mode with
 Silero enabled, it also comes on as soon as the client detects speech in a
 follow-up. Without Silero, those follow-ups light up when the recording is sent
 to the PC.
@@ -24,14 +25,15 @@ separate from the words Iris speaks and saves in conversation history.
 
 ## Choose a face
 
-Tap the smiley in the top left to cycle through the faces. If Iris is idle,
-the new face appears for a few seconds so you can see what you picked. The Pi
-and its local preview share a choice and remember it when the client restarts.
+While Iris's face is on screen, tap the smiley in the top left to cycle through
+the faces. The new face stays up for a few seconds so you can see what you
+picked. The Pi and its local preview share a choice and remember it when the
+client restarts.
 
 Add `--face signal` to your usual client command to enable the display and
 pick its starting face. You can also start with `humanoid-android`, `sprout`
 or `rivet`. Once you've used the button, Iris starts with your saved choice. Add
-`--face-idle black` for plain black between turns, or use `--face-idle snow`
+`--face-idle black` for a plain black screensaver, or use `--face-idle snow`
 for the default drifting flecks. In the browser preview, reduced motion also
 switches the idle screen to plain black.
 

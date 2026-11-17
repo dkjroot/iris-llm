@@ -11,7 +11,7 @@ let bust = null;
 let activity = "idle";
 let expression = "neutral";
 let snow = false;
-let showIdle = false;
+let visibleFace = false;
 let frame = null;
 let lastDraw = null;
 const pose = { ...expressions.neutral };
@@ -49,12 +49,12 @@ export function mountFaceCycle(cycle) {
   return button;
 }
 
-// Nine slow flecks on a black field. Coordinates scale with the panel.
+// Nine flecks on a black field. Coordinates scale with the panel.
 const flakes = Array.from({ length: 9 }, (_, index) => ({
   x: ((index * 29 + 7) % 101) / 101,
   y: ((index * 53 + 23) % 97) / 97,
-  speed: 6 + (index * 3) % 11,
-  size: index % 3 === 0 ? 2 : 1,
+  speed: (6 + (index * 3) % 11) * 1.25,
+  size: index % 3 === 0 ? 3 : 2,
 }));
 
 export function updateFace(state) {
@@ -69,14 +69,15 @@ export function updateFace(state) {
   const cue = typeof state?.expression === "string" && Object.hasOwn(expressions, state.expression)
     ? state.expression : "neutral";
   const snowfall = state?.screensaver === "snow";
-  const idleFace = state?.showIdle === true;
+  const nextVisible = face !== null && (state?.showIdle === true || phase !== "idle");
   if (headChanged || phase !== activity || cue !== expression || snowfall !== snow ||
-      idleFace !== showIdle) {
+      nextVisible !== visibleFace) {
     if (phase === "idle" || activity === "idle") Object.assign(pose, expressions.neutral);
     activity = phase;
     expression = cue;
     snow = snowfall;
-    showIdle = idleFace;
+    visibleFace = nextVisible;
+    canvas.parentElement.classList.toggle("iris-face-visible", visibleFace);
     lastDraw = null;
     requestDraw();
   }
@@ -89,7 +90,6 @@ function requestDraw() {
 function draw(now) {
   frame = null;
   if (document.hidden) return;
-  const visibleFace = face !== null && (showIdle || activity !== "idle");
   const still = motionPreference.matches;
   const interval = 1000 / (activity === "idle" ? 12 : 24);
   const elapsed = lastDraw === null ? interval : now - lastDraw;

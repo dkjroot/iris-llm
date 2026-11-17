@@ -105,6 +105,8 @@ def test_upgrade_repairs_only_partially_superseded_sources_and_preserves_origina
     )
     with memory.connect() as db:
         db.execute("UPDATE chunks SET superseded=1 WHERE exchange='source'")
+        db.execute("DROP TABLE embedding_failures")
+        db.execute("ALTER TABLE summary_jobs DROP COLUMN last_served")
         db.execute("PRAGMA user_version=7")
     before = memory.export("a")["exchanges"]
     with memory.connect() as db:

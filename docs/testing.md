@@ -153,3 +153,29 @@ from automated test results.
 Application and client boundaries are described in [the architecture guide](architecture.md).
 `tests/test_application_contracts.py` exercises coordination, rollback, effect
 policy and resource ownership without starting an HTTP server or opening devices.
+
+## Memory migrations and recovery
+
+`tests/fixtures/memory/v1.sql` through `v9.sql` are frozen synthetic archives,
+including original Unicode text, multiple owners and the state available at each
+version. Tests load these SQL files directly; they don't construct an old schema
+by running today's migrations and lowering its version number. When adding a
+migration, keep the old fixtures and add a fixture for the new version.
+
+`tests/test_phase3_memory.py` checks every supported version, interruption after
+each migration, future-version refusal, consistent read snapshots, restartable
+maintenance, stale inference rejection and stopped backup/restore/rebuild. The
+large-archive case also records the semantic candidate horizon without changing
+retrieval policy or throwing away old sources. Existing hierarchy and persistence
+tests cover correction independence, deletion scopes and voice acceptance.
+
+To measure actual query plans and warmed read timings on disposable data:
+
+```sh
+python scripts/benchmark_memory.py --exchanges 10000 --repetitions 20
+```
+
+The JSON result goes to `.cache/checks/memory-benchmark.json`. It reports Python
+allocation peaks separately from timings and excludes real model inference. Run
+benchmarks without the full suite competing for CPU if you want useful timing
+comparisons. This is a diagnostic benchmark, not a machine-specific CI speed gate.

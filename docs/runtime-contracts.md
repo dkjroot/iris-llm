@@ -138,14 +138,16 @@ when you need the stronger completion guarantee.
 ## Existing conversation archives
 
 Keep a verified backup with the server stopped before upgrading an archive.
-Starting the server upgrades schema 7 to schema 8 transactionally. This repairs
+Starting the server upgrades supported older archives to schema 9 transactionally.
+The version 8 migration repairs
 derived chunk visibility where correcting one summary note had hidden unrelated,
 still-current notes from the same original exchange. It does not change the
 original exchange text, remove history, clear recall blocks or restore explicitly
 deleted conversations. Fully superseded notes remain superseded. If the migration
 fails, its changes and version increment roll back together.
 
-An older Iris build that only understands schema 7 will reject schema 8. Keep
+Schema 9 adds durable vector failure tracking and fair summary queue ordering.
+An older Iris build that only understands schema 8 will reject schema 9. Keep
 the backup with its matching software version if you need to roll back; do not
 manually change the schema version to bypass that check.
 
@@ -155,3 +157,6 @@ bounded batch serially, and a repeatedly failing job still needs the existing
 explicit retry command. Such a job no longer consumes a scarce slot that could
 prevent other conversations from ever being summarized. Original source history
 remains retained regardless of backlog size.
+
+See [memory storage and recovery](memory-storage.md) for the schema dictionary,
+transaction boundaries, retry behaviour and checked backup/restore procedure.

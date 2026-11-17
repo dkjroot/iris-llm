@@ -6,16 +6,20 @@ import json
 import logging
 import re
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from iris_chat_engines.budget import estimate
 from iris_chat_engines.messages import ChatError, Message
 from iris_memory.controls import MemoryPolicyError
+from iris_memory.model_output import parse_memory_json, validation_reason
+from iris_memory.records import FactRecord, NoteRecord, RecallSource, SearchHit, TopicRecord
+from iris_memory.schema import HIERARCHY_SCHEMA
 from iris_turn import check_deadline
 
 if TYPE_CHECKING:
@@ -23,30 +27,10 @@ if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
     from iris_settings import Settings
 
+SCHEMA = HIERARCHY_SCHEMA
+
+
 LOGGER = logging.getLogger(__name__)
-SCHEMA = (
-    "CREATE TABLE memory_facts (id TEXT PRIMARY KEY, owner TEXT NOT NULL, "
-    "fact_key TEXT NOT NULL, value TEXT NOT NULL, kind TEXT NOT NULL, scope TEXT NOT NULL, "
-    "lifetime TEXT NOT NULL, importance TEXT NOT NULL, status TEXT NOT NULL, "
-    "source TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE, "
-    "evidence TEXT NOT NULL, supersedes TEXT REFERENCES memory_facts(id) ON DELETE SET NULL, "
-    "detail_label TEXT, FOREIGN KEY(owner,detail_label) REFERENCES memory_details(owner,label) "
-    "ON DELETE CASCADE)",
-    "CREATE INDEX fact_selection ON memory_facts(owner,status,scope,lifetime)",
-    "CREATE INDEX detail_fact_selection ON memory_facts(owner,detail_label,status)",
-    "CREATE TABLE detail_supersessions (owner TEXT NOT NULL, label TEXT NOT NULL, "
-    "PRIMARY KEY(owner,label), FOREIGN KEY(owner,label) REFERENCES memory_details(owner,label) "
-    "ON DELETE CASCADE)",
-    "CREATE TABLE memory_topics (id TEXT PRIMARY KEY, owner TEXT NOT NULL, label TEXT NOT NULL, "
-    "scope TEXT NOT NULL, source TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE, "
-    "UNIQUE(owner,id))",
-    "CREATE INDEX topic_selection ON memory_topics(owner,label)",
-    "CREATE TABLE memory_attention (topic TEXT NOT NULL REFERENCES memory_topics(id) "
-    "ON DELETE CASCADE, source TEXT NOT NULL REFERENCES exchanges(id) ON DELETE CASCADE, "
-    "engaged INTEGER NOT NULL, status TEXT NOT NULL, evidence TEXT NOT NULL, "
-    "PRIMARY KEY(topic,source))",
-    "PRAGMA user_version=6",
-)
 
 
 class StrictModel(BaseModel):
@@ -81,12 +65,17 @@ class Interpretation(StrictModel):
 
 INSTRUCTIONS = """Extract memory metadata from current_human, not a chat reply. Return JSON:
 {"facts":[],"topics":[]} with at most 4 each. No tools.
+Return only the JSON object, without commentary or Markdown fences. Use exactly
+the field names and enum values below; omit uncertain updates instead of inventing fields.
 Facts: key (short stable attribute, reuse existing fact_key), value (exact substring of
 human evidence, <=200 characters), kind identity|preference|project|episode,
 scope real|fictional|hypothetical|uncertain, lifetime stable|ongoing|episodic,
 importance low|normal|high, status confirmed|tentative|historical|closed,
 Use closed for completed projects; a completed project is not an ongoing commitment.
 supersedes (existing fact ID or null), evidence (exact current_human quote <=600).
+For fact updates the output field is key, not fact_key. For topic updates include
+label, scope and evidence even when target names an existing topic. Use empty arrays
+when there is nothing to update.
 Only clear human assertions; no assistant guesses. Stable identity/preferences differ
 from dated events. A bus trip is episodic, a name stable. Explicit corrections supersede
 an existing matching attribute; changes over time preserve the old version as history.
@@ -136,8 +125,8 @@ class Prepared:
     interpretation: Interpretation
     revision: int
     epoch: int
-    facts: tuple[dict[str, Any], ...]
-    topics: tuple[dict[str, Any], ...]
+    facts: tuple[FactRecord, ...]
+    topics: tuple[TopicRecord, ...]
     explicit_recall: bool = False
 
     @property
@@ -146,8 +135,10 @@ class Prepared:
         used.update(t.target for t in self.interpretation.topics if t.target)
         return {
             row["conversation"]
-            for row in (*self.facts, *self.topics)
-            if row["id"] in used and row["conversation"]
+            for row in self.facts
+            if row.get("id") in used and row["conversation"]
+        } | {
+            row["conversation"] for row in self.topics if row["id"] in used and row["conversation"]
         }
 
 
@@ -159,10 +150,10 @@ class Hierarchy:
 
     def facts(
         self, owner: str, *, limit: int = 32, include_blocked: bool = True
-    ) -> list[dict[str, Any]]:
+    ) -> list[FactRecord]:
         with self.archive.connect() as db:
             return [
-                dict(r)
+                cast(FactRecord, dict(r))
                 for r in db.execute(
                     "SELECT f.*,e.created_at,e.conversation,e.sequence FROM memory_facts f "
                     "JOIN exchanges e ON e.id=f.source WHERE f.owner=? "
@@ -181,12 +172,12 @@ class Hierarchy:
 
     def topics(
         self, owner: str, query: str = "", *, limit: int = 24, include_blocked: bool = True
-    ) -> list[dict[str, Any]]:
+    ) -> list[TopicRecord]:
         words = sorted(terms(query))[:12]
         match_score = " + ".join("(instr(lower(t.label),?)>0)" for _ in words) or "0.0"
         with self.archive.connect() as db:
             return [
-                dict(r)
+                cast(TopicRecord, dict(r))
                 for r in db.execute(
                     "SELECT t.*,e.conversation,e.created_at,"
                     "(SELECT MAX(x.created_at) FROM memory_attention a "
@@ -212,56 +203,61 @@ class Hierarchy:
     def prepare(
         self, owner: str, conversation: str, text: str, selected_topic: str = ""
     ) -> Prepared | None:
-        private, epoch = self.archive.policy(owner)
-        if private or self.backend is None:
-            return None
-        with self.archive.connect() as db:
-            revision = int(
-                db.execute(
-                    "SELECT COALESCE(MAX(sequence),0) FROM exchanges WHERE owner=?", (owner,)
-                ).fetchone()[0]
-            )
-        recent = self.archive.recent(owner, conversation, 2, 2000)
-        recent_context = [
-            {"origin": e.origin, "human": e.user_text[:300], "assistant": e.assistant_text[:300]}
-            for e in recent
-        ]
-        from iris_memory.recall import is_recall_request
-
-        explicit = bool(selected_topic) or is_recall_request(text)
-        facts = self.facts(owner, limit=12, include_blocked=explicit)
-        from iris_memory.details import Details
-
-        explicit_details = Details(self.archive).items(owner, limit=12, core_first=True)
-        for item in explicit_details:
-            if not item["available"]:
-                continue
-            if any(f.get("detail_label") == item["label"] for f in facts):
-                continue
-            facts.append(
+        with self.archive.snapshot():
+            private, epoch = self.archive.policy(owner)
+            if private or self.backend is None:
+                return None
+            with self.archive.connect() as db:
+                revision = int(
+                    db.execute(
+                        "SELECT COALESCE(MAX(sequence),0) FROM exchanges WHERE owner=?", (owner,)
+                    ).fetchone()[0]
+                )
+            recent = self.archive.recent(owner, conversation, 2, 2000)
+            recent_context = [
                 {
-                    "id": "detail:" + item["label"],
-                    "fact_key": item["label"],
-                    "value": item["text"],
-                    "scope": "fictional"
-                    if re.search(
-                        r"\b(?:fictional|story|character)\b",
-                        item["label"] + " " + item["text"],
-                        re.I,
-                    )
-                    else "real",
-                    "conversation": "",
-                    "detail_label": item["label"],
+                    "origin": e.origin,
+                    "human": e.user_text[:300],
+                    "assistant": e.assistant_text[:300],
                 }
+                for e in recent
+            ]
+            from iris_memory.recall import is_recall_request
+
+            explicit = bool(selected_topic) or is_recall_request(text)
+            facts = self.facts(owner, limit=12, include_blocked=explicit)
+            from iris_memory.details import Details
+
+            explicit_details = Details(self.archive).items(owner, limit=12, core_first=True)
+            for item in explicit_details:
+                if not item["available"]:
+                    continue
+                if any(f.get("detail_label") == item["label"] for f in facts):
+                    continue
+                facts.append(
+                    {
+                        "id": "detail:" + item["label"],
+                        "fact_key": item["label"],
+                        "value": item["text"],
+                        "scope": "fictional"
+                        if re.search(
+                            r"\b(?:fictional|story|character)\b",
+                            item["label"] + " " + item["text"],
+                            re.I,
+                        )
+                        else "real",
+                        "conversation": "",
+                        "detail_label": item["label"],
+                    }
+                )
+            facts.sort(
+                key=lambda f: (
+                    f.get("detail_label") in {"name", "my name", "preferred name"},
+                    f.get("kind") == "identity",
+                ),
+                reverse=True,
             )
-        facts.sort(
-            key=lambda f: (
-                f.get("detail_label") in {"name", "my name", "preferred name"},
-                f.get("kind") == "identity",
-            ),
-            reverse=True,
-        )
-        topics = self.topics(owner, text, limit=16, include_blocked=explicit)
+            topics = self.topics(owner, text, limit=16, include_blocked=explicit)
         # All candidate data and the current text must fit the summary model window.
         # No DB transaction spans inference. Only current human evidence can create a fact.
         active_topics = [
@@ -271,7 +267,10 @@ class Hierarchy:
             and t["status"] == "open"
             and t["last_engaged_at"]
         ]
-        latest_attention = max((t["last_engaged_at"] for t in active_topics), default=None)
+        latest_attention = max(
+            (t["last_engaged_at"] for t in active_topics if t["last_engaged_at"] is not None),
+            default=None,
+        )
         active_topics = [t for t in active_topics if t["last_engaged_at"] == latest_attention]
         payload: dict[str, Any] = {
             "current_human": text,
@@ -306,9 +305,11 @@ class Hierarchy:
                 recent_context.pop(0)
             else:
                 return None
+        finish_reason = None
         try:
             check_deadline()
             reply = self.backend.complete(messages, [])
+            finish_reason = reply._finish_reason
             check_deadline()
             if (
                 reply.role != "assistant"
@@ -317,9 +318,19 @@ class Hierarchy:
                 or len(reply.content) > 16000
             ):
                 raise ValueError("Invalid memory interpretation")
-            result = Interpretation.model_validate_json(reply.content)
+            result = parse_memory_json(Interpretation, reply.content)
             self._validate(text, result, facts, topics, selected_topic)
             return Prepared(result, revision, epoch, tuple(facts), tuple(topics), explicit)
+        except ValidationError as error:
+            reason = (
+                "truncated output (model token limit)"
+                if finish_reason == "length"
+                else validation_reason(error)
+            )
+            LOGGER.warning(
+                "Memory hierarchy update rejected (%s); using existing evidence.", reason
+            )
+            return None
         except (ChatError, ValueError) as error:
             LOGGER.warning(
                 "Memory hierarchy unavailable (%s); using existing evidence.", type(error).__name__
@@ -330,8 +341,8 @@ class Hierarchy:
     def _validate(
         text: str,
         result: Interpretation,
-        facts: list[dict[str, Any]],
-        topics: list[dict[str, Any]],
+        facts: list[FactRecord],
+        topics: list[TopicRecord],
         selected_topic: str = "",
     ) -> None:
         fact_ids = {f["id"]: f for f in facts}
@@ -396,15 +407,15 @@ class Hierarchy:
                 raise ValueError("Invalid topic evidence")
             seen.add(key)
             if topic.target:
-                old = topic_ids.get(topic.target)
+                old_topic = topic_ids.get(topic.target)
                 if (
-                    old is None
-                    or old["label"].casefold() != topic.label.casefold()
-                    or old["scope"] != topic.scope
+                    old_topic is None
+                    or old_topic["label"].casefold() != topic.label.casefold()
+                    or old_topic["scope"] != topic.scope
                 ):
                     raise ValueError("Unknown or relabelled topic")
                 if (
-                    old["status"] in {"closed", "deferred"}
+                    old_topic["status"] in {"closed", "deferred"}
                     and topic.status == "open"
                     and not re.search(
                         r"\b(?:reopen|restart|start again|resume working|resume writing)\b",
@@ -572,16 +583,19 @@ class Hierarchy:
                 # selection is excluded by the caller until commit.
                 rows.insert(
                     0,
-                    {
-                        **fact.model_dump(),
-                        "fact_key": fact.key,
-                        "created_at": "current human turn",
-                        "conversation": "",
-                    },
+                    cast(
+                        FactRecord,
+                        {
+                            **fact.model_dump(),
+                            "fact_key": fact.key,
+                            "created_at": "current human turn",
+                            "conversation": "",
+                        },
+                    ),
                 )
         words = terms(attention_text(query))
 
-        def rank(row: dict[str, Any]) -> tuple[int, int, bool]:
+        def rank(row: FactRecord) -> tuple[int, int, bool]:
             overlap = len(words & terms(row["fact_key"] + " " + row["value"]))
             core = (
                 row["kind"] == "identity"
@@ -606,8 +620,12 @@ class Hierarchy:
             if row["status"] in {"historical", "superseded"} or not (core or overlap):
                 continue
             item = {
-                k: row[k]
-                for k in ("fact_key", "value", "scope", "status", "lifetime", "created_at")
+                "fact_key": row["fact_key"],
+                "value": row["value"],
+                "scope": row["scope"],
+                "status": row["status"],
+                "lifetime": row["lifetime"],
+                "created_at": row["created_at"],
             }
             item["source"] = row.get("source", "current human turn")
             if len(json.dumps([*selected, item], ensure_ascii=False).encode()) > limit:
@@ -657,9 +675,7 @@ class Hierarchy:
                 focus += " " + " ".join(labels)
         return focus[:1200]
 
-    def select_notes(
-        self, owner: str, query: str, notes: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def select_notes(self, owner: str, query: str, notes: list[NoteRecord]) -> list[NoteRecord]:
         words = terms(attention_text(query))
         closed = [t for t in self.topics(owner, query) if t["status"] in {"closed", "deferred"}]
         selected = []
@@ -677,7 +693,7 @@ class Hierarchy:
         return sorted(selected, key=lambda note: len(words & terms(note["text"])), reverse=True)
 
     def activity_scores(
-        self, owner: str, query: str, rows: list[dict[str, Any]]
+        self, owner: str, query: str, rows: Sequence[SearchHit | RecallSource]
     ) -> dict[str, float]:
         topics = self.topics(owner, attention_text(query), limit=24)
         query_words = terms(attention_text(query))
@@ -711,9 +727,7 @@ class Hierarchy:
             scores[str(row["exchange"])] = best
         return scores
 
-    def rank_sources(
-        self, owner: str, query: str, rows: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def rank_sources(self, owner: str, query: str, rows: list[SearchHit]) -> list[SearchHit]:
         activity = self.activity_scores(owner, query, rows)
         return sorted(
             rows,

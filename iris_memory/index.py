@@ -8,11 +8,23 @@ import re
 import sqlite3
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from iris_memory.embeddings import EmbeddingError
+from iris_memory.maintenance import enqueue_summary, yield_summary
+from iris_memory.migrations import repair_source_visibility as repair_source_visibility
 from iris_memory.models import Summary
+from iris_memory.records import (
+    NoteRecord,
+    RecallSource,
+    SearchHit,
+    Source,
+    SourceExcerpt,
+    SummaryJob,
+    SummarySnapshot,
+)
+from iris_memory.schema import SEARCH_SCHEMA
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
@@ -20,33 +32,10 @@ if TYPE_CHECKING:
     from iris_memory.semantic import SemanticMemory
 
 
-LOGGER = logging.getLogger(__name__)
+SCHEMA = SEARCH_SCHEMA
 
-SCHEMA = (
-    "CREATE TABLE summaries (id TEXT PRIMARY KEY, owner TEXT NOT NULL, conversation TEXT NOT NULL, "
-    "through_sequence INTEGER NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
-    "payload TEXT NOT NULL, FOREIGN KEY(owner,conversation) REFERENCES conversations(owner,id) "
-    "ON DELETE CASCADE, UNIQUE(conversation,through_sequence))",
-    "CREATE TABLE notes (id TEXT PRIMARY KEY, summary TEXT NOT NULL REFERENCES summaries(id) "
-    "ON DELETE CASCADE, owner TEXT NOT NULL, conversation TEXT NOT NULL, text TEXT NOT NULL, "
-    "kind TEXT NOT NULL, scope TEXT NOT NULL, status TEXT NOT NULL, sources TEXT NOT NULL)",
-    "CREATE INDEX conversation_notes ON notes(owner,conversation)",
-    "CREATE TABLE summary_jobs (conversation TEXT PRIMARY KEY, owner TEXT NOT NULL, "
-    "attempts INTEGER NOT NULL DEFAULT 0, retry_at REAL NOT NULL DEFAULT 0, "
-    "FOREIGN KEY(owner,conversation) REFERENCES conversations(owner,id) ON DELETE CASCADE)",
-    "CREATE TABLE recall_blocks (owner TEXT NOT NULL, conversation TEXT PRIMARY KEY "
-    "REFERENCES conversations(id) ON DELETE CASCADE)",
-    "CREATE TABLE chunks (id INTEGER PRIMARY KEY, exchange TEXT NOT NULL REFERENCES exchanges(id) "
-    "ON DELETE CASCADE, owner TEXT NOT NULL, conversation TEXT NOT NULL, created_at TEXT NOT NULL, "
-    "text TEXT NOT NULL, superseded INTEGER NOT NULL DEFAULT 0)",
-    "CREATE INDEX chunk_sources ON chunks(exchange)",
-    "CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='chunks', content_rowid='id')",
-    "CREATE TRIGGER chunks_insert AFTER INSERT ON chunks BEGIN "
-    "INSERT INTO chunks_fts(rowid,text) VALUES (new.id,new.text); END",
-    "CREATE TRIGGER chunks_delete AFTER DELETE ON chunks BEGIN "
-    "INSERT INTO chunks_fts(chunks_fts,rowid,text) VALUES ('delete',old.id,old.text); END",
-    "PRAGMA user_version=2",
-)
+
+LOGGER = logging.getLogger(__name__)
 
 
 def index_exchange(db: sqlite3.Connection, row: sqlite3.Row) -> None:
@@ -72,53 +61,6 @@ def index_exchange(db: sqlite3.Connection, row: sqlite3.Row) -> None:
             )
 
 
-def repair_source_visibility(db: sqlite3.Connection) -> None:
-    """Schema 8 repair using a temporary index, without requiring SQLite JSON1."""
-    db.execute(
-        "CREATE TEMP TABLE repair_note_sources (owner TEXT, conversation TEXT, source TEXT, "
-        "superseded INTEGER, PRIMARY KEY(owner,conversation,source,superseded)) WITHOUT ROWID"
-    )
-    for row in db.execute("SELECT owner,conversation,sources,status FROM notes"):
-        db.executemany(
-            "INSERT OR IGNORE INTO repair_note_sources VALUES (?,?,?,?)",
-            (
-                (row["owner"], row["conversation"], source, row["status"] == "superseded")
-                for source in json.loads(row["sources"])
-            ),
-        )
-    db.execute(
-        "UPDATE chunks SET superseded=0 WHERE superseded=1 "
-        "AND EXISTS(SELECT 1 FROM repair_note_sources s WHERE s.owner=chunks.owner "
-        "AND s.conversation=chunks.conversation AND s.source=chunks.exchange AND s.superseded=0) "
-        "AND EXISTS(SELECT 1 FROM repair_note_sources s WHERE s.owner=chunks.owner "
-        "AND s.conversation=chunks.conversation AND s.source=chunks.exchange AND s.superseded=1)"
-    )
-    db.execute("DROP TABLE repair_note_sources")
-
-
-def migrate(db: sqlite3.Connection) -> None:
-    try:
-        db.execute("CREATE VIRTUAL TABLE temp.iris_fts_probe USING fts5(text)")
-        db.execute("DROP TABLE temp.iris_fts_probe")
-    except sqlite3.OperationalError as error:
-        raise ValueError(
-            "Conversation memory needs SQLite FTS5. Install Python with FTS5 support."
-        ) from error
-    for statement in SCHEMA:
-        db.execute(statement)
-    for row in db.execute("SELECT * FROM exchanges ORDER BY sequence"):
-        index_exchange(db, row)
-    db.execute(
-        "INSERT INTO recall_blocks SELECT c.owner,c.id FROM conversations c "
-        "LEFT JOIN active_conversations a ON a.owner=c.owner "
-        "WHERE a.conversation IS NULL OR a.conversation!=c.id"
-    )
-    db.execute(
-        "INSERT INTO summary_jobs(conversation,owner) SELECT DISTINCT conversation,owner "
-        "FROM exchanges ORDER BY sequence"
-    )
-
-
 STOP_WORDS = set(
     "the and that this with from have what about were your would could should "
     "there then they them into just know tell please remember discussed talked "
@@ -142,22 +84,30 @@ class MemoryIndex:
 
     def enqueue(self, owner: str, conversation: str) -> None:
         with self.archive.connect() as db:
-            db.execute(
-                "INSERT OR IGNORE INTO summary_jobs(conversation,owner) "
-                "SELECT id,owner FROM conversations c WHERE owner=? AND id=? "
-                "AND EXISTS (SELECT 1 FROM exchanges e WHERE e.conversation=c.id "
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute(
+                "SELECT 1 FROM exchanges e WHERE e.owner=? AND e.conversation=? "
                 "AND e.sequence>COALESCE((SELECT MAX(through_sequence) FROM summaries "
-                "WHERE conversation=c.id),0))",
+                "WHERE conversation=e.conversation),0) LIMIT 1",
                 (owner, conversation),
-            )
+            ).fetchone():
+                enqueue_summary(db, owner, conversation)
 
     def next_conversation(self, owner: str, exclude: str) -> str | None:
         with self.archive.connect() as db:
-            # Older versions capped durable jobs at 64. Rediscover their omitted
-            # sources without resetting failed jobs or their explicit retry policy.
+            db.execute("BEGIN IMMEDIATE")
+            modern = db.execute("PRAGMA user_version").fetchone()[0] >= 9
+            # Recover legacy omissions. Newly discovered jobs join behind already
+            # queued work; rowid provides deterministic ordering within the batch.
             db.execute(
-                "INSERT OR IGNORE INTO summary_jobs(conversation,owner) "
-                "SELECT c.id,c.owner FROM conversations c WHERE c.owner=? AND c.id!=? "
+                "INSERT OR IGNORE INTO summary_jobs(conversation,owner"
+                + (
+                    ",last_served) SELECT c.id,c.owner,"
+                    "(SELECT COALESCE(MAX(last_served),0) FROM summary_jobs)+c.rowid "
+                    if modern
+                    else ") SELECT c.id,c.owner "
+                )
+                + "FROM conversations c WHERE c.owner=? AND c.id!=? "
                 "AND NOT EXISTS(SELECT 1 FROM summary_jobs j WHERE j.conversation=c.id) "
                 "AND EXISTS(SELECT 1 FROM exchanges e WHERE e.conversation=c.id "
                 "AND e.sequence>COALESCE((SELECT MAX(through_sequence) FROM summaries "
@@ -166,7 +116,9 @@ class MemoryIndex:
             )
             row = db.execute(
                 "SELECT conversation FROM summary_jobs WHERE owner=? AND conversation!=? "
-                "AND attempts<3 AND retry_at<=? ORDER BY rowid LIMIT 1",
+                "AND attempts<3 AND retry_at<=? ORDER BY "
+                + ("last_served," if modern else "")
+                + "rowid LIMIT 1",
                 (owner, exclude, time.time()),
             ).fetchone()
             return str(row[0]) if row else None
@@ -175,6 +127,7 @@ class MemoryIndex:
         """Explicit offline rebuild of derived data, retaining sources and clear boundaries."""
         with self.archive.connect() as db:
             db.execute("BEGIN IMMEDIATE")
+            self.archive._bump_policy(db, owner)
             db.execute("DELETE FROM summaries WHERE owner=?", (owner,))
             db.execute("DELETE FROM chunks WHERE owner=?", (owner,))
             db.execute("DELETE FROM summary_jobs WHERE owner=?", (owner,))
@@ -191,10 +144,17 @@ class MemoryIndex:
 
     def retry(self, owner: str) -> None:
         with self.archive.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute("UPDATE summary_jobs SET attempts=0,retry_at=0 WHERE owner=?", (owner,))
+            if db.execute("PRAGMA user_version").fetchone()[0] >= 9:
+                db.execute(
+                    "DELETE FROM embedding_failures WHERE chunk IN "
+                    "(SELECT id FROM chunks WHERE owner=?)",
+                    (owner,),
+                )
 
-    def pending(self, owner: str, conversation: str) -> dict[str, Any] | None:
-        with self.archive.connect() as db:
+    def pending(self, owner: str, conversation: str) -> SummaryJob | None:
+        with self.archive.snapshot() as db:
             row = db.execute(
                 "SELECT j.*, COALESCE(MAX(s.through_sequence),0) AS cursor "
                 "FROM summary_jobs j LEFT JOIN summaries s ON s.conversation=j.conversation "
@@ -204,7 +164,7 @@ class MemoryIndex:
             ).fetchone()
             if row is None:
                 return None
-            job = dict(row)
+            job = cast(SummaryJob, dict(row))
             job["pending_count"] = db.execute(
                 "SELECT count(*) FROM (SELECT sequence FROM exchanges WHERE owner=? "
                 "AND conversation=? AND sequence>? LIMIT 100)",
@@ -212,12 +172,10 @@ class MemoryIndex:
             ).fetchone()[0]
             return job
 
-    def sources(
-        self, owner: str, conversation: str, after: int, limit: int = 12
-    ) -> list[dict[str, Any]]:
+    def sources(self, owner: str, conversation: str, after: int, limit: int = 12) -> list[Source]:
         with self.archive.connect() as db:
             return [
-                dict(r)
+                cast(Source, dict(r))
                 for r in db.execute(
                     "SELECT sequence,id,created_at,origin,user_text,assistant_text FROM exchanges "
                     "WHERE owner=? AND conversation=? AND sequence>? ORDER BY sequence LIMIT ?",
@@ -225,10 +183,10 @@ class MemoryIndex:
                 )
             ]
 
-    def notes(self, owner: str, conversation: str, limit: int = 24) -> list[dict[str, Any]]:
+    def notes(self, owner: str, conversation: str, limit: int = 24) -> list[NoteRecord]:
         with self.archive.connect() as db:
             return [
-                dict(r)
+                cast(NoteRecord, dict(r))
                 for r in db.execute(
                     "SELECT n.*,s.through_sequence,s.created_at FROM notes n JOIN summaries s "
                     "ON s.id=n.summary WHERE n.owner=? AND n.conversation=? "
@@ -237,6 +195,20 @@ class MemoryIndex:
                     (owner, conversation, limit),
                 )
             ]
+
+    def summary_snapshot(self, owner: str, conversation: str) -> SummarySnapshot:
+        with self.archive.snapshot():
+            policy = self.archive.policy(owner)
+            if policy.private:
+                return SummarySnapshot(policy, None, None, (), ())
+            job = self.pending(owner, conversation)
+            return SummarySnapshot(
+                policy,
+                self.archive.revision(owner, conversation),
+                job,
+                tuple(self.sources(owner, conversation, job["cursor"])) if job else (),
+                tuple(self.notes(owner, conversation, 12)) if job else (),
+            )
 
     def save(
         self,
@@ -319,6 +291,7 @@ class MemoryIndex:
                 "UPDATE summary_jobs SET attempts=0,retry_at=0 WHERE owner=? AND conversation=?",
                 (owner, conversation),
             )
+            yield_summary(db, owner, conversation)
             remaining = db.execute(
                 "SELECT 1 FROM exchanges WHERE owner=? AND conversation=? AND sequence>? LIMIT 1",
                 (owner, conversation, through),
@@ -332,6 +305,8 @@ class MemoryIndex:
 
     def failed(self, owner: str, conversation: str) -> None:
         with self.archive.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            yield_summary(db, owner, conversation)
             db.execute(
                 "UPDATE summary_jobs SET attempts=attempts+1,retry_at=? "
                 "WHERE owner=? AND conversation=?",
@@ -340,7 +315,7 @@ class MemoryIndex:
 
     def search(
         self, owner: str, active: str, utterance: str, recent: str, *, limit: int = 3
-    ) -> list[dict[str, Any]]:
+    ) -> list[SearchHit]:
         terms = query_terms(utterance)
         context = [w for w in query_terms(recent) if w not in terms][:4]
         terms = terms[:12] + context
@@ -377,7 +352,7 @@ class MemoryIndex:
             for row in rows:
                 if row["exchange"] not in seen:
                     seen.add(row["exchange"])
-                    result.append(dict(row))
+                    result.append(cast(SearchHit, dict(row)))
                     if len(result) >= (limit * 4 if self.hierarchy is not None else limit):
                         break
         if self.semantic is not None:
@@ -416,7 +391,7 @@ class MemoryIndex:
         terms: list[str],
         start: datetime | None,
         end: datetime | None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[RecallSource]:
         """Bounded explicit recall: search notes, then verify their original sources."""
         from iris_memory.recall import is_recall_request, topical_terms
 
@@ -430,8 +405,8 @@ class MemoryIndex:
             "AND EXISTS(SELECT 1 FROM chunks c WHERE c.exchange=e.id AND c.superseded=0)"
         )
         args = (owner, dates[0], dates[0], dates[1], dates[1])
-        result: dict[str, dict[str, Any]] = {}
-        with self.archive.connect() as db:
+        result: dict[str, RecallSource] = {}
+        with self.archive.snapshot() as db:
             note_filter = " OR ".join("n.text LIKE ?" for _ in terms) or "1"
             notes = db.execute(
                 "SELECT n.* FROM notes n JOIN summaries s ON s.id=n.summary "
@@ -453,7 +428,7 @@ class MemoryIndex:
                     (*args, note["conversation"], *sources),
                 ):
                     if not is_recall_request(row["user_text"]) and topical_terms(row["user_text"]):
-                        result[row["id"]] = {**dict(row), "topic": note["text"]}
+                        result[row["id"]] = cast(RecallSource, {**dict(row), "topic": note["text"]})
                 if len(result) >= 24:
                     break
             if terms:
@@ -479,7 +454,7 @@ class MemoryIndex:
                 )
             for row in rows:
                 if not is_recall_request(row["user_text"]) and topical_terms(row["user_text"]):
-                    result.setdefault(row["id"], dict(row))
+                    result.setdefault(row["id"], cast(RecallSource, dict(row)))
                 if len(result) >= 36:
                     break
         if self.semantic is not None and terms:
@@ -491,8 +466,9 @@ class MemoryIndex:
                     if row["exchange"] in result:
                         result[row["exchange"]]["semantic_similarity"] = row["semantic_similarity"]
                     else:
-                        row["semantic_only"] = True
-                        result[row["exchange"]] = row
+                        candidate = cast(RecallSource, dict(row))
+                        candidate["semantic_only"] = True
+                        result[row["exchange"]] = candidate
             except (EmbeddingError, sqlite3.Error) as error:
                 LOGGER.warning(
                     "Semantic recall unavailable (%s); using keyword matches.", type(error).__name__
@@ -508,7 +484,7 @@ class MemoryIndex:
 
     def recall_evidence(
         self, owner: str, conversation: str, sources: tuple[str, ...], terms: tuple[str, ...] = ()
-    ) -> list[dict[str, Any]]:
+    ) -> list[SourceExcerpt]:
         def excerpt(text: str) -> str:
             match = (
                 re.search("|".join(re.escape(term) for term in terms), text, re.I)
@@ -539,3 +515,10 @@ class MemoryIndex:
                 }
                 for row in rows
             ]
+
+
+def migrate(db: sqlite3.Connection) -> None:
+    """Compatibility entry for the original search migration."""
+    from iris_memory.migrations import migrate_search
+
+    migrate_search(db)

@@ -14,9 +14,10 @@ from iris_chat_engines.compatible import ChatEngine
 from iris_domain.replies import (
     TurnReply,
 )
-from iris_memory.controls import MemoryAction, PendingForget
+from iris_memory.controls import MemoryAction, MemoryPolicyError, PendingForget
 from iris_memory.details import DetailCommand
 from iris_memory.hierarchy import Prepared
+from iris_memory.records import ForgetTarget
 
 if TYPE_CHECKING:
     from iris_app.runtime import Brain
@@ -166,7 +167,7 @@ class MemoryOrchestrator:
         pending = chat.pending_forget
         target = self.app.memory.forget_target(self.app.settings.memory_owner)
         if pending is not None and not pending.require_active:
-            target = (
+            target = ForgetTarget(
                 pending.conversation,
                 self.app.memory.revision(self.app.settings.memory_owner, pending.conversation),
                 pending.count,
@@ -375,27 +376,24 @@ class MemoryOrchestrator:
         if self.app.memory is None or self.app.private_mode:
             return None
         owner = self.app.settings.memory_owner
-        conversation = (
-            self.app.memory.current_conversation(owner)
-            if provisional
-            else self.app.memory.active_conversation(owner)
+        snapshot = self.app.memory.session_snapshot(
+            owner,
+            self.app.settings.history_turns,
+            self.app.settings.memory_context_chars,
+            provisional=provisional,
+            known=chat.memory_revision,
         )
+        if snapshot.policy != (False, self.app.policy_epoch):
+            raise MemoryPolicyError("Conversation memory policy changed during restoration")
+        conversation = snapshot.conversation
         if conversation is None:
             chat.history = []
             chat.memory_revision = None
             return None
-        revision = (
-            conversation,
-            self.app.memory.revision(self.app.settings.memory_owner, conversation),
-        )
-        if chat.memory_revision == revision:
+        revision = (conversation, snapshot.revision)
+        if snapshot.exchanges is None:
             return conversation
-        exchanges = self.app.memory.recent(
-            self.app.settings.memory_owner,
-            conversation,
-            self.app.settings.history_turns,
-            self.app.settings.memory_context_chars,
-        )
+        exchanges = snapshot.exchanges
         # Restore only final text pairs. Historical tool calls are never dispatched,
         # and reasoning/arguments/results never leave the live session.
         from iris_chat_engines.messages import Message
@@ -485,9 +483,9 @@ class MemoryOrchestrator:
                     LOGGER.warning("Memory hierarchy unavailable (%s).", type(error).__name__)
             excluded = (
                 tuple(
-                    f["detail_label"]
+                    label
                     for f in (hierarchy_plan.facts if hierarchy_plan else ())
-                    if f.get("detail_label")
+                    if (label := f.get("detail_label"))
                     and any(
                         change.supersedes == f["id"]
                         for change in hierarchy_plan.interpretation.facts

@@ -4,26 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import sqlite3
+import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
 from iris_memory.embeddings import EmbeddingError, Encoder
+from iris_memory.records import SearchHit
+from iris_memory.schema import VECTOR_SCHEMA
+from iris_turn import check_deadline
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
 
+SCHEMA = VECTOR_SCHEMA
+
+
 LOGGER = logging.getLogger(__name__)
-SCHEMA = (
-    "CREATE TABLE embedding_models (id TEXT PRIMARY KEY, dimensions INTEGER NOT NULL)",
-    "CREATE TABLE embedding_vectors (chunk INTEGER NOT NULL REFERENCES chunks(id) "
-    "ON DELETE CASCADE, "
-    "model TEXT NOT NULL REFERENCES embedding_models(id), "
-    "text_hash TEXT NOT NULL, vector BLOB NOT NULL, "
-    "PRIMARY KEY(chunk,model))",
-    "PRAGMA user_version=3",
-)
+# Candidate policy is intentionally unchanged; date filters run before this horizon.
+SEMANTIC_CANDIDATE_LIMIT = 4096
 
 
 class SemanticMemory:
@@ -45,11 +46,13 @@ class SemanticMemory:
                 )
 
     def index_batch(self, owner: str, limit: int = 8) -> int:
-        from iris_memory.recall import is_recall_request, topical_terms
 
         if not 1 <= limit <= 32:
             raise ValueError("Embedding batches must have 1–32 chunks")
-        with self.archive.connect() as db:
+        with self.archive.snapshot() as db:
+            policy = self.archive.policy(owner)
+            if policy.private:
+                return 0
             rows = list(
                 db.execute(
                     "SELECT c.*,substr(e.user_text,1,600) AS user_context, "
@@ -58,12 +61,71 @@ class SemanticMemory:
                     "WHERE c.owner=? AND c.superseded=0 AND e.origin='human' "
                     "AND NOT EXISTS(SELECT 1 FROM embedding_vectors v "
                     "WHERE v.chunk=c.id AND v.model=?) "
+                    "AND NOT EXISTS(SELECT 1 FROM embedding_failures f WHERE f.chunk=c.id "
+                    "AND f.model=? AND (f.attempts>=3 OR f.retry_at>?)) "
                     "ORDER BY c.id LIMIT ?",
-                    (owner, self.encoder.model_id, limit),
+                    (owner, self.encoder.model_id, self.encoder.model_id, time.time(), limit),
                 )
             )
         if not rows:
             return 0
+        try:
+            check_deadline()
+            encoded = self._encode_rows(rows)
+            check_deadline()
+        except EmbeddingError:
+            with self.archive.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if self.archive._policy(db, owner) == policy:
+                    for row in rows:
+                        db.execute(
+                            "INSERT INTO embedding_failures(chunk,model,attempts,retry_at) "
+                            "SELECT id,?,1,? FROM chunks WHERE id=? AND owner=? AND exchange=? "
+                            "AND text=? ON CONFLICT(chunk,model) DO UPDATE SET "
+                            "attempts=embedding_failures.attempts+1,retry_at=excluded.retry_at",
+                            (
+                                self.encoder.model_id,
+                                time.time() + 60,
+                                row["id"],
+                                owner,
+                                row["exchange"],
+                                row["text"],
+                            ),
+                        )
+            raise
+        with self.archive.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if self.archive._policy(db, owner) != policy:
+                return 0
+            committed = 0
+            for row in rows:
+                # Check stable source ID AND text after inference, not just reusable
+                # chunk rowid. Stale work cannot recreate deleted/rebuilt sources.
+                inserted = db.execute(
+                    "INSERT OR IGNORE INTO embedding_vectors(chunk,model,text_hash,vector) "
+                    "SELECT id,?,?,? FROM chunks WHERE id=? AND owner=? AND exchange=? "
+                    "AND text=? AND superseded=0",
+                    (
+                        self.encoder.model_id,
+                        hashlib.sha256(row["text"].encode()).hexdigest(),
+                        encoded.get(row["id"], b""),
+                        row["id"],
+                        owner,
+                        row["exchange"],
+                        row["text"],
+                    ),
+                )
+                committed += inserted.rowcount
+                if inserted.rowcount:
+                    db.execute(
+                        "DELETE FROM embedding_failures WHERE chunk=? AND model=?",
+                        (row["id"], self.encoder.model_id),
+                    )
+        return committed
+
+    def _encode_rows(self, rows: list[sqlite3.Row]) -> dict[int, bytes]:
+        from iris_memory.recall import is_recall_request, topical_terms
+
         # Empty vectors mark non-evidence turns as processed without exposing them
         # to semantic search. Missing rows remain a recoverable durable work queue.
         useful = [
@@ -95,32 +157,14 @@ class SemanticMemory:
             row["id"]: np.asarray(vector, dtype="<f4").tobytes()
             for row, vector in zip(useful, vectors, strict=True)
         }
-        with self.archive.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            for row in rows:
-                # Check stable source ID AND text after inference, not just reusable
-                # chunk rowid. Stale work cannot recreate deleted/rebuilt sources.
-                db.execute(
-                    "INSERT OR IGNORE INTO embedding_vectors(chunk,model,text_hash,vector) "
-                    "SELECT id,?,?,? FROM chunks WHERE id=? AND owner=? AND exchange=? "
-                    "AND text=? AND superseded=0",
-                    (
-                        self.encoder.model_id,
-                        hashlib.sha256(row["text"].encode()).hexdigest(),
-                        encoded.get(row["id"], b""),
-                        row["id"],
-                        owner,
-                        row["exchange"],
-                        row["text"],
-                    ),
-                )
-        return len(rows)
+        return encoded
 
     def pending(self, owner: str) -> int:
         with self.archive.connect() as db:
             return int(
                 db.execute(
-                    "SELECT count(*) FROM chunks c WHERE c.owner=? "
+                    "SELECT count(*) FROM chunks c JOIN exchanges e ON e.id=c.exchange "
+                    "WHERE c.owner=? AND e.origin='human' "
                     "AND c.superseded=0 AND NOT EXISTS "
                     "(SELECT 1 FROM embedding_vectors v WHERE v.chunk=c.id AND v.model=?)",
                     (owner, self.encoder.model_id),
@@ -129,6 +173,13 @@ class SemanticMemory:
 
     def reset(self, owner: str) -> None:
         with self.archive.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self.archive._bump_policy(db, owner)
+            db.execute(
+                "DELETE FROM embedding_failures WHERE model=? AND chunk IN "
+                "(SELECT id FROM chunks WHERE owner=?)",
+                (self.encoder.model_id, owner),
+            )
             db.execute(
                 "DELETE FROM embedding_vectors WHERE model=? AND chunk IN "
                 "(SELECT id FROM chunks WHERE owner=?)",
@@ -145,7 +196,7 @@ class SemanticMemory:
         start: datetime | None = None,
         end: datetime | None = None,
         limit: int = 6,
-    ) -> list[dict[str, Any]]:
+    ) -> list[SearchHit]:
         if not query.strip():
             return []
         start_text, end_text = (
@@ -164,7 +215,7 @@ class SemanticMemory:
                     "AND (? IS NULL OR julianday(e.created_at)<julianday(?)) "
                     "AND (? OR c.conversation=? OR NOT EXISTS(SELECT 1 FROM recall_blocks b "
                     "WHERE b.owner=c.owner AND b.conversation=c.conversation)) "
-                    "ORDER BY e.sequence DESC,c.id DESC LIMIT 4096",
+                    "ORDER BY e.sequence DESC,c.id DESC LIMIT ?",
                     (
                         self.encoder.model_id,
                         owner,
@@ -174,6 +225,7 @@ class SemanticMemory:
                         end_text,
                         explicit,
                         active,
+                        SEMANTIC_CANDIDATE_LIMIT,
                     ),
                 )
             )
@@ -200,7 +252,7 @@ class SemanticMemory:
                 continue
             similarity = min(1.0, max(-1.0, float(vector @ query_vector[0])))
             if similarity >= self.minimum:
-                item = {key: row[key] for key in row.keys() if key != "vector"}
+                item = cast(SearchHit, {key: row[key] for key in row.keys() if key != "vector"})
                 item["semantic_similarity"] = similarity
                 scored.append(item)
         scored.sort(key=lambda item: (item["semantic_similarity"], item["sequence"]), reverse=True)

@@ -6,14 +6,19 @@ import json
 import logging
 import sqlite3
 import time
-from typing import Any
+from collections.abc import Sequence
+from typing import Any, cast
+
+from pydantic import ValidationError
 
 from iris_chat_engines.backends import ChatBackend
 from iris_chat_engines.budget import estimate, input_budget
 from iris_chat_engines.messages import ChatError, Message
 from iris_memory.hierarchy import Hierarchy
 from iris_memory.index import MemoryIndex
+from iris_memory.model_output import parse_memory_json, validation_reason
 from iris_memory.models import Summary
+from iris_memory.records import Source, SourceExcerpt
 from iris_settings import Settings
 from iris_turn import check_deadline
 
@@ -63,18 +68,19 @@ class MemoryContext:
 
     def checkpoint(self, owner: str, conversation: str, *, force: bool = False) -> bool:
         """Do at most one bounded job, serially. No model calls hold a DB transaction."""
-        private, epoch = self.index.archive.policy(owner)
+        snapshot = self.index.summary_snapshot(owner, conversation)
+        private, epoch = snapshot.policy
         if private:
             return False
-        job = self.index.pending(owner, conversation)
+        job = snapshot.job
         if job is None:
             return False
-        rows = self.index.sources(owner, conversation, job["cursor"])
+        rows = snapshot.sources
         if not rows:
             return False
         if not force and job["pending_count"] < self.settings.memory_summary_interval:
             return False
-        previous = self.index.notes(owner, conversation, 12)
+        previous = snapshot.notes
         budget = (
             self.settings.model_context_tokens
             - self.settings.memory_summary_tokens
@@ -88,7 +94,7 @@ class MemoryContext:
             earlier.append(item)
         # Bound each request against the same configured model window, with its
         # separate summary output allowance. Never summarise only a prior summary.
-        selected: list[dict[str, Any]] = []
+        selected: list[Source] = []
         messages = []
         for row in rows:
             candidate = [*selected, row]
@@ -104,7 +110,7 @@ class MemoryContext:
                     break
                 # A single long exchange must not permanently block later jobs.
                 # Keep labelled head/tail excerpts; original full text stays in SQLite.
-                clipped = dict(row)
+                clipped = cast(Source, dict(row))
                 clipped["excerpted"] = True
                 for cap in (1200, 600, 300, 100):
                     for field in ("user_text", "assistant_text"):
@@ -136,11 +142,13 @@ class MemoryContext:
             )
             self.index.failed(owner, conversation)
             return False
-        revision = self.index.archive.revision(owner, conversation)
+        revision = snapshot.revision
         started = time.monotonic()
+        finish_reason = None
         try:
             check_deadline()
             reply = self.backend.complete(messages, [])
+            finish_reason = reply._finish_reason
             check_deadline()
             if (
                 reply.role != "assistant"
@@ -149,7 +157,7 @@ class MemoryContext:
                 or len(reply.content) > 32000
             ):
                 raise ValueError("Invalid summary reply")
-            summary = Summary.model_validate_json(reply.content)
+            summary = parse_memory_json(Summary, reply.content)
             sources = {row["id"]: row for row in selected}
             prior = {n["id"] for n in earlier}
             for note in summary.notes:
@@ -177,6 +185,15 @@ class MemoryContext:
                 summary,
                 expected_epoch=epoch,
             )
+        except ValidationError as error:
+            reason = (
+                "truncated output (model token limit)"
+                if finish_reason == "length"
+                else validation_reason(error)
+            )
+            LOGGER.warning("Memory summary deferred (%s); previous summaries retained.", reason)
+            self.index.failed(owner, conversation)
+            return False
         except (ChatError, ValueError, sqlite3.Error) as error:
             # ValidationError includes model-generated text. Never log its body.
             LOGGER.warning(
@@ -193,7 +210,7 @@ class MemoryContext:
         history: list[Message],
         system: str,
         tools: list[dict[str, object]],
-        recalled: tuple[dict[str, Any], ...] | None = None,
+        recalled: tuple[SourceExcerpt, ...] | None = None,
         core_context: str = "",
         search_query: str | None = None,
     ) -> str:
@@ -231,8 +248,12 @@ class MemoryContext:
         compact: list[dict[str, Any]] = []
         for note in notes:
             item = {
-                key: note[key]
-                for key in ("text", "kind", "scope", "status", "sources", "created_at")
+                "text": note["text"],
+                "kind": note["kind"],
+                "scope": note["scope"],
+                "status": note["status"],
+                "sources": note["sources"],
+                "created_at": note["created_at"],
             }
             if (
                 len(json.dumps([*compact, item], ensure_ascii=False))
@@ -246,7 +267,7 @@ class MemoryContext:
         if attention_text(utterance) != utterance:
             recent = ""
         try:
-            matches = (
+            matches: Sequence[SourceExcerpt] = (
                 list(recalled)
                 if recalled is not None
                 else self.index.search(owner, conversation, search_query or utterance, recent)
@@ -256,7 +277,12 @@ class MemoryContext:
             matches = []
         excerpts: list[dict[str, Any]] = []
         for match in matches:
-            item = {key: match[key] for key in ("exchange", "conversation", "created_at", "text")}
+            item = {
+                "exchange": match["exchange"],
+                "conversation": match["conversation"],
+                "created_at": match["created_at"],
+                "text": match["text"],
+            }
             if (
                 len(json.dumps([*excerpts, item], ensure_ascii=False))
                 > self.settings.memory_retrieval_chars

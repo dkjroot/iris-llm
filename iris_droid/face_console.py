@@ -47,6 +47,7 @@ class DisplayState:
     personality: str | None = None
     wake_phrase: str | None = None
     preview: bool = False
+    show_idle: bool = False
 
 
 def read_state(port: int) -> DisplayState | None:
@@ -83,6 +84,7 @@ def read_state(port: int) -> DisplayState | None:
         active if isinstance(active, str) and active in personalities else None,
         wake if isinstance(wake, str) else None,
         preview=state.get("preview") is True,
+        show_idle=state.get("show_idle") is True,
     )
 
 
@@ -237,8 +239,9 @@ def draw_snow(pygame: ModuleType, screen: Surface, seconds: float) -> None:
     width, height = screen.get_size()
     for i in range(9):
         x = width * ((i * 29 + 7) % 101) / 101 + math.sin(seconds * 0.35 + i) * 4
-        y = (height * ((i * 53 + 23) % 97) / 97 + seconds * (6 + (i * 3) % 11)) % height
-        size = 2 if i % 3 == 0 else 1
+        speed = (6 + (i * 3) % 11) * 1.25
+        y = (height * ((i * 53 + 23) % 97) / 97 + seconds * speed) % height
+        size = 3 if i % 3 == 0 else 2
         pygame.draw.rect(screen, (25, 31, 36), (round(x), round(y), size, size))
 
 
@@ -263,7 +266,7 @@ def render(
     clock = pygame.time.Clock()
     head: FaceHead | None = None
     sprites: Callable[[FaceExpression, str], Surface] | None = None
-    previous_blank: tuple[bool, bool] | None = None
+    previous_blank = False
     menu = ConsoleMenu(pygame, screen, select)
     cycle_button = pygame.Rect(menu.px(12), menu.px(12), menu.px(50), menu.px(50))
     icon_size = menu.px(26)
@@ -271,6 +274,9 @@ def render(
     while True:
         seconds = monotonic()
         state = current()
+        visible_face = state is not None and (
+            state.preview or state.show_idle or state.activity != "idle"
+        )
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
@@ -279,18 +285,16 @@ def render(
                     return
                 menu.go(None)
             if (position := tap_position(pygame, event, screen.get_size())) is not None:
-                if menu.page is None and state is not None and cycle_button.collidepoint(position):
+                if menu.page is None and visible_face and cycle_button.collidepoint(position):
                     cycle_face()
                 else:
                     menu.tap(*position, seconds)
         if menu.draw(state, seconds):
-            previous_blank = None
+            previous_blank = False
             clock.tick(24)
             continue
-        visible_face = state is not None and (state.preview or state.activity != "idle")
         black = not visible_face and (state is None or state.screensaver == "black")
-        blank = (black, state is not None)
-        if not black or previous_blank != blank:
+        if not black or not previous_blank:
             screen.fill((0, 0, 0))
             if state is not None:
                 if visible_face:
@@ -302,21 +306,21 @@ def render(
                     sw, sh = sprite.get_size()
                     center = (width - sw) // 2, (height - sh) // 2 + round(math.sin(seconds * 1.4))
                     screen.blit(sprite, center)
+                    pygame.draw.rect(screen, (25, 22, 42), cycle_button, border_radius=menu.px(14))
+                    pygame.draw.rect(
+                        screen, (83, 78, 109), cycle_button, width=1, border_radius=menu.px(14)
+                    )
+                    screen.blit(
+                        cycle_icon,
+                        (
+                            cycle_button.centerx - icon_size // 2,
+                            cycle_button.centery - icon_size // 2,
+                        ),
+                    )
                 elif state.screensaver == "snow":
                     draw_snow(pygame, screen, seconds)
-                pygame.draw.rect(screen, (25, 22, 42), cycle_button, border_radius=menu.px(14))
-                pygame.draw.rect(
-                    screen, (83, 78, 109), cycle_button, width=1, border_radius=menu.px(14)
-                )
-                screen.blit(
-                    cycle_icon,
-                    (
-                        cycle_button.centerx - icon_size // 2,
-                        cycle_button.centery - icon_size // 2,
-                    ),
-                )
             pygame.display.flip()
-        previous_blank = blank
+        previous_blank = black
         clock.tick(12 if state is None or state.activity == "idle" else 24)
 
 

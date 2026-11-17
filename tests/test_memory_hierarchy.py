@@ -343,11 +343,13 @@ def test_schema_five_upgrade_preserves_sources_and_private_policy(tmp_path):
     with archive.connect() as db:
         for table in ("detail_supersessions", "memory_attention", "memory_topics", "memory_facts"):
             db.execute(f"DROP TABLE {table}")
+        db.execute("DROP TABLE embedding_failures")
+        db.execute("ALTER TABLE summary_jobs DROP COLUMN last_served")
         db.execute("PRAGMA user_version=5")
     upgraded = SQLiteMemory(path)
     assert upgraded.policy("default") == (True, 1)
     assert upgraded.revision("default", conversation) == "source"
-    assert upgraded.export("default")["schema_version"] == 8
+    assert upgraded.export("default")["schema_version"] == 9
 
 
 @pytest.fixture
@@ -550,6 +552,8 @@ def test_schema_migration_failure_is_atomic_and_retryable(setup):
         for table in ("detail_supersessions", "memory_attention", "memory_topics", "memory_facts"):
             db.execute(f"DROP TABLE {table}")
         db.execute("CREATE TABLE memory_topics (bad TEXT)")
+        db.execute("DROP TABLE embedding_failures")
+        db.execute("ALTER TABLE summary_jobs DROP COLUMN last_served")
         db.execute("PRAGMA user_version=5")
     with pytest.raises(sqlite3.OperationalError):
         SQLiteMemory(archive.path)
@@ -557,7 +561,7 @@ def test_schema_migration_failure_is_atomic_and_retryable(setup):
         assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_facts'").fetchone()
         db.execute("DROP TABLE memory_topics")
-    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 8
+    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 9
 
 
 def test_uncertain_correction_cannot_resurrect_original_explicit_value(setup):
