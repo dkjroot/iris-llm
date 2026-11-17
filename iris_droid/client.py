@@ -7,7 +7,7 @@ import json
 import os
 import re
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from functools import partial
 from importlib.resources import files
 from math import isfinite
@@ -34,7 +34,7 @@ from iris_droid.conversation import WakeConversation
 from iris_droid.expression import FACE_HEADER
 from iris_droid.face_display import FaceDisplay
 from iris_droid.feedback import ClientFeedback
-from iris_droid.personalities import PERSONALITY_HEADER, PersonalityContext, personality_command
+from iris_droid.personalities import PERSONALITY_HEADER, load_personalities, personality_command
 from iris_droid.protocol import (
     MAX_BODY,
     VOICE_CANCEL_PATH,
@@ -55,7 +55,6 @@ from iris_droid.protocol import (
 )
 from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
 from iris_droid.wake import WakeDetector
-from iris_settings import read_config
 
 if TYPE_CHECKING:
     import numpy as np
@@ -110,19 +109,10 @@ class DroidClient:
         self.stream_player = stream_player
         self.cancel_listener = cancel_listener
         self.cancel_feedback = cancel_feedback
-        self.personality_headers: dict[str, str] = {}
-        if personalities_file is not None:
-            try:
-                personalities = read_config(personalities_file)
-                names = list(personalities)
-                self.personality_headers = {
-                    name: PersonalityContext.model_validate(
-                        {"names": names, "active": name, "prompt": prompt}
-                    ).to_header()
-                    for name, prompt in personalities.items()
-                }
-            except ValueError as error:
-                raise ValueError(f"{personalities_file}: {error}") from error
+        self.personality_headers = {
+            name: context.to_header()
+            for name, context in load_personalities(personalities_file).items()
+        }
         self.personality = next(iter(self.personality_headers), None)
         self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
         self.headers["X-Iris-Volume"] = "1"
@@ -130,6 +120,12 @@ class DroidClient:
             self.headers["X-Iris-Wake-Conversation"] = "1"
         if face:
             self.headers[FACE_HEADER] = "1"
+
+    def select_personality(self, name: str) -> bool:
+        if name not in self.personality_headers:
+            return False
+        self.personality = name
+        return True
 
     def turn(
         self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
@@ -140,8 +136,8 @@ class DroidClient:
             **self.headers,
             "Content-Type": "text/plain" if text_only or companion_idle else "audio/wav",
         }
-        if self.personality is not None:
-            headers[PERSONALITY_HEADER] = self.personality_headers[self.personality]
+        if (personality := self.personality) is not None:
+            headers[PERSONALITY_HEADER] = self.personality_headers[personality]
         if companion_idle:
             headers["X-Iris-Companion-Idle"] = "1"
         path = "/v1/text" if text_only else "/v1/voice"
@@ -157,11 +153,10 @@ class DroidClient:
         if (selected := reply.selected_personality) is not None:
             if (
                 companion_idle
-                or selected not in self.personality_headers
                 or personality_command(reply.heard) != selected.casefold()
+                or not self.select_personality(selected)
             ):
                 raise ValueError("Unexpected personality switch in server reply")
-            self.personality = selected
         if reply.volume is not None:
             if companion_idle or reply.volume != volume_command(reply.heard):
                 raise ValueError("Unexpected speaker volume action")
@@ -941,14 +936,8 @@ def main(argv: list[str] | None = None) -> int:
                 httpx.Client(
                     trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
                 ) as transport,
-                display.serve(args.face_port) as face_port,
+                ExitStack() as stack,
             ):
-                if face_port is not None:
-                    print(
-                        f"Iris face: open http://127.0.0.1:{face_port}/ on this display.",
-                        flush=True,
-                    )
-
                 def show_listening() -> None:
                     display.show("listening")
 
@@ -956,7 +945,7 @@ def main(argv: list[str] | None = None) -> int:
                 if vad is not None:
                     capture_options["vad"] = vad
                     capture_options["vad_threshold"] = args.vad_threshold
-                if face_port is not None:
+                if args.face is not None:
                     capture_options["on_listening"] = show_listening
 
                 def stream_player(start: VoiceStreamStart, chunks: Iterator[bytes]) -> int | None:
@@ -994,7 +983,7 @@ def main(argv: list[str] | None = None) -> int:
                     wake_conversation=args.activation == "wake" and not args.text,
                     trace_voice=args.trace_voice,
                     stream_player=stream_player if stream_replies else None,
-                    face=face_port is not None,
+                    face=args.face is not None,
                     cancel_listener=listen_for_cancel if args.voice_cancel else None,
                     cancel_feedback=feedback if args.voice_cancel else None,
                     personalities_file=args.personalities_file,
@@ -1005,6 +994,17 @@ def main(argv: list[str] | None = None) -> int:
                         remember=True,
                     ),
                 )
+                display.personalities = tuple(client.personality_headers)
+                display.active_personality = lambda: client.personality
+                display.select_personality = client.select_personality
+                if wake is not None and not args.text:
+                    display.wake_phrase = args.wake_phrase
+                face_port = stack.enter_context(display.serve(args.face_port))
+                if face_port is not None:
+                    print(
+                        f"Iris face: open http://127.0.0.1:{face_port}/ on this display.",
+                        flush=True,
+                    )
                 conversation = wake_window if wake is not None else None
                 calibration = CaptureCalibration() if conversation is not None else None
                 companion_calibration = CaptureCalibration()

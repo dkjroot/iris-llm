@@ -5,7 +5,7 @@ Conflicts=getty@tty1.service
 
 [Service]
 User=%i
-SupplementaryGroups=video render
+SupplementaryGroups=video render input
 WorkingDirectory=/home/%i/iris-llm
 ExecStart=/usr/bin/python3 -m iris_droid.face_console
 StandardInput=tty-fail

@@ -11,7 +11,9 @@ import pytest
 
 from iris_droid import client
 from iris_droid.expression import FACE_HEADER, ModelReply, read_model_reply
+from iris_droid.face_console import read_state, request_personality
 from iris_droid.face_display import ASSETS, FaceDisplay
+from iris_droid.personalities import WEB_PERSONALITY_HEADER, load_personalities
 from iris_droid.protocol import write_wav
 from iris_droid.server import Brain, handler_for
 from iris_settings import Settings
@@ -38,7 +40,7 @@ def test_read_expression_only_from_the_reply_prefix(text, expected):
 
 
 @contextmanager
-def running_brain(model, tts, *, stream=False) -> Iterator[tuple[Brain, str]]:
+def running_brain(model, tts, *, stream=False, **web) -> Iterator[tuple[Brain, str]]:
     with httpx.Client(transport=httpx.MockTransport(model)) as transport:
         brain = Brain(
             Settings(tts_engine="pocket" if stream else "kokoro"),
@@ -46,7 +48,7 @@ def running_brain(model, tts, *, stream=False) -> Iterator[tuple[Brain, str]]:
             Mock(recognize=Mock(return_value="Tell me something.")),
             tts,
         )
-        with HTTPServer(("127.0.0.1", 0), handler_for(brain, TOKEN)) as server:
+        with HTTPServer(("127.0.0.1", 0), handler_for(brain, TOKEN, **web)) as server:
             worker = Thread(target=server.serve_forever, daemon=True)
             worker.start()
             try:
@@ -194,3 +196,84 @@ def test_face_display_assets_and_idle_state():
         }
         display.show("listening", "amused", seconds=0)
         assert http.get(f"{url}/state").json()["activity"] == "idle"
+
+
+def test_display_selection_updates_the_live_droid_and_tracks_voice_switches(tmp_path):
+    catalog = tmp_path / "personalities.json"
+    catalog.write_text(json.dumps({"Regular": "Always be polite.", "Café": "Talk about coffee."}))
+
+    def model(request):
+        assert "Talk about coffee." in json.loads(request.content)["messages"][0]["content"]
+        return model_response(REPLY)
+
+    with (
+        running_brain(model, Mock()) as (_, url),
+        httpx.Client(trust_env=False, timeout=5) as http,
+    ):
+        droid = client.DroidClient(url, TOKEN, http, personalities_file=catalog)
+        display = FaceDisplay("signal")
+        display.personalities = tuple(droid.personality_headers)
+        display.active_personality = lambda: droid.personality
+        display.select_personality = droid.select_personality
+        with display.serve(0) as port:
+            assert port is not None
+            assert read_state(port).personalities == ("Regular", "Café")
+            response = http.post(
+                f"http://127.0.0.1:{port}/personality",
+                headers={"Origin": "https://another.example"},
+                json="Café",
+            )
+            assert response.status_code == 403
+            assert not request_personality(port, "Unknown")
+            assert droid.personality == "Regular"
+            assert request_personality(port, "Café")
+            assert read_state(port).personality == "Café"
+            assert droid.turn(b"Hello", text_only=True).text == REPLY
+            assert droid.turn(b"switch to personality Regular", text_only=True).selected_personality
+            assert read_state(port).personality == "Regular"
+
+
+def test_web_personality_catalog_exposes_names_and_applies_the_selected_prompt(tmp_path):
+    catalog = tmp_path / "personalities.json"
+    catalog.write_text(json.dumps({"Regular": "Be polite.", "Café": "Talk about coffee."}))
+
+    def model(request):
+        assert "Talk about coffee." in json.loads(request.content)["messages"][0]["content"]
+        return model_response(f"[[expression:amused]]\n{REPLY}")
+
+    with (
+        running_brain(
+            model, Mock(), web_chat=True, web_personalities=load_personalities(catalog)
+        ) as (_, url),
+        httpx.Client(trust_env=False, timeout=5) as http,
+    ):
+        assert http.get(f"{url}/v1/web-personalities").status_code == 401
+        droid = client.DroidClient(url, TOKEN, http, face=True)
+        response = http.get(f"{url}/v1/web-personalities", headers=droid.headers)
+        assert response.json() == ["Regular", "Café"]
+        droid.headers[WEB_PERSONALITY_HEADER] = "Caf%C3%A9"
+        reply = droid.turn(b"Hello", text_only=True)
+        assert (reply.text, reply.expression) == (REPLY, "amused")
+        assert droid.turn(b"list personalities", text_only=True).text.endswith("I'm using Café.")
+
+
+def test_web_chat_starts_with_assistant_and_lists_default_personalities():
+    def model(request):
+        system = json.loads(request.content)["messages"][0]["content"]
+        assert "Be a helpful assistant." in system
+        return model_response(REPLY)
+
+    with (
+        running_brain(model, Mock(), web_chat=True) as (_, url),
+        httpx.Client(trust_env=False, timeout=5) as http,
+    ):
+        assert http.get(f"{url}/v1/web-personalities").json() == [
+            "Assistant",
+            "Friend",
+            "Comedian",
+        ]
+        droid = client.DroidClient(url, TOKEN, http)
+        droid.headers[WEB_PERSONALITY_HEADER] = ""
+        assert droid.turn(b"Hello", text_only=True).text == REPLY
+        reply = droid.turn(b"list personalities", text_only=True)
+        assert reply.text.endswith("I'm using Assistant.")

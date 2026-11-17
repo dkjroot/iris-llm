@@ -1,13 +1,185 @@
-html, body {
-  height: 100%;
+.iris-face-page {
+  height: 100svh;
   margin: 0;
   background: #000;
   overflow: hidden;
 }
 
-canvas {
+.iris-stage {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: #05060b;
+}
+
+.iris-face-page .iris-stage {
+  height: 100%;
+  background: #000;
+}
+
+.iris-stage canvas {
   display: block;
   width: 100%;
   height: 100%;
-  cursor: none;
+}
+
+.iris-stage button {
+  appearance: none;
+  font: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.iris-stage button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 3px;
+}
+
+.iris-stage [hidden] { display: none; }
+
+.iris-stage .iris-menu-trigger {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: end;
+  align-items: start;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #f9f6ff;
+  padding: .7rem;
+}
+
+.iris-menu-trigger span {
+  display: grid;
+  place-items: center;
+  width: 2.8rem;
+  height: 2.8rem;
+  border-radius: .85rem;
+  border: 1px solid #534e6d;
+  background: #19162a;
+  font-size: 1.25rem;
+}
+
+.iris-face-page .iris-menu-trigger:not(:focus-visible) span { opacity: 0; }
+.iris-menu-open .iris-menu-trigger { visibility: hidden; }
+.iris-menu-open canvas { visibility: hidden; }
+
+.iris-menu {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: #171329;
+  color: #fcf7ff;
+  font: 600 clamp(.94rem, 2.3vw, 1.15rem)/1.38 "DM Sans", system-ui, sans-serif;
+  animation: iris-menu-in 150ms ease-out;
+}
+
+.iris-menu-header {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  padding: clamp(.6rem, 2vw, 1.2rem) clamp(.75rem, 3vw, 1.65rem);
+  border-bottom: 1px solid #403650;
+}
+
+.iris-menu h2 {
+  flex: 1;
+  margin: 0;
+  outline: none;
+  font-size: clamp(1.28rem, 4vw, 2rem);
+  line-height: 1.1;
+  letter-spacing: -.025em;
+}
+
+.iris-menu-header button {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 2.85rem;
+  min-height: 2.85rem;
+  padding: 0;
+  border: 1px solid #5b5070;
+  border-radius: .9rem;
+  background: #302743;
+  color: inherit;
+  font-size: 1.55rem;
+  line-height: 1;
+}
+.iris-menu-header .iris-menu-close { background: #f7b4b5; color: #311b27; border-color: #f7b4b5; }
+
+.iris-menu-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: clamp(.7rem, 2.4vw, 1.5rem) clamp(.75rem, 3vw, 1.65rem);
+}
+
+.iris-menu-note { margin: 0 0 .8rem; color: #ded0ec; }
+.iris-menu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.7rem), 1fr));
+  gap: .8rem;
+}
+.iris-menu .iris-menu-tile {
+  min-height: clamp(3.5rem, 12vh, 6.25rem);
+  padding: .55rem .75rem;
+  border: 2px solid transparent;
+  border-radius: 1.15rem;
+  background: var(--tile);
+  box-shadow: 0 4px 0 var(--shadow);
+  color: #22182c;
+  font-size: clamp(1.02rem, 2.5vw, 1.36rem);
+  font-weight: 800;
+  line-height: 1.14;
+  overflow-wrap: anywhere;
+}
+
+.iris-menu-tile[data-color="mint"] { --tile: #98ebcb; --shadow: #4f9f8d; }
+.iris-menu-tile[data-color="lilac"] { --tile: #d6b4ff; --shadow: #9165bd; }
+.iris-menu-tile[data-color="peach"] { --tile: #ffca9d; --shadow: #b98167; }
+.iris-menu-tile[data-color="sky"] { --tile: #a5dcff; --shadow: #5c93b4; }
+.iris-menu .iris-menu-tile[aria-pressed="true"] {
+  background: #98ebcb;
+  --shadow: #4f9f8d;
+  border-color: #f2fff9;
+}
+.iris-menu-tile[aria-pressed="true"]::after { content: " ✓" / ""; }
+.iris-menu-tile:active { transform: translateY(3px); }
+.iris-menu-tile:disabled { transform: none; }
+
+.iris-menu-phrases {
+  display: grid;
+  gap: .5rem;
+  margin: 0;
+}
+.iris-menu-phrases > div {
+  background: #2c2442;
+  border: 1px solid #4b3c61;
+  border-radius: .9rem;
+  padding: .55rem .85rem;
+}
+.iris-menu-phrases dt { font-size: 1.08em; font-weight: 800; color: #baf5df; }
+.iris-menu-phrases dd { margin: .12rem 0 0; color: #eee2f3; }
+
+@media (min-width: 640px) {
+  .iris-face-page .iris-menu-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .iris-face-page .iris-menu-phrases > div {
+    display: grid;
+    grid-template-columns: .95fr 1.05fr;
+    align-items: baseline;
+    gap: .75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .iris-menu { animation: none; }
+}
+
+@keyframes iris-menu-in {
+  from { opacity: .5; transform: translateY(6px); }
 }

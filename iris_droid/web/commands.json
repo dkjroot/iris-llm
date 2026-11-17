@@ -1,0 +1,81 @@
+{
+  "categories": [
+    {
+      "title": "Conversation",
+      "color": "mint",
+      "commands": [
+        ["Clear context", "Start a fresh conversation."],
+        ["Delete previous", "Remove the most recent exchange."],
+        ["Stop listening", "Return to the wake phrase, or leave companion mode."],
+        ["Cancel, cancel", "Drop the turn while Iris is working, with voice cancel enabled."],
+        ["Exit", "End the conversation."],
+        ["Companion mode on", "Let Iris start conversations during quiet stretches."],
+        ["Companion mode off", "Switch off companion mode."]
+      ]
+    },
+    {
+      "title": "Memory",
+      "color": "lilac",
+      "commands": [
+        ["Memory status", "Check whether Iris is saving the conversation."],
+        ["Private mode on", "Start a private conversation."],
+        ["Private mode off", "Leave private mode and make saved memory available again."],
+        ["Recall the garden project last week", "Search saved conversations using a topic and a date."],
+        ["The first one", "Pick one of the conversations Iris offers. You can also say second or third."],
+        ["Never mind", "Cancel while Iris is asking which conversation you meant."],
+        ["Forget the current conversation", "Ask Iris to erase the current saved conversation."],
+        ["Forget that conversation", "Ask Iris to erase the conversation she just recalled."],
+        ["Confirm forget this conversation", "Confirm the pending conversation deletion."],
+        ["Cancel forgetting", "Keep the conversation."]
+      ]
+    },
+    {
+      "title": "Remembered details",
+      "color": "peach",
+      "commands": [
+        ["List remembered details", "Hear the labels Iris has saved."],
+        ["Remember LABEL as VALUE", "Ask Iris to save a detail."],
+        ["Show the detail LABEL", "Hear the value of a saved detail."],
+        ["Correct LABEL to VALUE", "Ask Iris to update a saved detail."],
+        ["Forget the detail LABEL", "Ask Iris to remove a saved detail."],
+        ["Show that detail", "Hear the currently selected detail again."],
+        ["Correct that detail to VALUE", "Ask Iris to update the selected detail."],
+        ["Forget that detail", "Ask Iris to remove the selected detail."],
+        ["Confirm memory change", "Apply the pending detail change."],
+        ["Cancel memory change", "Drop the pending detail change."],
+        ["Don't bring that up again", "Skip the last saved topic Iris suggested in companion mode."]
+      ]
+    },
+    {
+      "title": "Speaker volume",
+      "color": "sky",
+      "note": "These commands use the robot’s speaker mixer when it’s enabled.",
+      "commands": [
+        ["Volume up", "Raise the speaker volume by 10 points."],
+        ["Volume down", "Lower the speaker volume by 10 points."],
+        ["Set the volume to 40 percent", "Set the volume. You can use any level from 0 to 100."],
+        ["Turn the volume up by 5 percent", "Raise the volume by a chosen amount."],
+        ["Turn the volume down by 5 percent", "Lower the volume by a chosen amount."],
+        ["Mute", "Mute the speaker."],
+        ["Unmute", "Unmute the speaker."],
+        ["Volume status", "Hear the current speaker volume."]
+      ]
+    },
+    {
+      "title": "Personalities",
+      "color": "lilac",
+      "commands": [
+        ["List personalities", "Hear the available personalities and the one in use."],
+        ["Switch to personality NAME", "Use one of the personalities configured for this client."]
+      ]
+    }
+  ],
+  "home": [
+    ["What devices can you control?", "Find out what’s set up in Iris."],
+    ["Is the desk lamp on?", "Check the state of a device."],
+    ["Turn on the desk lamp", "Control a device by name."],
+    ["How much power is the desk lamp using?", "Read a device’s meter, if it has one."],
+    ["What’s the schedule for the desk lamp?", "Check a device’s schedule."],
+    ["Turn off the desk lamp at ten every night", "Ask Iris to change a device’s schedule."]
+  ]
+}

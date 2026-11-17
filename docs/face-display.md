@@ -8,6 +8,14 @@ Silero enabled, it also comes on as soon as the client detects speech in a
 follow-up. Without Silero, those follow-ups light up when the recording is sent
 to the PC.
 
+Tap anywhere on the screen to open Iris's menu. Go to **Command list** and pick
+a category to see what you can say. You can read the list while you talk to Iris
+as usual. **Personalities** shows the choices from this client's
+`--personalities-file`. Tap one and Iris will use it the next time you speak.
+**Home** has examples of what to ask when the home service is set up. Tap the
+**×** in the top right to get back to Iris, or leave the menu alone for three
+minutes and it will close by itself.
+
 Update Iris on both the PC and the client, then restart the PC server using your
 usual command. There's no extra server flag. A client with a face asks the model
 to choose from neutral, curious, amused, concerned and focused. If the model
@@ -92,8 +100,19 @@ sudo systemctl start getty@tty1.service
 ### 1024 × 600 HDMI touchscreens
 
 Connect and power the display before booting the Pi. HDMI carries the picture.
-Connect the display's USB touch port to the Pi with a USB data cable. The face
-is driven by voice activity and currently has no touch controls.
+Connect the display's USB touch port to the Pi with a USB data cable.
+If Iris was already taking over the screen on boot, copy the updated service
+file from the checkout so SDL can read the touchscreen input. If you edited
+the installed service for your display, add `input` to its
+`SupplementaryGroups` line instead. Then reload systemd and restart the display
+and voice client so both pick up the menu.
+
+```bash
+sudo install -m 0644 systemd/iris-face@.service /etc/systemd/system/iris-face@.service
+sudo systemctl daemon-reload
+sudo systemctl restart "iris-face@$USER.service"
+systemctl --user restart iris-client.service
+```
 
 Start with automatic detection. If the journal shows a different resolution
 or the display has no picture, run `kmsprint -l` over SSH to check which modes

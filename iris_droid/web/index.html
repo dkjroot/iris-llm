@@ -6,16 +6,21 @@
   <meta name="color-scheme" content="dark">
   <title>Talk to Iris</title>
   <link rel="stylesheet" href="/chat.css">
+  <link rel="stylesheet" href="/face.css">
   <link rel="icon" href="data:,">
+  <script defer src="/face-rig.js"></script>
+  <script defer src="/face-stylised.js"></script>
+  <script defer src="/face-portraits.js"></script>
   <script type="module" src="/chat.js"></script>
 </head>
 <body data-phrase-limit="__IRIS_PHRASE_LIMIT__">
   <main>
     <header>
-      <p class="eyebrow">HOME NETWORK</p>
       <h1>Talk to Iris</h1>
-      <p>Type a message, or turn on the mic and speak when you’re ready.</p>
     </header>
+    <div class="iris-stage">
+      <canvas role="img" aria-label="Iris face"></canvas>
+    </div>
     <form id="chat">
       <details id="connection" open>
         <summary>Connection key</summary>

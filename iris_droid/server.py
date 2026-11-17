@@ -22,6 +22,7 @@ from pathlib import Path
 from threading import Event, Lock
 from time import perf_counter_ns, time_ns
 from typing import cast
+from urllib.parse import unquote
 from uuid import UUID, uuid4
 
 import httpx
@@ -32,10 +33,14 @@ from pydantic import BaseModel
 from iris_chat_engines.backends import make_backend
 from iris_chat_engines.compatible import ChatEngine, ChatError
 from iris_droid.expression import FACE_HEADER, FaceExpression
+from iris_droid.face_display import BROWSER_FACE_ASSETS
 from iris_droid.personalities import (
     MAX_PERSONALITY_HEADER,
     PERSONALITY_HEADER,
+    WEB_PERSONALITY_HEADER,
     PersonalityContext,
+    load_personalities,
+    personality_catalog,
     personality_command,
 )
 from iris_droid.protocol import (
@@ -80,11 +85,27 @@ STREAM_REPLY: ContextVar[Callable[[TurnReply, Generator[bytes], int], None] | No
 )
 
 WEB_ASSETS = {
-    "/chat": ("index.html", "text/html"),
-    "/chat.css": ("chat.css", "text/css"),
-    "/chat.js": ("chat.js", "text/javascript"),
-    "/mic.js": ("mic.js", "text/javascript"),
-    "/speech.js": ("speech.js", "text/javascript"),
+    **BROWSER_FACE_ASSETS,
+    "/chat": ("index.html", "text/html; charset=utf-8"),
+    "/chat.css": ("chat.css", "text/css; charset=utf-8"),
+    "/chat.js": ("chat.js", "text/javascript; charset=utf-8"),
+    "/mic.js": ("mic.js", "text/javascript; charset=utf-8"),
+    "/speech.js": ("speech.js", "text/javascript; charset=utf-8"),
+}
+WEB_PERSONALITY_PROMPTS: dict[str, object] = {
+    "Assistant": (
+        "Be a helpful assistant. Give clear, practical answers and keep everyday requests brief. "
+        "When asked to control a home device, use the available home tools and report the result "
+        "plainly."
+    ),
+    "Friend": (
+        "Talk like a warm, easygoing friend. Be curious about what the user is telling you, "
+        "and keep the conversation natural. Help with practical things when asked."
+    ),
+    "Comedian": (
+        "Be playful and quick with a joke, especially when the user is in on it. Keep facts "
+        "and the results of any actions clear, and take your cue from the user's mood."
+    ),
 }
 
 
@@ -1097,8 +1118,18 @@ class Brain:
 
 
 def handler_for(
-    brain: Brain, token: str, *, web_chat: bool = False
+    brain: Brain,
+    token: str,
+    *,
+    web_chat: bool = False,
+    web_personalities: dict[str, PersonalityContext] | None = None,
 ) -> type[BaseHTTPRequestHandler]:
+    personalities = (
+        personality_catalog(WEB_PERSONALITY_PROMPTS)
+        if web_personalities is None and web_chat
+        else web_personalities or {}
+    )
+    default_personality = next(iter(personalities.values()), None)
     turn_lock = Lock()
     decisions: dict[tuple[str, str], VoiceDecision] = {}
     decisions_lock = Lock()
@@ -1173,6 +1204,10 @@ def handler_for(
             self.end_headers()
 
         def do_GET(self) -> None:
+            if web_chat and self.path == "/v1/web-personalities":
+                if web_personalities is None or self.authenticated():
+                    self.respond(200, json.dumps(list(personalities)).encode())
+                return
             asset = WEB_ASSETS.get(self.path) if web_chat else None
             if asset is None:
                 self.respond(404, b'{"error":"Unknown route"}')
@@ -1183,13 +1218,18 @@ def handler_for(
                 body = body.replace(
                     b"__IRIS_PHRASE_LIMIT__", str(brain.settings.phrase_time_limit).encode()
                 )
-            self.respond(200, body, content_type=f"{content_type}; charset=utf-8")
+            self.respond(200, body, content_type=content_type)
 
-        def do_POST(self) -> None:
-            if not hmac.compare_digest(
+        def authenticated(self) -> bool:
+            if hmac.compare_digest(
                 self.headers.get("Authorization", "").encode(), f"Bearer {token}".encode()
             ):
-                self.respond(401, b'{"error":"Authentication required"}')
+                return True
+            self.respond(401, b'{"error":"Authentication required"}')
+            return False
+
+        def do_POST(self) -> None:
+            if not self.authenticated():
                 return
             if self.path == VOICE_DECISION_PATH:
                 self.handle_decision()
@@ -1407,6 +1447,15 @@ def handler_for(
                 if len(value) > MAX_PERSONALITY_HEADER or not value.isascii():
                     raise ValueError("Invalid personality header")
                 personality = PersonalityContext.model_validate_json(value)
+            elif web_chat and (name := self.headers.get(WEB_PERSONALITY_HEADER)) is not None:
+                # The browser supplies only the name. Prompts stay on the server.
+                if len(name) > 576 or not name.isascii():
+                    raise ValueError("Invalid web personality header")
+                personality = (
+                    personalities.get(unquote(name, errors="strict"), default_personality)
+                    if name
+                    else default_personality
+                )
 
             def run(decision: VoiceDecision | None = None) -> TurnReply:
                 return brain.turn(
@@ -1449,12 +1498,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--web-chat", action="store_true", help="Serve the browser chat at /chat")
+    parser.add_argument(
+        "--web-personalities-file",
+        type=Path,
+        help="JSON file with the browser's personality prompts",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     try:
         token = os.environ.get("IRIS_DROID_TOKEN", "")
         validate_token(token)
         settings = load_settings(args.config if args.config.exists() else None)
+        web_personalities = (
+            load_personalities(args.web_personalities_file)
+            if args.web_personalities_file is not None
+            else None
+        )
         if not args.config.exists() and args.config != Path("local-config.json"):
             raise ValueError("The requested configuration file does not exist")
         with (
@@ -1462,7 +1521,9 @@ def main(argv: list[str] | None = None) -> int:
             open_tts(settings) as tts,
         ):
             brain = Brain(settings, client, make_stt(settings), tts)
-            handler = handler_for(brain, token, web_chat=args.web_chat)
+            handler = handler_for(
+                brain, token, web_chat=args.web_chat, web_personalities=web_personalities
+            )
             with ThreadingHTTPServer((args.host, args.port), handler) as server:
                 print(f"Iris droid server listening on {args.host}:{args.port}")
                 server.serve_forever()

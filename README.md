@@ -669,6 +669,15 @@ keep the connection key in this browser after a successful turn. Untick it
 under **Connection key** to remove the saved copy. The page keeps the transcript
 in the open tab, and Iris still follows the server's usual memory and private-mode settings.
 
+Tap Iris's face to open the same menu as on the robot. **Command list** is handy
+when you remember what you want Iris to do but have forgotten the words for it.
+You can leave the list open while you speak. Under **Personalities**, pick
+**Assistant**, **Friend** or **Comedian**. New tabs start with Assistant, which
+keeps things straightforward when you're just trying to turn a light on.
+The selection belongs to the tab you're using. To use your own personalities,
+add `--web-personalities-file PATH` to the server command. It takes the same
+JSON format as the robot's `--personalities-file`.
+
 On the computer that runs Iris, add `--web-chat` to the existing server command
 and restart it. For example:
 

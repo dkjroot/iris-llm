@@ -10,6 +10,7 @@ import os
 import signal
 import sys
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import lru_cache, partial
@@ -18,8 +19,9 @@ from importlib.resources import files
 from threading import Event, Lock, Thread
 from time import monotonic
 from types import FrameType, ModuleType
-from typing import Protocol, TypedDict, cast, get_args
+from typing import Any, Protocol, TypedDict, cast, get_args
 
+from iris_droid.console_menu import ConsoleMenu
 from iris_droid.expression import FACE_EXPRESSIONS, FaceExpression
 from iris_droid.face_display import (
     DEFAULT_FACE_PORT,
@@ -39,6 +41,9 @@ class DisplayState:
     activity: FaceActivity
     expression: FaceExpression
     screensaver: FaceIdle
+    personalities: tuple[str, ...] = ()
+    personality: str | None = None
+    wake_phrase: str | None = None
 
 
 def read_state(port: int) -> DisplayState | None:
@@ -48,7 +53,7 @@ def read_state(port: int) -> DisplayState | None:
         response = link.getresponse()
         if response.status != 200:
             return None
-        value: object = json.loads(response.read(2048))
+        value: object = json.loads(response.read(16384))
     except (OSError, http.client.HTTPException, ValueError):
         return None
     finally:
@@ -60,12 +65,37 @@ def read_state(port: int) -> DisplayState | None:
     expression, idle = state.get("expression"), state.get("screensaver")
     if head not in FACE_HEADS or activity not in ACTIVITIES:
         return None
+    names = state.get("personalities")
+    personalities = (
+        tuple(name for name in names if isinstance(name, str)) if isinstance(names, list) else ()
+    )
+    active = state.get("personality")
+    wake = state.get("wake_phrase")
     return DisplayState(
         head,
         activity,
         expression if expression in FACE_EXPRESSIONS else "neutral",
         idle if idle in FACE_IDLE_MODES else "black",
+        personalities,
+        active if isinstance(active, str) and active in personalities else None,
+        wake if isinstance(wake, str) else None,
     )
+
+
+def request_personality(port: int, name: str) -> bool:
+    link = http.client.HTTPConnection("127.0.0.1", port, timeout=0.7)
+    try:
+        link.request(
+            "POST",
+            "/personality",
+            json.dumps(name, ensure_ascii=False).encode(),
+            {"Content-Type": "application/json"},
+        )
+        return link.getresponse().status == 204
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        link.close()
 
 
 @contextmanager
@@ -204,17 +234,29 @@ def render(
     pygame: ModuleType,
     screen: Surface,
     current: Callable[[], DisplayState | None],
+    select: Callable[[str], Future[bool]],
 ) -> None:
     clock = pygame.time.Clock()
     head: FaceHead | None = None
     sprites: Callable[[FaceExpression, str], Surface] | None = None
     previous_black = False
-    while not any(
-        event.type == pygame.QUIT or (event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE)
-        for event in pygame.event.get()
-    ):
-        state = current()
+    menu = ConsoleMenu(pygame, screen, select)
+    while True:
         seconds = monotonic()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                if menu.page is None:
+                    return
+                menu.go(None)
+            if (position := tap_position(pygame, event, screen.get_size())) is not None:
+                menu.tap(*position, seconds)
+        state = current()
+        if menu.draw(state, seconds):
+            previous_black = False
+            clock.tick(24)
+            continue
         black = state is None or (state.activity == "idle" and state.screensaver == "black")
         if not black or not previous_black:
             screen.fill((0, 0, 0))
@@ -234,6 +276,22 @@ def render(
             pygame.display.flip()
         previous_black = black
         clock.tick(12 if state is None or state.activity == "idle" else 24)
+
+
+def tap_position(pygame: ModuleType, event: Any, size: tuple[int, int]) -> tuple[int, int] | None:
+    if event.type == pygame.FINGERUP:
+        width, height = size
+        return (
+            min(width - 1, max(0, int(event.x * width))),
+            min(height - 1, max(0, int(event.y * height))),
+        )
+    if (
+        event.type == pygame.MOUSEBUTTONUP
+        and event.button == 1
+        and not getattr(event, "touch", False)
+    ):
+        return int(event.pos[0]), int(event.pos[1])
+    return None
 
 
 @contextmanager
@@ -318,8 +376,13 @@ def main(argv: list[str] | None = None) -> int:
                     if args.demo
                     else live_feed(args.port)
                 )
-                with feed as current:
-                    render(pygame, screen, current)
+                with feed as current, ThreadPoolExecutor(max_workers=1) as worker:
+                    render(
+                        pygame,
+                        screen,
+                        current,
+                        lambda name: worker.submit(request_personality, args.port, name),
+                    )
             finally:
                 pygame.display.quit()
     except KeyboardInterrupt:

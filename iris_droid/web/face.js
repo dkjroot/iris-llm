@@ -9,6 +9,7 @@ let bust = null;
 let activity = "idle";
 let expression = "neutral";
 let snow = false;
+let showIdle = false;
 let frame = null;
 let lastDraw = null;
 const pose = { ...expressions.neutral };
@@ -21,10 +22,11 @@ const flakes = Array.from({ length: 9 }, (_, index) => ({
   size: index % 3 === 0 ? 2 : 1,
 }));
 
-function update(state) {
+export function updateFace(state) {
   const head = typeof state?.head === "string" && Object.hasOwn(portraits, state.head)
     ? portraits[state.head] : null;
-  if (head !== face) {
+  const headChanged = head !== face;
+  if (headChanged) {
     face = head;
     bust = face ? buildBust(face) : null;
   }
@@ -32,31 +34,17 @@ function update(state) {
   const cue = typeof state?.expression === "string" && Object.hasOwn(expressions, state.expression)
     ? state.expression : "neutral";
   const snowfall = state?.screensaver === "snow";
-  if (phase !== activity || cue !== expression || snowfall !== snow) {
+  const idleFace = state?.showIdle === true;
+  if (headChanged || phase !== activity || cue !== expression || snowfall !== snow ||
+      idleFace !== showIdle) {
     if (phase === "idle" || activity === "idle") Object.assign(pose, expressions.neutral);
     activity = phase;
     expression = cue;
     snow = snowfall;
+    showIdle = idleFace;
     lastDraw = null;
     requestDraw();
   }
-}
-
-async function poll() {
-  if (!document.hidden) {
-    const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), 1600);
-    try {
-      const response = await fetch("/state", { signal: abort.signal });
-      if (!response.ok) throw new Error("Display state unavailable");
-      update(await response.json());
-    } catch {
-      update(null);
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-  setTimeout(poll, document.hidden ? 1000 : 200);
 }
 
 function requestDraw() {
@@ -66,9 +54,9 @@ function requestDraw() {
 function draw(now) {
   frame = null;
   if (document.hidden) return;
-  const active = activity !== "idle" && face !== null;
+  const visibleFace = face !== null && (showIdle || activity !== "idle");
   const still = motionPreference.matches;
-  const interval = 1000 / (active ? 24 : 12);
+  const interval = 1000 / (activity === "idle" ? 12 : 24);
   const elapsed = lastDraw === null ? interval : now - lastDraw;
   if (!still && elapsed < interval - 2) {
     requestDraw();
@@ -86,7 +74,7 @@ function draw(now) {
   ctx.clearRect(0, 0, width, height);
   const seconds = now / 1000;
 
-  if (active) {
+  if (visibleFace) {
     const scale = Math.min(width / portraitWidth, height / portraitHeight);
     ctx.translate((width - portraitWidth * scale) / 2, (height - portraitHeight * scale) / 2);
     ctx.scale(scale, scale);
@@ -102,10 +90,9 @@ function draw(now) {
       ctx.fillRect(Math.round(x), Math.round(y), flake.size * density, flake.size * density);
     }
   }
-  if (!still && (active || snow)) requestDraw();
+  if (!still && (visibleFace || snow)) requestDraw();
 }
 
 new ResizeObserver(requestDraw).observe(canvas);
 motionPreference.addEventListener("change", requestDraw);
 document.addEventListener("visibilitychange", requestDraw);
-poll();

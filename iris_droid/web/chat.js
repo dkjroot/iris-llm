@@ -1,3 +1,5 @@
+import { updateFace } from "/face.js";
+import { mountMenu } from "/menu.js";
 import { SpeechCapture, recordingWav } from "/speech.js";
 
 const form = document.querySelector("#chat");
@@ -18,6 +20,47 @@ let voice = null;
 let pending = false;
 let privateMode = false;
 let savedToken = null;
+let personality = null;
+let faceTimer;
+
+const menu = mountMenu({
+  web: true,
+  async loadPersonalities() {
+    const token = key.value;
+    let response;
+    try {
+      response = await fetch("/v1/web-personalities", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        redirect: "error",
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      throw new Error("Couldn’t reach Iris. Check the connection and try again.");
+    }
+    if (response.status === 401) {
+      connection.open = true;
+      if (token === savedToken) forgetSavedKey();
+      throw new Error(token ? "Check the connection key below, then tap Retry." :
+        "Enter the connection key below, then tap Retry.");
+    }
+    if (!response.ok) throw new Error("Couldn’t load personalities. Try again.");
+    const names = await response.json();
+    if (key.value !== token) throw new Error("The connection key changed. Tap Retry.");
+    if (!names.includes(personality)) personality = names[0] || null;
+    return { names, active: personality };
+  },
+  selectPersonality(name) {
+    personality = name;
+  },
+});
+
+function showFace(activity, expression = "neutral", milliseconds = 0) {
+  clearTimeout(faceTimer);
+  updateFace({ head: "signal", activity, expression, showIdle: true });
+  if (milliseconds) faceTimer = setTimeout(() => showFace(voice ? "listening" : "idle"), milliseconds);
+}
+
+showFace("idle");
 
 if (location.protocol === "https:") {
   try {
@@ -91,6 +134,7 @@ function disableMic() {
   const active = voice;
   voice = null;
   mic.setAttribute("aria-pressed", "false");
+  if (!pending) showFace("idle");
   if (!active) return;
   active.finishPlayback?.();
   active.stream?.getTracks().forEach(track => track.stop());
@@ -124,7 +168,9 @@ async function turn(body, active = null) {
   if (track) track.enabled = false;
   voice?.capture?.reset();
   show("Waiting for Iris…");
+  showFace("thinking");
   let feedback = "";
+  let writtenExpression = null;
   try {
     const response = await fetch(spoken ? "/v1/voice" : "/v1/text", {
       method: "POST",
@@ -132,6 +178,8 @@ async function turn(body, active = null) {
         Authorization: `Bearer ${token}`,
         "Content-Type": spoken ? "audio/wav" : "text/plain",
         "X-Iris-Session": session,
+        "X-Iris-Face": "1",
+        "X-Iris-Web-Personality": encodeURIComponent(personality || ""),
       },
       body,
       redirect: "error",
@@ -149,6 +197,10 @@ async function turn(body, active = null) {
       throw new Error(reply.error || "Iris couldn’t answer.");
     }
     privateMode = response.headers.get("X-Iris-Private") === "1";
+    if (reply.selected_personality) {
+      personality = reply.selected_personality;
+      menu.setActive(personality);
+    }
     connection.open = false;
     if (remember.checked && !rememberOption.hidden && token !== savedToken) {
       try {
@@ -174,7 +226,10 @@ async function turn(body, active = null) {
     if (reply.finished) session = newSession();
     if (spoken && reply.audio && voice === active) {
       show("Iris is speaking…");
+      showFace("speaking", reply.expression);
       await playReply(active, reply.audio);
+    } else if (!spoken) {
+      writtenExpression = reply.expression;
     }
     if (reply.finished) {
       disableMic();
@@ -190,6 +245,7 @@ async function turn(body, active = null) {
     send.disabled = false;
     key.readOnly = false;
     show(feedback || (voice ? "Listening…" : "Ready"));
+    showFace(voice ? "listening" : "idle", writtenExpression || "neutral", writtenExpression ? 3000 : 0);
   }
 }
 
@@ -256,6 +312,7 @@ mic.addEventListener("click", async () => {
       }
     });
     show(pending ? "Waiting for Iris…" : "Listening…");
+    if (!pending) showFace("listening");
   } catch {
     if (active && voice !== active) return;
     disableMic();

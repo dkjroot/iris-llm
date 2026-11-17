@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
+from iris_settings import read_config
+
 PERSONALITY_HEADER = "X-Iris-Personality"
+WEB_PERSONALITY_HEADER = "X-Iris-Web-Personality"
 MAX_PERSONALITY_HEADER = 7800
 
 PersonalityName = Annotated[str, StringConstraints(min_length=1, max_length=48)]
@@ -41,6 +45,26 @@ class PersonalityContext(BaseModel):
         if len(value) > MAX_PERSONALITY_HEADER:
             raise ValueError("Personality metadata is too large. Shorten the prompt or names.")
         return value
+
+
+def personality_catalog(prompts: dict[str, object]) -> dict[str, PersonalityContext]:
+    names = list(prompts)
+    catalog = {
+        name: PersonalityContext.model_validate({"names": names, "active": name, "prompt": prompt})
+        for name, prompt in prompts.items()
+    }
+    for context in catalog.values():
+        context.to_header()  # Apply the same size limits to both clients.
+    return catalog
+
+
+def load_personalities(path: Path | None) -> dict[str, PersonalityContext]:
+    if path is None:
+        return {}
+    try:
+        return personality_catalog(read_config(path))
+    except ValueError as error:
+        raise ValueError(f"{path}: {error}") from error
 
 
 def personality_command(text: str) -> str | None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
@@ -20,13 +20,19 @@ FACE_HEADS: tuple[FaceHead, ...] = get_args(FaceHead)
 FACE_IDLE_MODES: tuple[FaceIdle, ...] = get_args(FaceIdle)
 DEFAULT_FACE_PORT = 8767
 
-ASSETS = {
-    "/": ("face.html", "text/html; charset=utf-8"),
+BROWSER_FACE_ASSETS = {
     "/face.css": ("face.css", "text/css; charset=utf-8"),
     "/face.js": ("face.js", "text/javascript; charset=utf-8"),
     "/face-rig.js": ("face-rig.js", "text/javascript; charset=utf-8"),
     "/face-portraits.js": ("face-portraits.js", "text/javascript; charset=utf-8"),
     "/face-stylised.js": ("face-stylised.js", "text/javascript; charset=utf-8"),
+    "/menu.js": ("menu.js", "text/javascript; charset=utf-8"),
+    "/commands.json": ("commands.json", "application/json"),
+}
+ASSETS = {
+    **BROWSER_FACE_ASSETS,
+    "/": ("face.html", "text/html; charset=utf-8"),
+    "/face-page.js": ("face-page.js", "text/javascript; charset=utf-8"),
 }
 
 
@@ -34,6 +40,10 @@ class FaceDisplay:
     def __init__(self, head: FaceHead | None, screensaver: FaceIdle = "snow") -> None:
         self.head = head
         self.screensaver = screensaver
+        self.personalities: tuple[str, ...] = ()
+        self.active_personality: Callable[[], str | None] = lambda: None
+        self.select_personality: Callable[[str], bool] = lambda _: False
+        self.wake_phrase: str | None = None
         self._lock = Lock()
         self._activity: FaceActivity = "idle"
         self._expression: FaceExpression = "neutral"
@@ -64,14 +74,17 @@ class FaceDisplay:
     def state(self) -> bytes:
         with self._lock:
             expired = self._deadline is not None and monotonic() >= self._deadline
-            return json.dumps(
-                {
-                    "head": self.head,
-                    "screensaver": self.screensaver,
-                    "activity": "idle" if expired else self._activity,
-                    "expression": "neutral" if expired else self._expression,
-                }
-            ).encode()
+            state: dict[str, object] = {
+                "head": self.head,
+                "screensaver": self.screensaver,
+                "activity": "idle" if expired else self._activity,
+                "expression": "neutral" if expired else self._expression,
+            }
+        if self.personalities:
+            state.update(personalities=self.personalities, personality=self.active_personality())
+        if self.wake_phrase:
+            state["wake_phrase"] = self.wake_phrase
+        return json.dumps(state, ensure_ascii=False).encode()
 
     @contextmanager
     def serve(self, port: int = DEFAULT_FACE_PORT) -> Iterator[int | None]:
@@ -98,10 +111,12 @@ class FaceDisplay:
             def log_message(self, format: str, *args: object) -> None:
                 pass
 
-            def do_GET(self) -> None:
+            def valid_host(self) -> bool:
                 port = cast(ThreadingHTTPServer, self.server).server_port
-                expected_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-                if self.headers.get("Host") not in expected_hosts:
+                return self.headers.get("Host") in {f"127.0.0.1:{port}", f"localhost:{port}"}
+
+            def do_GET(self) -> None:
+                if not self.valid_host():
                     self.send_error(400)
                     return
                 if self.path == "/state":
@@ -125,5 +140,33 @@ class FaceDisplay:
                 self.end_headers()
                 with suppress(BrokenPipeError, ConnectionResetError):
                     self.wfile.write(body)
+
+            def do_POST(self) -> None:
+                if not self.valid_host():
+                    self.send_error(400)
+                    return
+                if self.path != "/personality":
+                    self.send_error(404)
+                    return
+                if self.headers.get("Origin") not in (None, f"http://{self.headers['Host']}"):
+                    self.send_error(403)
+                    return
+                if self.headers.get_content_type() != "application/json":
+                    self.send_error(415)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if self.headers.get("Transfer-Encoding") or not 0 < length <= 512:
+                        raise ValueError
+                    name: object = json.loads(self.rfile.read(length))
+                except (OSError, ValueError):
+                    self.send_error(400)
+                    return
+                if not isinstance(name, str) or not display.select_personality(name):
+                    self.send_error(400)
+                    return
+                self.send_response(204)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
 
         return Handler
