@@ -349,8 +349,8 @@ def test_deferring_summary_changes_current_turn_evidence_so_serial_order_is_requ
 
 
 @pytest.mark.parametrize("engine", ["pocket", "chatterbox"])
-def test_real_worker_protocol_echoes_identity_and_terminal_state(monkeypatch, engine):
-    from io import StringIO
+def test_real_worker_protocol_preserves_utf8_and_echoes_identity(monkeypatch, engine):
+    from io import BytesIO, StringIO, TextIOWrapper
     from pathlib import Path
     from unittest.mock import Mock
 
@@ -358,8 +358,12 @@ def test_real_worker_protocol_echoes_identity_and_terminal_state(monkeypatch, en
 
     from iris_tts_engines import chatterbox_worker, pocket_worker
 
-    request = {"protocol": 1, "request_id": 17, "text": "Hello"}
-    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(request) + "\n"))
+    text = "Here comes the punchline — ready? 🥁🐔"
+    request = {"protocol": 1, "request_id": 17, "text": text}
+    payload = (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+    # The parent writes UTF-8 bytes even when Windows selects an ANSI code page for stdin.
+    stdin = TextIOWrapper(BytesIO(payload), encoding="cp1252", errors="surrogateescape")
+    monkeypatch.setattr(sys, "stdin", stdin)
     output = StringIO()
     model = Mock()
     waveform = Mock()
@@ -368,10 +372,14 @@ def test_real_worker_protocol_echoes_identity_and_terminal_state(monkeypatch, en
         model.sample_rate = 24000
         model.generate_audio_stream.return_value = iter([waveform])
         pocket_worker.serve(model, Path("unused"), output)
+        model.generate_audio_stream.assert_called_once_with(
+            model.get_state_for_audio_prompt.return_value, text
+        )
     else:
         model.sr = 24000
         model.generate.return_value = waveform
         chatterbox_worker.serve(model, output)
+        model.generate.assert_called_once_with(text)
     messages = [json.loads(line) for line in output.getvalue().splitlines()]
     assert [m["status"] for m in messages] == ["ready", "audio", "done"]
     assert all(m["request_id"] == 17 for m in messages[1:])

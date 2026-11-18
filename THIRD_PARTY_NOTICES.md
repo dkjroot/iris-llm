@@ -12,6 +12,7 @@ Each library's authors retain their copyright and license.
 | HTTPX | [Encode and contributors](https://github.com/encode/httpx) | BSD-3-Clause |
 | tzdata | [Python tzdata and the IANA time zone database](https://github.com/python/tzdata) | Apache-2.0 for the package; IANA data are public domain |
 | Pydantic and pydantic-settings | [Pydantic contributors](https://github.com/pydantic/pydantic) and [settings contributors](https://github.com/pydantic/pydantic-settings) | MIT |
+| regex | [Matthew Barnett and contributors](https://github.com/mrabarnett/mrab-regex) | Apache-2.0 and CNRI-Python |
 | faster-whisper (optional) | [SYSTRAN and contributors](https://github.com/SYSTRAN/faster-whisper) | MIT; CTranslate2, PyAV and other dependencies retain their own notices |
 | kokoro-onnx (optional) | [thewh1teagle and contributors](https://github.com/thewh1teagle/kokoro-onnx) | MIT; model/voice assets have separate Apache-2.0 terms |
 | Chatterbox Turbo (optional) | [Resemble AI and contributors](https://github.com/resemble-ai/chatterbox), [Turbo model files](https://huggingface.co/ResembleAI/chatterbox-turbo) | MIT for the library and separately downloaded Turbo model. Audio retains the upstream [Perth watermark](https://github.com/resemble-ai/Perth). |

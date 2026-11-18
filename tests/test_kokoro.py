@@ -184,7 +184,7 @@ def test_voice_download_command_dispatches_without_loading_backend() -> None:
     backend.assert_not_called()
 
 
-def test_kokoro_receives_words_without_markdown_emphasis(assets):
+def test_kokoro_receives_words_without_emoji_or_markdown_emphasis(assets):
     settings, data = assets
     for name, body in data.items():
         (settings.kokoro_model_dir / name).write_bytes(body)
@@ -192,7 +192,7 @@ def test_kokoro_receives_words_without_markdown_emphasis(assets):
     backend.create.return_value = (np.ones(100, dtype=np.float32) * 0.1, 24000)
     with patch.object(kokoro, "load_backend", return_value=backend):
         tts = kokoro.TTS(settings)
-        tts.synthesize("**First**, this is *important*.")
+        tts.synthesize("**First** 😎, this is *important*. ✨")
     assert backend.create.call_args.args[0] == "First, this is important."
     assert backend.create.call_args.kwargs["trim"] is False
 

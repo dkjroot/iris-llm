@@ -106,13 +106,14 @@ def serve(model: Model, voice: Path, output: TextIO) -> None:
 
     request_id = None
     emit("ready")
-    for line in iter(lambda: sys.stdin.readline(65537), ""):
+    # The parent writes UTF-8 regardless of the worker's locale.
+    for line in iter(lambda: sys.stdin.buffer.readline(65537), b""):
         request_id = None
         try:
-            request = json.loads(line)
+            request = json.loads(line.decode("utf-8"))
             if (
-                len(line.encode("utf-8")) > 65536
-                or not line.endswith("\n")
+                len(line) > 65536
+                or not line.endswith(b"\n")
                 or not isinstance(request, dict)
                 or set(request) != {"protocol", "request_id", "text"}
                 or request["protocol"] != 1

@@ -1112,7 +1112,10 @@ def main(argv: list[str] | None = None) -> int:
                 face_audio["on_audio"] = display.speech.feed
             with (
                 httpx.Client(
-                    trust_env=False, follow_redirects=False, timeout=httpx.Timeout(600, connect=10)
+                    trust_env=False,
+                    follow_redirects=False,
+                    # Let the server report its own timeout even at the one-hour turn limit.
+                    timeout=httpx.Timeout(600, connect=10, read=3610),
                 ) as transport,
                 ExitStack() as stack,
             ):

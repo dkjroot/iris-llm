@@ -73,8 +73,8 @@ for number, line in enumerate(sys.stdin, start=1):
             pytest.fail("Missing voice must prevent worker startup")
         (tmp_path / "test-voice.pt").touch()
         with open_tts(settings) as tts:
-            first, rate = tts.synthesize("**Hello**!")
-            second, _ = tts.synthesize("**Hello**!")
+            first, rate = tts.synthesize("**Hello** 🙂!")
+            second, _ = tts.synthesize("👩🏽‍💻 **Hello**!")
     assert rate == 24000
     np.testing.assert_array_equal(first, [0.25])
     np.testing.assert_array_equal(second, [0.5])

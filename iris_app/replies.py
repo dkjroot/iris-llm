@@ -68,27 +68,28 @@ class ReplyService:
             selected_personality=selected_personality,
         )
         check_deadline()
+        speech = plain_speech_text(text).strip() if not text_only else ""
         stream_reply = STREAM_REPLY.get()
         # Short state-changing confirmations are fully synthesized before the
         # commit, then returned as a buffered reply. A streamed success cannot
         # be retracted if the subsequent database/policy operation fails.
-        if not text_only and stream_reply is not None and not transactional:
+        if speech and stream_reply is not None and not transactional:
             tts = cast(StreamingSynthesizer, self.app.tts)
             with stage("stream_delivery"):
-                stream_reply(result, timed_audio(tts.stream(text)), tts.sample_rate)
+                stream_reply(result, timed_audio(tts.stream(speech)), tts.sample_rate)
             return result
         audio = ""
         timing = None
-        if not text_only:
+        if speech:
             started_ns = time_ns()
             started = perf_counter_ns()
             with stage("tts"):
-                samples, rate = self.app.tts.synthesize(text)
+                samples, rate = self.app.tts.synthesize(speech)
             check_deadline()
             synthesis_ns = perf_counter_ns() - started
             timing = VoiceTiming(
                 engine=self.app.settings.tts_engine,
-                words=len(re.findall(r"[^\W_]+(?:[’'-][^\W_]+)*", plain_speech_text(text))),
+                words=len(re.findall(r"[^\W_]+(?:[’'-][^\W_]+)*", speech)),
                 started_ns=started_ns,
                 synthesis_ns=synthesis_ns,
                 audio_seconds=samples.size / rate,

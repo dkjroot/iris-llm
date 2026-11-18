@@ -195,6 +195,32 @@ def test_real_http_transport_auth_validation_and_voice_turn(web_chat: bool) -> N
             thread.join(timeout=5)
 
 
+def test_native_client_waits_past_the_maximum_server_turn_budget() -> None:
+    requests: list[httpx.Request] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200, json=TurnReply(heard="hello", text="Hello", audio="", finished=True).model_dump()
+        )
+
+    def local_transport(**kwargs) -> httpx.Client:
+        return httpx_client(transport=httpx.MockTransport(reply), **kwargs)
+
+    httpx_client = httpx.Client
+    with (
+        patch.dict("os.environ", {"IRIS_DROID_TOKEN": TOKEN}),
+        patch("builtins.input", return_value="hello"),
+        patch("iris_droid.client.httpx.Client", side_effect=local_transport),
+    ):
+        assert iris.main(["client", "--server", "http://iris:8765", "--text"]) == 0
+
+    assert len(requests) == 1
+    assert requests[0].url.path == "/v1/text"
+    timeout = requests[0].extensions["timeout"]
+    assert timeout == {"connect": 10, "read": 3610, "write": 600, "pool": 600}
+
+
 @pytest.mark.parametrize("fails", [False, True])
 def test_pocket_voice_stream_plays_before_generation_finishes(fails: bool) -> None:
     brain, transport = make_brain()
