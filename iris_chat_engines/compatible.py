@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import random
+import re
 from collections.abc import Callable
 
 import httpx
@@ -17,8 +18,70 @@ from iris_domain.expression import FACE_PROMPT, ModelReply, read_model_reply
 from iris_domain.session import SessionState
 from iris_domain.turn import effect_scope
 from iris_settings import Settings
-from iris_tools import ToolRegistry, ToolServices
+from iris_tools import TOOL_NAMES, ToolRegistry, ToolServices
 from iris_turn import check_deadline
+
+_CORRECT_TOOL_MARKER = (
+    "\n\nThe previous reply used tool names as plain text. If a lookup is needed, call the "
+    "appropriate function using the tools provided, then answer with its results."
+)
+_CORRECT_WITHOUT_TOOLS = (
+    "\n\nThe previous reply used tool names as plain text. Answer in ordinary words. "
+    "If a needed tool is unavailable, say so plainly."
+)
+_CORRECT_AFTER_TOOLS = (
+    "\n\nThe previous reply used tool names as plain text. Answer in ordinary words using "
+    "the tool results already provided. Say plainly if they do not answer the question."
+)
+_CODE_FENCE = re.compile(r"`{3,}|~{3,}")
+
+
+def _tool_markers(text: str, tool_names: frozenset[str]) -> list[str]:
+    names: list[str] = []
+    fence = ""
+    for line in text.splitlines():
+        marker = line.strip()
+        if fence:
+            if marker.startswith(fence) and not marker.rstrip(fence[0]):
+                fence = ""
+            continue
+        if line.startswith(("    ", "\t")):
+            continue
+        opening = _CODE_FENCE.match(marker)
+        if opening is not None:
+            fence = opening[0]
+        elif marker.startswith("[[") and marker.endswith("]]"):
+            name = marker[2:-2].strip()
+            if name in tool_names and name not in names:
+                names.append(name)
+    return names
+
+
+def _model_messages(
+    messages: list[Message],
+    turn_start: int,
+    tool_names: frozenset[str],
+    *,
+    correction: str,
+    retrying: bool,
+) -> list[Message]:
+    outgoing = messages.copy()
+    needs_correction = retrying
+    # Old replies can teach the same mistake back to the model. Replace only
+    # their prompt copies, keeping their tool names as context for "try again".
+    for index in range(1, turn_start):
+        message = messages[index]
+        if message.role == "assistant" and not message.tool_calls and message.content:
+            names = _tool_markers(message.content, tool_names)
+            if names:
+                summary = f"I mentioned {', '.join(names)} but did not call those tools."
+                outgoing[index] = Message(role="assistant", content=summary)
+                if index == turn_start - 1 and turn_start == len(messages) - 1:
+                    needs_correction = True
+    if needs_correction:
+        user = messages[turn_start]
+        outgoing[turn_start] = Message(role="user", content=(user.content or "") + correction)
+    return outgoing
 
 
 class ChatEngine(SessionState):
@@ -117,7 +180,7 @@ class ChatEngine(SessionState):
             or not reply.content.strip()
         ):
             raise ChatError("The server returned an invalid companion opener")
-        result = self._spoken_reply(reply.content, face=face)
+        result = self._spoken_reply(self._decode(reply.content), face=face)
         self._remember([*messages[1:], Message(role="assistant", content=result.text)])
         self.last_tool_names = ()
         self.last_companion_seed = seed
@@ -133,8 +196,7 @@ class ChatEngine(SessionState):
         return self.generate_reply(user_text).text
 
     def _spoken_reply(self, text: str, *, face: bool) -> ModelReply:
-        # Only decode for a server explicitly configured to escape HTML.
-        reply = read_model_reply(self._decode(text), face=face)
+        reply = read_model_reply(text, face=face)
         if not reply.text.strip():
             raise ChatError("The server returned an empty assistant reply")
         return reply
@@ -153,6 +215,8 @@ class ChatEngine(SessionState):
             raise ChatError("There isn't any text to send")
         system = self._system_prompt(face=face, personality_prompt=personality_prompt)
         definitions = self.tool_definitions()
+        known_tool_names = TOOL_NAMES.union(self.tools.skills)
+        correction = _CORRECT_TOOL_MARKER if definitions else _CORRECT_WITHOUT_TOOLS
         messages = fit(
             self.settings,
             system,
@@ -164,10 +228,22 @@ class ChatEngine(SessionState):
         turn_start = len(messages) - 1
         call_ids: set[str] = set()
         tool_names: set[str] = set()
-        for round_number in range(5):
+        tool_rounds = 0
+        corrected_marker = False
+        retrying = False
+        while True:
             # New tool evidence also consumes context. Drop older whole turns,
             # never an in-flight call/result pair, before the next model request.
-            while estimate(messages, definitions) > input_budget(self.settings):
+            while True:
+                outgoing = _model_messages(
+                    messages,
+                    turn_start,
+                    known_tool_names,
+                    correction=_CORRECT_AFTER_TOOLS if tool_rounds else correction,
+                    retrying=retrying,
+                )
+                if estimate(outgoing, definitions) <= input_budget(self.settings):
+                    break
                 if turn_start > 1:
                     next_turn = next(
                         (i for i in range(2, turn_start) if messages[i].role == "user"), turn_start
@@ -184,7 +260,8 @@ class ChatEngine(SessionState):
             if check_cancelled is not None:
                 check_cancelled()
             check_deadline()
-            reply = self.backend.complete(messages, definitions)
+            reply = self.backend.complete(outgoing, definitions)
+            retrying = False
             check_deadline()
             if check_cancelled is not None:
                 check_cancelled()
@@ -194,15 +271,23 @@ class ChatEngine(SessionState):
                 text = reply.content
                 if text is None or not text.strip():
                     raise ChatError("The server returned an empty assistant reply")
-                result = self._spoken_reply(text, face=face)
+                decoded = self._decode(text)
+                if _tool_markers(decoded, known_tool_names):
+                    if corrected_marker:
+                        raise ChatError("The model returned a tool marker instead of an answer.")
+                    corrected_marker = True
+                    retrying = True
+                    continue
+                result = self._spoken_reply(decoded, face=face)
                 messages.append(Message(role="assistant", content=result.text))
                 self._remember(messages[1:])
                 self.last_tool_names = tuple(sorted(tool_names))
                 return result
             if not definitions:
                 raise ChatError("The model requested a tool, but tools are disabled")
-            if round_number == 4 or len(call_ids) + len(reply.tool_calls) > 8:
+            if tool_rounds == 4 or len(call_ids) + len(reply.tool_calls) > 8:
                 raise ChatError("The model exceeded the tool-call limit; try a simpler question")
+            tool_rounds += 1
             if before_tools is not None:
                 before_tools()
             # Preserve the complete exchange, including reasoning needed by some
@@ -220,4 +305,3 @@ class ChatEngine(SessionState):
                         content=self.tools.execute(call.function.name, call.function.arguments),
                     )
                 )
-        raise ChatError("The model didn't finish its response")

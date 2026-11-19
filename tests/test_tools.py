@@ -2,14 +2,15 @@
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import httpx
 import pytest
 
-from iris_chat_engines.compatible import ChatEngine, ChatError
+from iris_chat_engines.compatible import ChatEngine, ChatError, Message
+from iris_droid.protocol import write_wav
 from iris_settings import Settings
-from iris_tools import ToolRegistry
+from iris_tools import NoArguments, Skill, ToolRegistry
 
 
 def response(text):
@@ -84,6 +85,168 @@ def test_model_chooses_tool_then_receives_result_and_answers_with_complete_histo
         assert [m.role for m in chat.history] == ["user", "assistant"]
         assert chat.history[0].content == "Thanks"
         assert len(requests[2]["messages"]) == 6  # Whole previous exchange, not orphaned results.
+
+
+@pytest.mark.parametrize("face", [False, True])
+def test_bare_tool_marker_is_reprompted_before_dispatch_and_stays_out_of_history(face):
+    cue = "[[expression:curious]]\n" if face else ""
+    requests = []
+    responses = iter(
+        [
+            response(
+                cue + "I'll check that right away.\n\n[[get_local_time]]\n[[get_local_weather]]"
+            ),
+            calling(tool_call(), tool_call("get_local_weather", call_id="weather")),
+            response(cue + "It's Sunday, and it's raining."),
+            response("You're welcome."),
+        ]
+    )
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=next(responses))
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        chat = ChatEngine(Settings(weather_enabled=True), client)
+        with patch.object(chat.tools, "execute", return_value="{}") as execute:
+            reply = chat.generate_reply("What day is it, and how's the weather?", face=face)
+            assert execute.call_args_list == [
+                call("get_local_time", "{}"),
+                call("get_local_weather", "{}"),
+            ]
+        assert reply.text == "It's Sunday, and it's raining."
+        assert reply.expression == ("curious" if face else None)
+        assert chat.last_tool_names == ("get_local_time", "get_local_weather")
+        assert [message.role for message in chat.history] == [
+            "user",
+            "assistant",
+            "tool",
+            "tool",
+            "assistant",
+        ]
+        chat.get_response("Thanks")
+    assert len(requests) == 4
+    original, correction, result, followup = [request["messages"] for request in requests]
+    assert correction[0] == original[0]
+    assert correction[-1]["content"].startswith(original[-1]["content"] + "\n\n")
+    assert "call the appropriate function using the tools provided" in correction[-1]["content"]
+    assert [message["tool_call_id"] for message in result[-2:]] == ["clock", "weather"]
+    assert result[1] == original[1]
+    followup_json = json.dumps(followup)
+    assert "The previous reply used tool names as plain text" not in followup_json
+    assert "I'll check that right away." not in followup_json
+    assert "[[get_local_time]]" not in followup_json
+    assert "[[get_local_weather]]" not in followup_json
+
+
+def test_history_marker_examples_are_replaced_only_in_outgoing_requests():
+    requests = []
+    responses = iter([calling(tool_call()), response("It's Sunday."), response("Of course.")])
+
+    def handle(request):
+        requests.append(json.loads(request.content)["messages"])
+        return httpx.Response(200, json=next(responses))
+
+    genuine_call = Message.model_validate(
+        calling(tool_call(call_id="old"))["choices"][0]["message"]
+    )
+    genuine_call.content = "[[get_local_time]]"
+    old_result = Message(role="tool", tool_call_id="old", content="An old date.")
+    old_reply = "I'll check right away.\n[[get_local_time]]\n[[search_memory]]\n[[get_local_time]]"
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        chat = ChatEngine(Settings(), client)
+        chat.tools.skills["search_memory"] = Skill(
+            "search_memory", "Search memory", NoArguments, lambda args: {}
+        )
+        chat.history = [
+            Message(role="user", content="Yesterday's question"),
+            genuine_call,
+            old_result,
+            Message(role="assistant", content="Yesterday's answer"),
+        ]
+        chat.remember_reply("What day is it now?", old_reply)
+        prior_history = chat.history.copy()
+        assert chat.get_response("Try again.") == "It's Sunday."
+        assert chat.get_response("Thanks.") == "Of course."
+        assert chat.history[: len(prior_history)] == prior_history
+        assert chat.history[len(prior_history)].content == "Try again."
+    assert len(requests) == 3
+    for messages in requests:
+        assert messages[2] == genuine_call.model_dump(exclude_none=True)
+        assert messages[3] == old_result.model_dump(exclude_none=True)
+        assert messages[6]["content"] == (
+            "I mentioned get_local_time, search_memory but did not call those tools."
+        )
+    assert requests[0][-1]["content"].startswith(
+        "Try again.\n\nThe previous reply used tool names as plain text."
+    )
+    assert requests[1][7]["content"] == "Try again."
+    assert requests[2][-1]["content"] == "Thanks."
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_repeated_bare_tool_marker_fails_without_dispatch_or_history(enabled):
+    requests = []
+    responses = iter(
+        [response("Hello."), response("[[set_home_power]]"), response("[[set_home_power]]")]
+    )
+
+    def handle(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=next(responses))
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        chat = ChatEngine(Settings(tools_enabled=enabled), client)
+        chat.get_response("Hello")
+        before = chat.history.copy()
+        with patch.object(chat.tools, "execute") as execute:
+            with pytest.raises(ChatError, match="tool marker instead of an answer"):
+                chat.get_response("Can you control the lights?")
+            execute.assert_not_called()
+        assert chat.history == before
+    assert len(requests) == 3
+    assert requests[1].get("tools") == requests[2].get("tools")
+
+
+def test_repeated_marker_never_reaches_voice_or_durable_memory(brain_factory):
+    invalid = Message(
+        role="assistant",
+        content="I'll check right away.\n[[get_local_time]]\n[[get_local_weather]]",
+    )
+    harness = brain_factory(memory_enabled=True, replies=[invalid, invalid])
+    wav = write_wav(b"\1\0" * 1600, 16000)
+    with pytest.raises(ChatError, match="tool marker instead of an answer"):
+        harness.brain.turn("session", wav, face=True)
+    assert len(harness.model.calls) == 2
+    assert harness.tts.calls == []
+    assert harness.brain._session("session").history == []
+    assert not harness.brain.memory.export("default")["exchanges"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "The model printed [[get_local_time]] in the reply.",
+        "`[[get_local_time]]`",
+        "It printed this example:\n```text\n[[get_local_time]]\n```",
+        "It printed this example:\n\n    [[get_local_time]]",
+        "[[unrelated_note]]",
+    ],
+)
+def test_quoted_or_unrelated_bracket_text_remains_literal(text):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json=response("[[expression:focused]]\n" + text))
+
+    with httpx.Client(transport=httpx.MockTransport(handle)) as client:
+        chat = ChatEngine(Settings(), client)
+        reply = chat.generate_reply("Show me the example.", face=True)
+        assert reply.text == text
+        assert reply.expression == "focused"
+        assert chat.history[-1].content == text
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("enabled", [False, True])

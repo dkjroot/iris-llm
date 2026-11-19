@@ -27,7 +27,8 @@ FACE_PROMPT = (
     "[[expression:curious]]. Use only " + ", ".join(FACE_EXPRESSIONS) + ". "
     "Choose the expression that suits the tone of your reply, or neutral. "
     "After that line, write the words Iris should say aloud. "
-    "Keep cues out of tool calls and their arguments."
+    "Double brackets are only for face cues. To use a tool, use the API's function-call "
+    "interface. Keep face cues out of tool calls and their arguments."
 )
 
 
