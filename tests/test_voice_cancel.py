@@ -179,6 +179,57 @@ def test_cancellation_prevents_tool_dispatch(voice_server):
     assert brain.memory.current_conversation("default") is None
 
 
+def test_working_cue_continues_through_accepted_tool_turn(voice_server):
+    brain, chat, client, url = voice_server
+    audio = Mock()
+    working = files("iris_sounds").joinpath("workinglongquiet.wav").read_bytes()
+    playing = [call.play(working, 7, loop=True)]
+
+    def complete(*args):
+        assert audio.mock_calls == playing
+        if chat.backend.complete.call_count == 1:
+            return Message(
+                role="assistant",
+                tool_calls=[
+                    ToolCall(
+                        id="tool",
+                        type="function",
+                        function=FunctionCall(name="get_local_time", arguments="{}"),
+                    )
+                ],
+            )
+        return Message(role="assistant", content="Here is the time.")
+
+    def tool_result(*args):
+        assert audio.mock_calls == playing
+        return "{}"
+
+    def synthesize(*args):
+        assert audio.mock_calls == playing
+        return np.zeros(100, dtype=np.float32), 24000
+
+    def listen(stop):
+        assert stop.wait(3)
+        return False
+
+    chat.backend.complete.side_effect = complete
+    chat.tools.execute = Mock(side_effect=tool_result)
+    brain.tts.synthesize.side_effect = synthesize
+    droid = DroidClient(
+        url,
+        TOKEN,
+        client,
+        cancel_listener=listen,
+        cancel_feedback=ClientFeedback(7, audio.play, audio.stop),
+    )
+
+    assert droid.turn(RECORDING).text == "Here is the time."
+    chat.tools.execute.assert_called_once_with("get_local_time", "{}")
+    assert chat.backend.complete.call_count == 2
+    brain.tts.synthesize.assert_called_once()
+    assert audio.mock_calls == [*playing, call.stop()]
+
+
 def test_delete_previous_voice_command_can_itself_be_cancelled(voice_server):
     brain, chat, client, url = voice_server
     droid = DroidClient(url, TOKEN, client)

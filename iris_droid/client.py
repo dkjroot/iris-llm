@@ -350,8 +350,6 @@ class DroidClient:
                         if worker.is_alive():
                             retired.set()
                             raise ValueError("Cancel listener did not stop; turn not accepted")
-                        if feedback is not None:
-                            feedback.stop_working()
                         if cancelled.is_set():
                             if not confirmed.is_set():
                                 try:
@@ -644,6 +642,7 @@ def play_stream(
     *,
     lead_in: float,
     primer: bool,
+    before_output: Callable[[], None] | None = None,
     on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
 ) -> int | None:
     import numpy as np
@@ -738,6 +737,8 @@ def play_stream(
                 if on_audio is not None and visual is not None:
                     on_audio(visual, output_rate, output_delay(timing))
 
+        if before_output is not None:
+            before_output()
         with sd.OutputStream(
             samplerate=output_rate,
             channels=1,
@@ -1131,7 +1132,6 @@ def main(argv: list[str] | None = None) -> int:
                     capture_options["on_listening"] = show_listening
 
                 def stream_player(start: VoiceStreamStart, chunks: Iterator[bytes]) -> int | None:
-                    feedback.stop_working()
                     display.clear_notice()
                     with display.speaking(start.reply.expression):
                         return play_stream(
@@ -1140,6 +1140,7 @@ def main(argv: list[str] | None = None) -> int:
                             speaker,
                             lead_in=args.speech_lead_in,
                             primer=args.speech_primer,
+                            before_output=feedback.stop_working,
                             **face_audio,
                         )
 

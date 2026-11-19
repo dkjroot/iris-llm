@@ -524,16 +524,18 @@ You can change the wake phrase with `--wake-phrase`, using words the Vosk model 
 
 ### Cancel something Iris picked up by mistake
 
-If you hear the processing bloops and realise Iris picked up something you
-weren't saying to her, say **“cancel, cancel”**. The bloops stop and the client
-says “Cancelled”. Iris drops that turn before it can become a reply or
-part of the conversation she remembers.
+If Iris picks up something you weren't saying to her, say **“cancel, cancel”**
+as soon as the processing bloops start. If she catches the cancellation in
+time, the bloops stop and you hear “Cancelled”. Iris drops that turn before
+it becomes part of the conversation she remembers.
 
 Update the server and the client, then add `--voice-cancel` to your client
 command. If you already use wake mode, it shares the model from `--wake-model`.
 In Enter or continuous mode, supply the unpacked Vosk model folder with
 `--wake-model` as well. The cancel phrase is recognised locally. The window
-ends when the bloops stop for a reply or an action. If you use an online speech
+closes when Iris needs to go ahead with a tool, a command or the reply itself.
+For example, once she starts checking the weather, the bloops can carry on
+while she waits for the forecast and gets the spoken reply ready. If you use an online speech
 recogniser or chat model, that service may already have received the original
 utterance by then.
 

@@ -26,9 +26,15 @@ def test_stream_plays_before_next_chunk_and_keeps_one_output_device():
     clock = SimpleNamespace(currentTime=10.0, outputBufferDacTime=10.10)
     status = SimpleNamespace(output_underflow=False)
     played = []
+    starting = False
+
+    def before_output():
+        nonlocal starting
+        starting = True
 
     @contextmanager
     def output(**kwargs):
+        assert starting
         block = np.empty((len(first), 1), dtype="<i2")
         kwargs["callback"](block, len(block), clock, status)
         played.append(block[:, 0].copy())
@@ -45,7 +51,10 @@ def test_stream_plays_before_next_chunk_and_keeps_one_output_device():
         return True
 
     def chunks():
-        yield first.tobytes()
+        assert not starting
+        yield first[:1920].tobytes()
+        assert not starting
+        yield first[1920:].tobytes()
         assert len(played) == 1
         yield second.tobytes()
 
@@ -56,7 +65,10 @@ def test_stream_plays_before_next_chunk_and_keeps_one_output_device():
         patch("iris_droid.client.time_ns", return_value=2_000_000_000),
     ):
         event.return_value.wait.side_effect = finished
-        assert play_stream(chunks(), 24000, 7, lead_in=0, primer=False) == 2_100_000_000
+        assert (
+            play_stream(chunks(), 24000, 7, lead_in=0, primer=False, before_output=before_output)
+            == 2_100_000_000
+        )
     stream.assert_called_once()
     np.testing.assert_array_equal(played[0], first)
     np.testing.assert_array_equal(played[1][:240], second)
