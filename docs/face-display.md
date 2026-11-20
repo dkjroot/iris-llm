@@ -68,6 +68,22 @@ or `rivet`. Once you've used the button, Iris starts with your saved choice. Add
 for the default drifting flecks. In the browser preview, reduced motion also
 switches the idle screen to plain black.
 
+Use `--face-idle off` or add `"face_idle": "off"` to your client JSON file
+to let the native Pi display service put the screen to sleep. The usual file
+is `client_config.json`. If yours is named `client-config.json`, pass
+`--config client-config.json` in your client command. Restart the voice client
+after saving. After updating an existing Pi checkout, restart the display service
+as well with `sudo systemctl restart "iris-face@$USER.service"`. The display
+service picks up the setting from the voice client.
+
+The screen goes to sleep when the face would normally switch to the
+screensaver. Iris keeps listening and wakes the screen as soon as it has a face
+or a message to show. You can still tap to open the menu on a touchscreen whose
+touch input stays available in standby. HDMI panels can take a moment to show
+the picture again. If the KMS driver cannot put the display to sleep, the
+service records the reason in its journal and uses a black screen. The browser
+preview also uses a black screen with this setting.
+
 **Raspberry Pi OS or Linux (Bash)**, from the checkout with your client
 environment active and the connection key already set:
 

@@ -97,7 +97,7 @@ a saved client setting. These defaults do not select your actual audio devices.
 | `server` | `--server` | `"http://127.0.0.1:8765"` | Iris server URL (default: this machine) |
 | `personalities_file` | `--personalities-file` | `null` | JSON file with this client's personality prompts |
 | `face` | `--face` | `null` | Serve a face for the droid's display Choices: ["humanoid-android", "sprout", "signal", "rivet"]. |
-| `face_idle` | `--face-idle` | `"snow"` | Idle display (default: snow) Choices: ["snow", "black"]. |
+| `face_idle` | `--face-idle` | `"snow"` | Idle display. Off puts the native Pi display to sleep (default: snow) Choices: ["snow", "black", "off"]. |
 | `face_port` | `--face-port` | `8767` | Loopback port for the face display (default: 8767) |
 | `volume_backend` | `--volume-backend` | `"none"` | Client speaker mixer backend (default: disabled) Choices: ["none", "alsa"]. |
 | `alsa_card` | `--alsa-card` | `null` | ALSA card number or ID; separate from --speaker |

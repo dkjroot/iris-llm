@@ -5,7 +5,7 @@ from iris_droid.face_display import FaceDisplay
 pytestmark = pytest.mark.browser
 
 
-@pytest.mark.parametrize("screensaver", ["black", "snow"])
+@pytest.mark.parametrize("screensaver", ["black", "snow", "off"])
 def test_face_cycle_hides_when_the_screensaver_starts(
     browser, screensaver, monkeypatch, fake_clock
 ):

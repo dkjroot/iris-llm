@@ -22,6 +22,7 @@ from types import FrameType, ModuleType
 from typing import Any, Protocol, TypedDict, cast, get_args
 
 from iris_droid.console_menu import ConsoleMenu
+from iris_droid.display_power import IdleDisplayPower
 from iris_droid.expression import FACE_EXPRESSIONS, FaceExpression
 from iris_droid.face_display import (
     DEFAULT_FACE_PORT,
@@ -318,6 +319,8 @@ def render(
     select: Callable[[str], Future[bool]],
     cycle_face: Callable[[], None],
     execute: Callable[[str], Future[bool]] | None = None,
+    *,
+    power: IdleDisplayPower | None = None,
 ) -> None:
     clock = pygame.time.Clock()
     head: FaceHead | None = None
@@ -345,12 +348,24 @@ def render(
                     cycle_face()
                 else:
                     menu.tap(*position, seconds)
+        idle_off = (
+            state is not None
+            and state.screensaver == "off"
+            and not visible_face
+            and state.notice is None
+        )
+        if power is not None and power.asleep:
+            # Keep polling Iris, but leave page flips paused until the output is on.
+            if menu.page is None and (idle_off or state is None):
+                clock.tick(12)
+                continue
+            power.wake()
         if menu.draw(state, seconds):
             previous_blank = False
             clock.tick(24)
             continue
         black = not visible_face and (
-            state is None or (state.screensaver == "black" and state.notice is None)
+            state is None or (state.screensaver != "snow" and state.notice is None)
         )
         if not black or not previous_blank:
             screen.fill((0, 0, 0))
@@ -380,6 +395,8 @@ def render(
             menu.draw_notice(state)
             pygame.display.flip()
         previous_blank = black
+        if idle_off and power is not None:
+            power.sleep()
         clock.tick(12 if state is None or state.activity == "idle" else 24)
 
 
@@ -475,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with graphics_console(not args.window):
             pygame.display.init()
+            power = None
             try:
                 pygame.display.set_caption("Iris face")
                 # In fullscreen, SDL uses the active KMS mode for the connected panel.
@@ -483,9 +501,10 @@ def main(argv: list[str] | None = None) -> int:
                 screen = cast(Surface, pygame.display.set_mode(size, flags))
                 pygame.mouse.set_visible(False)
                 width, height = screen.get_size()
-                print(
-                    f"Iris display: {pygame.display.get_driver()}, {width} × {height}", flush=True
-                )
+                driver = pygame.display.get_driver()
+                print(f"Iris display: {driver}, {width} × {height}", flush=True)
+                if not args.window and driver.lower() == "kmsdrm":
+                    power = IdleDisplayPower(pygame)
                 feed = nullcontext(demo_current) if demo_head is not None else live_feed(args.port)
                 with feed as current, ThreadPoolExecutor(max_workers=1) as worker:
                     cycle_request: Future[bool] | None = None
@@ -507,9 +526,14 @@ def main(argv: list[str] | None = None) -> int:
                         (lambda phrase: worker.submit(request_command, args.port, phrase))
                         if demo_head is None
                         else None,
+                        power=power,
                     )
             finally:
-                pygame.display.quit()
+                try:
+                    if power is not None:
+                        power.wake()
+                finally:
+                    pygame.display.quit()
     except KeyboardInterrupt:
         return 0
     except (OSError, pygame.error, ValueError, KeyError) as error:

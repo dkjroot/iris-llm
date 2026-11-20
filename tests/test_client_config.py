@@ -42,6 +42,15 @@ def test_alternate_config_and_diagnostic_mode(isolated_client_config: Path) -> N
     assert parse_client_args([*config, "--text", "--voice-cancel"]).voice_cancel
 
 
+@pytest.mark.parametrize("filename", ["client_config.json", "client-config.json"])
+def test_screen_off_in_client_config(isolated_client_config: Path, filename: str) -> None:
+    path = isolated_client_config.with_name(filename)
+    path.write_text('{"face": "signal", "face_idle": "off"}', encoding="utf-8")
+    config = [] if path == isolated_client_config else ["--config", str(path)]
+    assert parse_client_args(config).face_idle == "off"
+    assert parse_client_args([*config, "--face-idle", "snow"]).face_idle == "snow"
+
+
 @pytest.mark.parametrize(
     ("data", "error"),
     [

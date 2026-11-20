@@ -38,7 +38,10 @@ def settings_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--face", choices=FACE_HEADS, help="Serve a face for the droid's display")
     parser.add_argument(
-        "--face-idle", choices=FACE_IDLE_MODES, default="snow", help="Idle display (default: snow)"
+        "--face-idle",
+        choices=FACE_IDLE_MODES,
+        default="snow",
+        help="Idle display. Off puts the native Pi display to sleep (default: snow)",
     )
     parser.add_argument(
         "--face-port",

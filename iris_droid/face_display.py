@@ -20,7 +20,7 @@ from iris_droid.speech_motion import SpeechEnvelope
 from iris_droid.touch_commands import touch_commands
 
 FaceHead = Literal["humanoid-android", "sprout", "signal", "rivet"]
-FaceIdle = Literal["snow", "black"]
+FaceIdle = Literal["snow", "black", "off"]
 FaceActivity = Literal["idle", "listening", "thinking", "speaking"]
 FACE_HEADS: tuple[FaceHead, ...] = get_args(FaceHead)
 FACE_IDLE_MODES: tuple[FaceIdle, ...] = get_args(FaceIdle)

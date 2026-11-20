@@ -2,42 +2,84 @@ import json
 import struct
 from argparse import ArgumentTypeError
 from importlib.resources import files
+from types import SimpleNamespace
+from unittest.mock import Mock, call
 
 import pytest
 
+from iris_droid.display_power import IdleDisplayPower
 from iris_droid.expression import FACE_EXPRESSIONS
 from iris_droid.face_console import (
     DisplayState,
     fit_size,
     frame_for,
     read_state,
+    render,
     request_face_cycle,
     window_size,
 )
 from iris_droid.face_display import FACE_HEADS, FaceDisplay
 
 
-def test_console_uses_the_running_voice_clients_display_state(monkeypatch, fake_clock) -> None:
+@pytest.mark.parametrize("idle_mode", ["black", "off"])
+def test_console_uses_the_running_voice_clients_display_state(
+    monkeypatch, fake_clock, idle_mode
+) -> None:
     monkeypatch.setattr("iris_droid.face_display.monotonic", fake_clock.monotonic)
-    display = FaceDisplay("rivet", "black")
+    display = FaceDisplay("rivet", idle_mode)
     with display.serve(0) as port:
         assert port is not None
-        assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black")
+        assert read_state(port) == DisplayState("rivet", "idle", "neutral", idle_mode)
         with display.speaking("amused"):
             assert read_state(port) == DisplayState(
-                "rivet", "speaking", "amused", "black", mouth=()
+                "rivet", "speaking", "amused", idle_mode, mouth=()
             )
         fake_clock.advance(299)
         display.show("idle")  # The capture loop can report idle repeatedly.
-        assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black", show_idle=True)
+        assert read_state(port) == DisplayState(
+            "rivet", "idle", "neutral", idle_mode, show_idle=True
+        )
         fake_clock.advance(1)
-        assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black")
+        assert read_state(port) == DisplayState("rivet", "idle", "neutral", idle_mode)
         display.show("listening")
-        assert read_state(port) == DisplayState("rivet", "listening", "neutral", "black")
+        assert read_state(port) == DisplayState("rivet", "listening", "neutral", idle_mode)
         with display.speaking("amused"):
             fake_clock.advance(120)
-        assert read_state(port) == DisplayState("rivet", "idle", "neutral", "black", show_idle=True)
+        assert read_state(port) == DisplayState(
+            "rivet", "idle", "neutral", idle_mode, show_idle=True
+        )
     assert read_state(port) is None
+
+
+def test_console_wakes_for_face_before_flipping_without_input(monkeypatch) -> None:
+    actions = Mock()
+    pygame = Mock(QUIT=1)
+    pygame.display.flip = actions.flip
+    pygame.event.get.side_effect = [[], [], [], [], [], [], [SimpleNamespace(type=pygame.QUIT)]]
+    screen = Mock()
+    screen.get_size.return_value = (800, 480)
+    sprite = Mock()
+    sprite.get_size.return_value = (400, 480)
+    monkeypatch.setattr("iris_droid.face_console.load_sprites", lambda *_: lambda *_: sprite)
+    monkeypatch.setattr("iris_droid.face_console.smile_icon", lambda *_: sprite)
+    pygame.Rect.return_value.centerx = pygame.Rect.return_value.centery = 20
+    monkeypatch.setattr("iris_droid.display_power._kms_power", lambda _: actions.power)
+    power = IdleDisplayPower(pygame)
+    idle = DisplayState("signal", "idle", "neutral", "off")
+    listening = DisplayState("signal", "listening", "neutral", "off")
+    states = iter([idle, idle, None, listening, idle, idle, idle])
+
+    render(pygame, screen, lambda: next(states), Mock(), Mock(), power=power)
+    assert actions.mock_calls == [
+        call.flip(),
+        call.power(False),
+        call.power(True),
+        call.flip(),
+        call.flip(),
+        call.power(False),
+    ]
+    power.wake()
+    actions.power.assert_called_with(True)
 
 
 def test_console_cycles_previews_and_restores_the_selected_face(tmp_path, monkeypatch) -> None:
