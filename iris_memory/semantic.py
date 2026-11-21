@@ -14,6 +14,7 @@ import numpy as np
 from iris_memory.embeddings import EmbeddingError, Encoder
 from iris_memory.records import SearchHit
 from iris_memory.schema import VECTOR_SCHEMA
+from iris_memory.text import is_recall_request, topical_terms
 from iris_turn import check_deadline, measured
 
 if TYPE_CHECKING:
@@ -75,25 +76,61 @@ class SemanticMemory:
             encoded = self._encode_rows(rows)
             check_deadline()
         except EmbeddingError:
-            with self.archive.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                if self.archive._policy(db, owner) == policy:
-                    for row in rows:
-                        db.execute(
-                            "INSERT INTO embedding_failures(chunk,model,attempts,retry_at) "
-                            "SELECT id,?,1,? FROM chunks WHERE id=? AND owner=? AND exchange=? "
-                            "AND text=? ON CONFLICT(chunk,model) DO UPDATE SET "
-                            "attempts=embedding_failures.attempts+1,retry_at=excluded.retry_at",
-                            (
-                                self.encoder.model_id,
-                                time.time() + 60,
-                                row["id"],
-                                owner,
-                                row["exchange"],
-                                row["text"],
-                            ),
-                        )
-            raise
+            if len(rows) > 1:
+                # Isolate a single bad chunk rather than penalizing innocent neighbors.
+                encoded = {}
+                failed_rows = []
+                for row in rows:
+                    check_deadline()
+                    try:
+                        encoded.update(self._encode_rows([row]))
+                    except EmbeddingError:
+                        failed_rows.append(row)
+                if failed_rows:
+                    with self.archive.connect() as db:
+                        db.execute("BEGIN IMMEDIATE")
+                        if self.archive._policy(db, owner) == policy:
+                            for row in failed_rows:
+                                db.execute(
+                                    "INSERT INTO embedding_failures(chunk,model,attempts,retry_at) "
+                                    "SELECT id,?,1,? FROM chunks WHERE id=? AND owner=? "
+                                    "AND exchange=? AND text=? "
+                                    "ON CONFLICT(chunk,model) DO UPDATE SET "
+                                    "attempts=embedding_failures.attempts+1,"
+                                    "retry_at=excluded.retry_at",
+                                    (
+                                        self.encoder.model_id,
+                                        time.time() + 60,
+                                        row["id"],
+                                        owner,
+                                        row["exchange"],
+                                        row["text"],
+                                    ),
+                                )
+                if not encoded:
+                    raise
+                rows = [row for row in rows if row["id"] in encoded]
+            else:
+                with self.archive.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    if self.archive._policy(db, owner) == policy:
+                        for row in rows:
+                            db.execute(
+                                "INSERT INTO embedding_failures(chunk,model,attempts,retry_at) "
+                                "SELECT id,?,1,? FROM chunks WHERE id=? AND owner=? "
+                                "AND exchange=? AND text=? "
+                                "ON CONFLICT(chunk,model) DO UPDATE SET "
+                                "attempts=embedding_failures.attempts+1,retry_at=excluded.retry_at",
+                                (
+                                    self.encoder.model_id,
+                                    time.time() + 60,
+                                    row["id"],
+                                    owner,
+                                    row["exchange"],
+                                    row["text"],
+                                ),
+                            )
+                raise
         with self.archive.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             if self.archive._policy(db, owner) != policy:
@@ -125,8 +162,6 @@ class SemanticMemory:
         return committed
 
     def _encode_rows(self, rows: list[sqlite3.Row]) -> dict[int, bytes]:
-        from iris_memory.recall import is_recall_request, topical_terms
-
         # Empty vectors mark non-evidence turns as processed without exposing them
         # to semantic search. Missing rows remain a recoverable durable work queue.
         useful = [
@@ -205,16 +240,14 @@ class SemanticMemory:
             start.isoformat() if start else None,
             end.isoformat() if end else None,
         )
-        # Select bounded candidate IDs before fetching vector/text payloads.
-        # Sorting large blobs for the entire archive needlessly spills temporary
-        # data; the inner LIMIT preserves the exact candidate policy and order.
+        # Select bounded candidate IDs before fetching vector/text payloads, then
+        # score all valid candidate vectors in one vectorized BLAS matrix multiply.
         with self.archive.connect() as db:
             rows = list(
                 db.execute(
                     "SELECT c.id,c.exchange,c.owner,c.conversation,c.text,e.created_at,"
                     "substr(e.user_text,1,8000) AS user_text,e.sequence,v.vector "
-                    "FROM (SELECT c.id "
-                    "FROM embedding_vectors v "
+                    "FROM (SELECT c.id FROM embedding_vectors v "
                     "JOIN chunks c ON c.id=v.chunk JOIN exchanges e ON e.id=c.exchange "
                     "WHERE v.model=? AND c.owner=? AND c.superseded=0 AND length(v.vector)>0 "
                     "AND (? IS NULL OR julianday(e.created_at)>=julianday(?)) "
@@ -251,28 +284,48 @@ class SemanticMemory:
         norm = float(np.linalg.norm(query_vector))
         if norm <= 0:
             raise EmbeddingError("Embedding model returned a zero query vector")
-        query_vector = query_vector / norm
-        scored = []
+        query_vector = (query_vector / norm).astype(np.float32, copy=False)
+        expected_bytes = self.encoder.dimensions * 4
+        valid_rows: list[sqlite3.Row] = []
+        blobs: list[bytes] = []
         for row in rows:
-            if len(row["vector"]) != self.encoder.dimensions * 4:
+            raw = row["vector"]
+            if len(raw) == expected_bytes:
+                valid_rows.append(row)
+                blobs.append(raw)
+        if not blobs:
+            return []
+        matrix = np.frombuffer(b"".join(blobs), dtype="<f4").reshape(
+            len(blobs), self.encoder.dimensions
+        )
+        norms = np.linalg.norm(matrix, axis=1)
+        finite_unit = np.isfinite(matrix).all(axis=1) & (np.abs(norms - 1.0) <= 0.001)
+        if not finite_unit.any():
+            return []
+        keep_indices = np.flatnonzero(finite_unit)
+        sims = np.clip(matrix[keep_indices] @ query_vector[0], -1.0, 1.0)
+        above = np.flatnonzero(sims >= self.minimum)
+        if not above.size:
+            return []
+        candidates = [
+            (
+                float(sims[idx]),
+                int(valid_rows[int(keep_indices[idx])]["sequence"]),
+                int(keep_indices[idx]),
+            )
+            for idx in above
+        ]
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        result: list[SearchHit] = []
+        seen: set[str] = set()
+        for similarity, _, row_idx in candidates:
+            row = valid_rows[row_idx]
+            if row["exchange"] in seen:
                 continue
-            vector = np.frombuffer(row["vector"], dtype="<f4")
-            if vector.shape != (self.encoder.dimensions,) or not np.isfinite(vector).all():
-                continue
-            if abs(float(np.linalg.norm(vector)) - 1.0) > 0.001:
-                continue
-            similarity = min(1.0, max(-1.0, float(vector @ query_vector[0])))
-            if similarity >= self.minimum:
-                item = cast(SearchHit, {key: row[key] for key in row.keys() if key != "vector"})
-                item["semantic_similarity"] = similarity
-                scored.append(item)
-        scored.sort(key=lambda item: (item["semantic_similarity"], item["sequence"]), reverse=True)
-        result = []
-        seen = set()
-        for item in scored:
-            if item["exchange"] not in seen:
-                result.append(item)
-                seen.add(item["exchange"])
-                if len(result) >= limit:
-                    break
+            item = cast(SearchHit, {key: row[key] for key in row.keys() if key != "vector"})
+            item["semantic_similarity"] = similarity
+            result.append(item)
+            seen.add(row["exchange"])
+            if len(result) >= limit:
+                break
         return result

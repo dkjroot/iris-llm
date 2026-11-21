@@ -12,7 +12,7 @@ from typing import Any, cast
 from pydantic import ValidationError
 
 from iris_chat_engines.backends import ChatBackend
-from iris_chat_engines.budget import estimate, input_budget
+from iris_chat_engines.budget import estimate, estimate_bytes, input_budget
 from iris_chat_engines.messages import ChatError, Message
 from iris_memory.hierarchy import Hierarchy
 from iris_memory.index import MemoryIndex
@@ -59,6 +59,8 @@ class MemoryContext:
         self.index = index
         self.backend = backend
         self.source_conversations: set[str] = set()
+        self.core_included = False
+        self.background_maintenance = False
         self.hierarchy = (
             Hierarchy(index.archive, settings, backend)
             if settings.memory_hierarchy_enabled
@@ -216,6 +218,7 @@ class MemoryContext:
         search_query: str | None = None,
     ) -> str:
         self.source_conversations = set()
+        self.core_included = False
         if not self.settings.history_turns:
             return ""
         upcoming = [
@@ -224,58 +227,67 @@ class MemoryContext:
             Message(role="user", content=utterance),
         ]
         pressure = estimate(upcoming, tools) >= input_budget(self.settings) * 0.75
-        # Also summarise before history_turns would discard the oldest raw turn.
-        self.index.enqueue(owner, conversation)
-        job = self.index.pending(owner, conversation)
-        pending_count = job["pending_count"] if job else 0
-        pressure = pressure or (
-            sum(m.role == "user" for m in history) >= self.settings.history_turns
-            and pending_count >= max(2, self.settings.history_turns // 2)
-        )
-        ready = job is not None and (
-            pressure or pending_count >= self.settings.memory_summary_interval
-        )
-        if ready:
-            self.checkpoint(owner, conversation, force=pressure)
+        if self.background_maintenance:
+            # Keep the reply hot path read-only unless real context-window pressure hits.
+            if pressure:
+                with self.index.archive.snapshot():
+                    job = self.index.pending(owner, conversation)
+                if job is not None:
+                    self.checkpoint(owner, conversation, force=True)
         else:
-            backlog = self.index.next_conversation(owner, conversation)
-            if backlog is not None:
-                self.checkpoint(owner, backlog, force=True)
+            # Also summarise before history_turns would discard the oldest raw turn.
+            self.index.enqueue(owner, conversation)
+            job = self.index.pending(owner, conversation)
+            pending_count = job["pending_count"] if job else 0
+            pressure = pressure or (
+                sum(m.role == "user" for m in history) >= self.settings.history_turns
+                and pending_count >= max(2, self.settings.history_turns // 2)
+            )
+            ready = job is not None and (
+                pressure or pending_count >= self.settings.memory_summary_interval
+            )
+            if ready:
+                self.checkpoint(owner, conversation, force=pressure)
+            else:
+                backlog = self.index.next_conversation(owner, conversation)
+                if backlog is not None:
+                    self.checkpoint(owner, backlog, force=True)
         # Explicit recall is grounded in the chosen discussion. Today's summary
         # can refer to a different topic or a later version of the same story.
-        notes = self.index.notes(owner, conversation) if recalled is None else []
-        if self.hierarchy is not None:
-            notes = self.hierarchy.select_notes(owner, search_query or utterance, notes)
-        compact: list[dict[str, Any]] = []
-        for note in notes:
-            item = {
-                "text": note["text"],
-                "kind": note["kind"],
-                "scope": note["scope"],
-                "status": note["status"],
-                "sources": note["sources"],
-                "created_at": note["created_at"],
-            }
-            if (
-                len(json.dumps([*compact, item], ensure_ascii=False))
-                > self.settings.memory_summary_chars
-            ):
-                break
-            compact.append(item)
-        recent = " ".join(m.content or "" for m in history if m.role == "user")[-1500:]
-        from iris_memory.hierarchy import attention_text
+        with self.index.archive.snapshot():
+            notes = self.index.notes(owner, conversation) if recalled is None else []
+            if self.hierarchy is not None:
+                notes = self.hierarchy.select_notes(owner, search_query or utterance, notes)
+            compact: list[dict[str, Any]] = []
+            for note in notes:
+                item = {
+                    "text": note["text"],
+                    "kind": note["kind"],
+                    "scope": note["scope"],
+                    "status": note["status"],
+                    "sources": note["sources"],
+                    "created_at": note["created_at"],
+                }
+                if (
+                    len(json.dumps([*compact, item], ensure_ascii=False))
+                    > self.settings.memory_summary_chars
+                ):
+                    break
+                compact.append(item)
+            recent = " ".join(m.content or "" for m in history if m.role == "user")[-1500:]
+            from iris_memory.hierarchy import attention_text
 
-        if attention_text(utterance) != utterance:
-            recent = ""
-        try:
-            matches: Sequence[SourceExcerpt] = (
-                list(recalled)
-                if recalled is not None
-                else self.index.search(owner, conversation, search_query or utterance, recent)
-            )
-        except sqlite3.Error as error:
-            LOGGER.warning("Memory search unavailable (%s).", type(error).__name__)
-            matches = []
+            if attention_text(utterance) != utterance:
+                recent = ""
+            try:
+                matches: Sequence[SourceExcerpt] = (
+                    list(recalled)
+                    if recalled is not None
+                    else self.index.search(owner, conversation, search_query or utterance, recent)
+                )
+            except sqlite3.Error as error:
+                LOGGER.warning("Memory search unavailable (%s).", type(error).__name__)
+                matches = []
         excerpts: list[dict[str, Any]] = []
         for match in matches:
             item = {
@@ -315,8 +327,9 @@ class MemoryContext:
                     ensure_ascii=False,
                 )
             )
-            if len(memory.encode("utf-8")) <= allowance:
+            if estimate_bytes(len(memory.encode("utf-8"))) <= allowance:
                 self.source_conversations = {e["conversation"] for e in excerpts}
+                self.core_included = bool(core_context)
                 if compact:
                     self.source_conversations.add(conversation)
                 return memory

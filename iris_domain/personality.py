@@ -31,7 +31,7 @@ class PersonalityContext(BaseModel):
                 raise ValueError(
                     "Use letters, numbers, single spaces, hyphens or apostrophes in names"
                 )
-        if len({name.casefold() for name in self.names}) != len(self.names):
+        if len({name.casefold().replace("’", "'") for name in self.names}) != len(self.names):
             raise ValueError("Personality names must be unique, ignoring case")
         if self.active not in self.names:
             raise ValueError("Active personality must be one of the client's names")

@@ -58,6 +58,7 @@ def atomic_json(path: Path, value: object) -> None:
     """Replace a complete UTF-8 JSON file only after serialization and fsync succeed."""
     content = json.dumps(value, indent=4, allow_nan=False) + "\n"
     path = path.expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -76,6 +77,7 @@ def atomic_json(path: Path, value: object) -> None:
         if path.exists():
             temporary.chmod(path.stat().st_mode & 0o777)
         os.replace(temporary, path)
+        temporary = None
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)

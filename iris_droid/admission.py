@@ -32,7 +32,7 @@ class TurnQueue:
                     wait = expires - monotonic()
                     if wait <= 0:
                         raise QueueTimeout()
-                    self.condition.wait(wait)
+                    self.condition.wait(min(wait, 0.1))
                 check_deadline()
             except BaseException:
                 self.waiters.remove(ticket)
@@ -52,6 +52,9 @@ class BoundedHTTPServer(ThreadingHTTPServer):
     The handler separately caps uploads/queued turns. Spare connection slots let
     cancellation decisions bypass a busy brain. No request is retried here.
     """
+
+    daemon_threads = True
+    block_on_close = False
 
     def __init__(
         self,

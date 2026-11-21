@@ -9,20 +9,21 @@ The code is arranged around these boundaries:
 
 | Part | What belongs there |
 | --- | --- |
-| `iris_domain` | Shared values: messages, session state, commands, personalities, replies and audio capabilities. These modules don't open devices, databases or network connections. |
-| `iris_app` | The order of operations for a turn, exact command routing, memory preparation, reply preparation and ownership of running work. |
-| `iris_chat_engines` | The model conversation loop and provider adapters. A backend implements `complete(messages, tools)`. |
-| `iris_home` | Standalone authenticated home service, device adapters, schedules and scheduler ownership. |
-| `iris_memory` | The SQLite archive, retrieval, derived summaries, facts and memory policies. |
-| `iris_tools` | Validated tool definitions, execution policy and the services those tools call. |
-| `iris_stt_engines` and `iris_tts_engines` | Speech recognition and synthesis adapters. Isolated synthesis backends share `iris_tts_engines.worker`. |
-| `iris_droid` | HTTP and device adapters, the Pi client, display, mixer and browser assets. |
+| `iris_domain` | Shared values: messages, session state, commands, personalities, replies and audio capabilities (`AudioBuffer`, `Synthesizer`, `StreamingSynthesizer`). These modules don't open devices, databases or network connections. |
+| `iris_app` | The order of operations for a turn (`TurnCoordinator`), bounded session/policy storage (`SessionStore`), exact command routing (`CommandRouter`), memory orchestration, reply preparation and LIFO shutdown ownership (`ApplicationLifetime`). |
+| `iris_chat_engines` | The model conversation loop (`ChatEngine`), conservative byte-to-token budgeting and provider adapters (`ChatBackend.complete`, optional `stream()` and `BackendCapabilities`). |
+| `iris_home` | Standalone authenticated home service (`HomeServer`), protocol driver registry (`DRIVER_REGISTRY`, `MatterDriver`), capability interfaces (`Switch`, `Meter`, `Sensor`) and schedules. |
+| `iris_memory` | The SQLite archive (`WAL` mode), retrieval, derived view protocols (`DerivedView`, `VectorStore`), background maintenance (`MemoryMaintenanceWorker`), pure text helpers and memory policies. |
+| `iris_tools` | Validated `Skill` definitions (with self-contained `instructions`), `ToolRegistry.register()`, execution policy and persistent shared tool services. |
+| `iris_stt_engines` and `iris_tts_engines` | Speech recognition (`make_stt`, `open_stt`) and synthesis (`open_tts`, `StreamingSynthesizer`) adapters. Isolated synthesis backends share `iris_tts_engines.worker`. |
+| `iris_droid` | HTTP/NDJSON framing (`ResponseWriter`), decomposed client modules (`turn_state.py`, `playback.py`, `transport.py`, Pydantic `ClientSettings`), Pi display/touch UI and browser assets. |
 
-`iris_app.runtime.Brain` composes the application services. Its existing
+`iris_app.runtime.Brain` composes the application services (including `SessionStore`
+and public helpers like `volume_result(...)`). Its existing
 `turn(session, body, ...)` method is still available, including through the
 `iris_droid.server` import. New application code can call
-`brain.coordinator.execute(TurnInput(...))` directly. It doesn't need an HTTP
-request, a microphone or a display.
+`brain.coordinator.execute(TurnInput(...))` cleanly, optionally passing an
+explicit `audio_sink`, without an HTTP request, microphone or display.
 
 ## What happens during a turn
 
@@ -39,10 +40,13 @@ A direct application caller also goes through the coordinator's lock and deadlin
    retrieved context. These are derived views of the saved conversations.
 5. The model loop gets a response, including any permitted tool calls. External
    actions have their own attempt policy and receipts.
-6. The reply service prepares audio or hands audio chunks to the caller's stream
-   sink. The HTTP adapter owns the wire format and socket writes.
+6. The reply service prepares audio or hands audio chunks to `TurnInput.audio_sink`
+   (or the fallback stream context). `ResponseWriter` in `iris_droid.server` owns
+   the HTTP wire format and socket writes.
 7. Once the required acceptance gate has passed, Iris saves the completed
-   exchange and returns its completion metadata.
+   exchange (triggered before streaming audio `"start"` frames via `BEFORE_STREAM`,
+   so playback never outruns durable archival) and schedules background summary,
+   embedding and hierarchy maintenance.
 
 Streaming deliberately overlaps synthesis and delivery. Hearing the beginning of
 an answer isn't proof that its archive commit succeeded. Short memory controls
@@ -81,23 +85,26 @@ before asking Iris to repeat it.
 
 ## Adding a model, command or tool
 
-A model adapter implements `ChatBackend.complete`. `Brain` accepts a
-`backend_factory` for tests and alternative adapters. Simple fake backends don't
-need any other methods. Optional `BackendCapabilities` declares tool support and
-whether completion reasons are available. The HTTP adapter retains the provider's
+A model adapter implements `ChatBackend.complete` (and optionally `stream` when
+declaring `streaming=True` in `BackendCapabilities`). `Brain` accepts a
+`backend_factory` for tests and alternative adapters (used for both chat sessions
+and the optional `memory_extraction_model` background summarizer/extractor). Simple
+fake backends don't need any other methods. The HTTP adapter retains the provider's
 finish reason on the returned message as private metadata, so it isn't sent back
 as part of model history. A length-limited reply keeps its existing behaviour;
 recording the reason doesn't silently change how much context Iris retains.
-The conservative token estimator remains the fallback.
+The conservative byte-to-token estimator remains the fallback.
 
 Exact controls and model-selected tools are different entry points. A control
 extension registers a phrase and a handler with `brain.commands.register`.
-Built-in controls keep their precedence and can't be replaced by an extension.
+Built-in controls keep their precedence and can't be replaced by an extension;
+built-in companion and exit flows reuse `CommandRouter` helpers as well.
 The handler receives a `CommandRequest` after any required voice acceptance.
 Keep recognition exact, and add a phrase case, behaviour test and menu/help entry
 when introducing a control people will use.
 
-A tool registers a `Skill` with its argument schema and callable. Mark external
+A tool registers a `Skill` (with its argument schema, callable and optional
+prompt `instructions`) via `ToolRegistry.register()`. Mark external
 actions with `effect=True`; read-only tools keep the default. Equivalent validated
 arguments identify a repeated effect within a turn, regardless of the model's
 call ID. Set `retry_after_error=False` when even an edited retry is prohibited;
@@ -105,29 +112,31 @@ notifications use this policy. Different successful requests remain distinct.
 No policy here retries an action automatically.
 
 Tool registries are session-specific, but application tool services live across
-sessions. Notification cooldowns consequently survive clear-context and privacy
-resets. The home service lazily opens one application-owned TLS client and reuses
-it. Standalone registries keep per-call home connections unless an owner explicitly
-requests the persistent service lifetime.
+sessions. Notification cooldowns and Open-Meteo geocoding caches consequently survive
+clear-context and privacy resets. The home service lazily opens one application-owned
+TLS client and reuses it. Standalone registries keep per-call home connections
+unless an owner explicitly requests the persistent service lifetime.
 
-The memory orchestrator currently uses the concrete SQLite repository and its
-index/hierarchy services. That is intentional: policy transactions and provenance
-are real dependencies. A small, unused “generic store” interface would conceal
-those requirements rather than make another database interchangeable.
+The memory orchestrator uses the concrete SQLite repository for transactional
+policy/forgetting guarantees and schedules derived projections asynchronously via
+`MemoryMaintenanceWorker`. New derived views and vector backends can implement the
+`DerivedView` and `VectorStore` protocols in `iris_memory.protocols`.
 
 ## Clients and asynchronous work
 
-The Python client's `ClientController` owns selection revisions, private-mode
-state and admission of client turns. It rejects overlapping turns and requests
-after close. `ClientOptions` is the typed startup boundary; argparse continues to
-handle existing command-line arguments and saved configuration keys.
+The decomposed client splits network transport (`iris_droid.transport`), playback
+(`iris_droid.playback`), explicit turn phase/origin state (`iris_droid.turn_state.ClientTurnState`),
+and turn admission (`ClientController`). `ClientSettings` (aliased as `ClientOptions`)
+is the Pydantic startup boundary; argparse continues to handle command-line flags and
+`client_config.json`.
 
 The browser's `ChatController` owns session identity, pending request identity,
 personality revisions and the active audio identity. `chat.js` handles the DOM,
-fetch, storage and browser audio. Replies can only update the controller that
-started their request. A later personality choice wins over an earlier reply.
-Leaving the page aborts the fetch and retires its identity; an old result cannot
-change the page after it is restored from the browser's history.
+fetch, storage and browser audio (supporting both buffered WAV and streamed NDJSON
+replies). Replies can only update the controller that started their request. A later
+personality choice wins over an earlier reply. Leaving the page aborts the fetch and
+retires its identity; an old result cannot change the page after it is restored from
+the browser's history.
 
 Audio remains half-duplex: capture pauses while a turn is processed and played.
 The adapter retains identity checks after microphone permission, worklet setup

@@ -6,7 +6,7 @@ request already sent to a device. Receipts contain no arguments or private text.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -25,6 +25,7 @@ class TurnInput:
     volume_supported: bool = False
     face: bool = False
     personality: PersonalityContext | None = None
+    audio_sink: Callable[..., None] | None = None
 
 
 @dataclass

@@ -191,9 +191,14 @@ def test_macbook_command_prompts_privately_and_sends_once(monkeypatch, capsys):
 
     monkeypatch.setattr("sys.argv", ["notify", "--device", "iphone"])
     monkeypatch.setattr("iris_tools.notify.getpass.getpass", prompt)
-    monkeypatch.setattr(
-        "iris_tools.notify.httpx.Client", lambda: real_client(transport=httpx.MockTransport(handle))
-    )
+    client_kwargs = {}
+
+    def make_client(**kwargs):
+        client_kwargs.update(kwargs)
+        return real_client(transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr("iris_tools.notify.httpx.Client", make_client)
     assert main() == 0
+    assert client_kwargs == {"trust_env": False, "follow_redirects": False}
     assert len(prompts) == 2 and len(requests) == 1
     assert "accepted" in capsys.readouterr().out

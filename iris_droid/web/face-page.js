@@ -4,10 +4,15 @@ import { mountMenu } from "/menu.js";
 
 const menu = mountMenu({
   async executeCommand(phrase) {
-    const response = await fetch("/command", {
-      method: "POST", headers: {"Content-Type":"application/json"},
-      body: JSON.stringify(phrase), signal: AbortSignal.timeout(1800),
-    });
+    let response;
+    try {
+      response = await fetch("/command", {
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify(phrase), signal: AbortSignal.timeout(1800),
+      });
+    } catch {
+      throw new Error("Couldn’t reach the Iris client. Try again in a moment.");
+    }
     if (!response.ok) throw new Error(response.status === 409
       ? "Iris is busy. Wait for this turn to finish." : "Command not accepted. Try again when Iris is ready.");
     menu.setBusy(true);

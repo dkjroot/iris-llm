@@ -16,11 +16,15 @@ repository, retrieval code and application. SQL rows become typed records at the
 repository boundary, while JSON exports remain plain JSON-compatible values.
 
 `schema.py` contains the table definitions. `migrations.py` is the ordered registry
-of upgrades, including data repairs. `index.py` owns keyword search and summaries;
-`semantic.py` owns versioned vectors; `hierarchy.py` owns source-backed facts and
-topic attention. `maintenance.py` shares summary queue ordering between normal
-conversation writes and maintenance. These modules share one archive transaction
-when a change must succeed or fail as a whole.
+of upgrades, including data repairs. `text.py` holds shared text normalization
+and token helpers cleanly outside database code, while `protocols.py` defines the
+`DerivedView` and `VectorStore` extension contracts. `index.py` owns keyword search
+and summaries; `semantic.py` owns versioned vectors; `hierarchy.py` owns
+source-backed facts and topic attention; `worker.py` drains summary checkpoints,
+embedding batches and routine hierarchy extraction serially off the reply hot path.
+`maintenance.py` shares summary queue ordering between normal conversation writes
+and maintenance. Source archival isolates derived `Hierarchy` updates inside a
+SQLite `SAVEPOINT` so a derived conflict never drops an immutable conversation exchange.
 
 ## Tables and their meaning
 
@@ -69,7 +73,7 @@ plans; each index also adds work to every affected write.
 
 ## Upgrades and transaction boundaries
 
-The current schema version is **9**. `PRAGMA user_version` is SQLite's stored
+The current schema version is **10**. `PRAGMA user_version` is SQLite's stored
 version number. Iris applies pending migrations in order inside one explicit
 transaction, then commits the data and version together. An interruption rolls
 them back together. An archive from a newer, unsupported version is rejected.
@@ -87,29 +91,37 @@ it. Normal server startup and semantic indexing can upgrade it.
 | 7 | Previous fact status for reversible corrections. |
 | 8 | Repair chunk visibility where an independent current note still uses the same source as a superseded note. |
 | 9 | Fair summary queue order and persistent vector failure/backoff state. |
+| 10 | Composite query indexes for retrieval, summary queues and hierarchy lookups, plus the `AFTER UPDATE OF text` FTS5 trigger on `chunks`. |
 
 A read snapshot is a short transaction that sees one consistent database state.
 Restoring a session reads its active conversation, policy, revision and history
 together. Summary preparation reads policy, revision, job, sources and prior
-notes together. Hierarchy preparation and the keyword portion of explicit recall
-also group their related reads. Export uses one snapshot for all its tables.
-Nested reads on the same archive reuse the snapshot connection.
+notes together. Hierarchy preparation and keyword recall also group their
+related reads cleanly. Export uses one snapshot for all its tables. Nested reads
+on the same archive reuse the snapshot connection, and explicit read operations no
+longer acquire write locks or write to summary queues.
 
-Model inference runs after these transactions close. The write side checks the
-captured epoch, source identity and relevant revision before committing a result.
-A private-mode transition, deletion or rebuild therefore prevents an earlier
-inference result from recreating derived data. Read snapshots reject writes;
-they must never span network requests, inference or waiting for user input.
-Iris retains its existing SQLite journal mode and finite lock wait.
+The archive uses SQLite `WAL` mode (`PRAGMA journal_mode=WAL`,
+`PRAGMA synchronous=NORMAL`) alongside `PRAGMA secure_delete=ON` so readers do not
+block background writers. Whenever an explicit forget, deletion, or detail
+removal commits, Iris also runs `PRAGMA wal_checkpoint(TRUNCATE)` so forgotten text
+doesn't remain in the `-wal` file. Model inference runs after read transactions
+close, and `memory_extraction_model` lets you pick a smaller model specifically for
+background summary and hierarchy passes without changing the main chat model. The
+write side checks the captured epoch, source identity and relevant revision inside
+`BEGIN IMMEDIATE` before committing derived rows, preventing an earlier private-mode
+transition, deletion or rebuild from being undone by in-flight background work.
 
 ## Pending work, failures and rebuilds
 
 Summary work is durable for every pending conversation, without a queue-size
-cutoff. A successful partial batch goes behind jobs already waiting. A failed
-batch also yields its place, waits 60 seconds and stops being eligible after
-three failures until explicitly retried. This keeps a long or troublesome old
-conversation from continually taking the first slot. Normal scheduling still
-uses bounded serial work; it doesn't launch new background inference threads.
+cutoff. During live server operation, `MemoryMaintenanceWorker` drains pending
+summary checkpoints, semantic embedding batches and routine hierarchy extraction
+serially on a dedicated background thread so spoken replies don't block on
+extraction passes; synchronous summary checkpointing runs on the turn path only
+under real context-window pressure. A successful partial batch goes behind jobs
+already waiting. A failed batch also yields its place, waits 60 seconds and stops
+being eligible after three failures until explicitly retried.
 
 Missing vectors are the semantic work queue. Failures are tracked per chunk and
 model with the same 60-second backoff and three-failure limit. Later eligible
@@ -167,8 +179,9 @@ needs a separate measured change.
    and inspect the owner, active conversation, private-mode state and known text
    before putting the server back into normal use.
 5. If rolling back the software after an upgrade, restore the matching older
-   archive too. An older build that only supports version 8 cannot open version 9.
-   Never lower `user_version` manually to make an old build accept a new database.
+   archive too. An older build that only supports an earlier schema cannot open a
+   newer database version. Never lower `user_version` manually to make an old
+   build accept a new database.
 
 A plain file copy assumes a clean shutdown. If a crash has left a `-wal` or
 `-journal` file beside the archive, don't delete it or copy just the main file.

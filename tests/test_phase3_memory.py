@@ -34,7 +34,7 @@ def source_rows(path):
         return db.execute("SELECT * FROM exchanges ORDER BY sequence").fetchall()
 
 
-@pytest.mark.parametrize("version", range(1, 10))
+@pytest.mark.parametrize("version", range(1, 11))
 def test_frozen_supported_archives_inspect_then_upgrade_without_source_loss(tmp_path, version):
     path = fixture_archive(tmp_path, version)
     before = path.read_bytes()
@@ -48,7 +48,7 @@ def test_frozen_supported_archives_inspect_then_upgrade_without_source_loss(tmp_
     assert archive.current_conversation("bob") == "other"
     assert archive.policy("alice") == ((True, 7) if version >= 4 else (False, 0))
     with archive.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert not db.execute("PRAGMA foreign_key_check").fetchall()
         assert (
@@ -69,14 +69,14 @@ def test_frozen_supported_archives_inspect_then_upgrade_without_source_loss(tmp_
             )
         if version >= 6:
             assert db.execute("SELECT value FROM memory_facts").fetchone()[0] == "rainwater storage"
-        if version == 9:
+        if version >= 9:
             assert db.execute("SELECT attempts FROM embedding_failures").fetchone()[0] == 3
     upgraded = path.read_bytes()
     SQLiteMemory(path)
     assert path.read_bytes() == upgraded
 
 
-@pytest.mark.parametrize("target", range(1, 10))
+@pytest.mark.parametrize("target", range(1, 11))
 def test_interruption_after_each_migration_rolls_back_entire_upgrade(tmp_path, target):
     path = fixture_archive(tmp_path, target - 1) if target > 1 else tmp_path / "memory.sqlite3"
     with sqlite3.connect(path) as db:
@@ -100,11 +100,11 @@ def test_interruption_after_each_migration_rolls_back_entire_upgrade(tmp_path, t
 
 @pytest.mark.parametrize("create", [False, True])
 def test_future_schema_is_rejected_without_mutation(tmp_path, create):
-    path = fixture_archive(tmp_path, 9)
+    path = fixture_archive(tmp_path, 10)
     with sqlite3.connect(path) as db:
-        db.execute("PRAGMA user_version=10")
+        db.execute("PRAGMA user_version=11")
     before = path.read_bytes()
-    with pytest.raises(ValueError, match="Unsupported.*10"):
+    with pytest.raises(ValueError, match="Unsupported.*11"):
         SQLiteMemory(path, create=create)
     assert path.read_bytes() == before
 

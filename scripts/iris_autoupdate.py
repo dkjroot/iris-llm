@@ -64,6 +64,7 @@ class Checkout:
         state_dir.mkdir(exist_ok=True)
         self.lock_path = state_dir / "lock"
         self.pending_path = state_dir / "pending.json"
+        self.failed_path = state_dir / "failed.json"
 
     def git(self, *args: str, ok: tuple[int, ...] = (0,)) -> str:
         result = subprocess.run(
@@ -109,10 +110,40 @@ class Checkout:
         if self.git("status", "--porcelain", "--untracked-files=no"):
             raise UpdateError("Tracked files have local edits. Skipping the update.")
 
+    @staticmethod
+    def _atomic_write(path: Path, text: str) -> None:
+        temp = path.with_suffix(".tmp")
+        with temp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            fsync = getattr(os, "fsync", None)
+            if fsync is not None:
+                fsync(handle.fileno())
+        temp.replace(path)
+
     def save_pending(self, pending: PendingUpdate) -> None:
-        temp = self.pending_path.with_suffix(".tmp")
-        temp.write_text(json.dumps(asdict(pending)), encoding="utf-8")
-        temp.replace(self.pending_path)
+        self._atomic_write(self.pending_path, json.dumps(asdict(pending)))
+
+    def save_failed(self, commit: str) -> None:
+        self._atomic_write(self.failed_path, json.dumps({"failed_target": commit}))
+
+    def load_failed(self) -> str | None:
+        if not self.failed_path.exists():
+            return None
+        try:
+            data = json.loads(self.failed_path.read_text(encoding="utf-8"))
+            target = data.get("failed_target") if isinstance(data, dict) else None
+            if isinstance(target, str) and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", target):
+                return target
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def clear_failed(self) -> None:
+        try:
+            self.failed_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def load_pending(self) -> PendingUpdate:
         try:
@@ -150,6 +181,7 @@ class Checkout:
         *,
         prepare: Callable[[PendingUpdate], None] | None = None,
         verify: Callable[[], None] | None = None,
+        rollback_on_failure: bool = False,
     ) -> None:
         current = self.git("rev-parse", "HEAD")
         if self.pending_path.exists():
@@ -165,6 +197,12 @@ class Checkout:
         else:
             target = self.fetch_upstream()
             if current == target:
+                return
+            if rollback_on_failure and self.load_failed() == target:
+                log(
+                    f"Skipping previously failed update {target[:12]} "
+                    "until upstream advances past it."
+                )
                 return
             ahead, behind = map(
                 int,
@@ -190,10 +228,54 @@ class Checkout:
         if self.git("rev-parse", "HEAD") != current:
             raise UpdateError("HEAD changed while stopping services; review the pending update.")
         if current == pending.previous:
-            self.git("merge", "--ff-only", "--no-overwrite-ignore", pending.target)
+            try:
+                self.git("merge", "--ff-only", "--no-overwrite-ignore", pending.target)
+            except UpdateError:
+                if prepare is not None:
+                    # Services were stopped before HEAD moved; bring them back up.
+                    try:
+                        restart()
+                    except (UpdateError, OSError, subprocess.SubprocessError) as restart_err:
+                        log(f"Could not restart services after merge failure: {restart_err}")
+                    self.pending_path.unlink(missing_ok=True)
+                raise
             log(f"Updated Iris from {current[:12]} to {pending.target[:12]}.")
         self.require_clean()
-        self.finish(pending, install, restart, verify=verify)
+        self.finish(
+            pending,
+            install,
+            restart,
+            prepare=prepare,
+            verify=verify,
+            rollback_on_failure=rollback_on_failure,
+        )
+
+    def _rollback(
+        self,
+        pending: PendingUpdate,
+        install: Callable[[], None],
+        restart: Callable[[], None],
+        *,
+        prepare: Callable[[PendingUpdate], None] | None = None,
+        verify: Callable[[], None] | None = None,
+        reinstall: bool = False,
+    ) -> None:
+        log(f"Rolling back Iris from {pending.target[:12]} to {pending.previous[:12]}.")
+        if prepare is not None:
+            try:
+                prepare(pending)
+            except (UpdateError, OSError, subprocess.SubprocessError) as stop_err:
+                log(f"Warning while stopping services for rollback: {stop_err}")
+        self.git("reset", "--hard", pending.previous)
+        if reinstall:
+            install()
+        restart()
+        if verify is not None:
+            try:
+                verify()
+            except (UpdateError, OSError, subprocess.SubprocessError) as verify_err:
+                log(f"Warning: rollback readiness check failed: {verify_err}")
+        self.pending_path.unlink(missing_ok=True)
 
     def finish(
         self,
@@ -201,25 +283,53 @@ class Checkout:
         install: Callable[[], None],
         restart: Callable[[], None],
         *,
+        prepare: Callable[[PendingUpdate], None] | None = None,
         verify: Callable[[], None] | None = None,
+        rollback_on_failure: bool = False,
     ) -> None:
-        if not pending.installed:
-            pending.stage = "installing"
+        install_started = pending.installed
+        try:
+            if not pending.installed:
+                pending.stage = "installing"
+                self.save_pending(pending)
+                install_started = True
+                install()
+                pending.installed = True
+                self.save_pending(pending)
+            pending.stage = "starting"
             self.save_pending(pending)
-            install()
-            pending.installed = True
+            restart()
+            pending.stage = "verifying"
             self.save_pending(pending)
-        pending.stage = "starting"
-        self.save_pending(pending)
-        restart()
-        pending.stage = "verifying"
-        self.save_pending(pending)
-        if verify is not None:
-            verify()
+            if verify is not None:
+                verify()
+        except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:
+            if not rollback_on_failure:
+                raise
+            self.save_failed(pending.target)
+            try:
+                self._rollback(
+                    pending,
+                    install,
+                    restart,
+                    prepare=prepare,
+                    verify=verify,
+                    reinstall=install_started,
+                )
+            except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as rb_exc:
+                raise UpdateError(
+                    f"Update to {pending.target[:12]} failed ({exc}); rollback also failed "
+                    f"({rb_exc}). Review {self.pending_path}."
+                ) from exc
+            raise UpdateError(
+                f"Update to {pending.target[:12]} failed ({exc}); rolled back to "
+                f"{pending.previous[:12]} and skipping this commit until upstream advances."
+            ) from exc
         if self.git("rev-parse", "HEAD") != pending.target:
             raise UpdateError("HEAD changed during update completion; review the pending update.")
         self.require_clean()
         self.pending_path.unlink()
+        self.clear_failed()
         log(
             "Iris update completed."
             if verify is None
@@ -255,8 +365,8 @@ class HealthProbe:
             or parts.fragment
         ):
             raise UpdateError("Use an HTTP(S) health URL without credentials, query or fragment.")
-        token = os.environ.get(token_env, "")
-        if not token:
+        token = os.environ.get(token_env, "").strip()
+        if not token or any(ch in token for ch in "\r\n"):
             raise UpdateError(f"Set {token_env} in the updater environment for readiness checks.")
         self.url, self.kind, self.timeout, self.stable = url, kind, timeout, stable
         self.headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
@@ -455,49 +565,6 @@ class WindowsServer:
         self.start()
 
 
-def restart_service(name: str) -> None:
-    systemctl = ["systemctl", "--user"]
-    state = subprocess.run(
-        [*systemctl, "show", "--property=LoadState", "--value", "--", name],
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    if state.stdout.strip() == "not-found":
-        return
-    state.check_returncode()
-    failed = (
-        subprocess.run(
-            [*systemctl, "is-failed", "--quiet", "--", name],
-            stdin=subprocess.DEVNULL,
-            timeout=10,
-            check=False,
-        ).returncode
-        == 0
-    )
-    action = "restart" if failed else "try-restart"
-    subprocess.run(
-        [*systemctl, action, "--", name],
-        stdin=subprocess.DEVNULL,
-        timeout=60,
-        check=True,
-    )
-    log(f"Finished the update for {name}.")
-
-
-def restart_services(names: list[str]) -> None:
-    failures = []
-    for name in dict.fromkeys(names):
-        try:
-            restart_service(name)
-        except (OSError, subprocess.SubprocessError) as error:
-            log(f"Could not restart {name}: {error}")
-            failures.append(name)
-    if failures:
-        raise UpdateError(f"Services still need to restart: {', '.join(failures)}.")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
@@ -525,8 +592,8 @@ def main() -> int:
         parser.error("--launcher requires Windows")
     if args.launcher and args.health_kind != "iris":
         parser.error("--launcher requires --health-kind iris")
-    if not 3 <= args.readiness_timeout <= 600:
-        parser.error("--readiness-timeout must be between 3 and 600 seconds")
+    if not 8 <= args.readiness_timeout <= 600:
+        parser.error("--readiness-timeout must be between 8 and 600 seconds")
     if args.install_command == []:
         parser.error("--install-command needs a command")
 
@@ -576,10 +643,16 @@ def main() -> int:
 
                 def verify_services() -> None:
                     managed.verify()
-                    if probe is not None:
+                    if probe is not None and managed.selected:
                         probe.wait()
 
-                repo.update(install, managed.start, prepare=managed.prepare, verify=verify_services)
+                repo.update(
+                    install,
+                    managed.start,
+                    prepare=managed.prepare,
+                    verify=verify_services,
+                    rollback_on_failure=True,
+                )
                 return 0
 
             launcher = (repo.path / args.launcher).resolve(strict=True)
@@ -587,10 +660,14 @@ def main() -> int:
             assert probe is not None
 
             def verify_server() -> None:
-                probe.wait(
-                    lambda: server.process is not None and server.process.poll() is None,
-                    lambda: server.instance,
-                )
+                try:
+                    probe.wait(
+                        lambda: server.process is not None and server.process.poll() is None,
+                        lambda: server.instance,
+                    )
+                except BaseException:
+                    server.stop()
+                    raise
 
             try:
                 while True:
@@ -600,6 +677,7 @@ def main() -> int:
                             server.restart,
                             prepare=lambda _: server.stop(),
                             verify=verify_server,
+                            rollback_on_failure=True,
                         )
                     except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:
                         log(f"Iris update skipped or incomplete: {exc}")

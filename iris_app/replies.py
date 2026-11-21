@@ -27,6 +27,8 @@ if TYPE_CHECKING:
 STREAM_REPLY: ContextVar[Callable[[TurnReply, Generator[bytes], int], None] | None] = ContextVar(
     "stream_reply", default=None
 )
+BEFORE_STREAM: ContextVar[Callable[[], None] | None] = ContextVar("before_stream", default=None)
+STREAM_PIPELINE: ContextVar[bool] = ContextVar("stream_pipeline", default=False)
 
 
 def timed_audio(chunks: Generator[bytes]) -> Generator[bytes]:
@@ -58,6 +60,7 @@ class ReplyService:
         expression: FaceExpression | None = None,
         selected_personality: str | None = None,
         transactional: bool = False,
+        audio_sink: Callable[..., None] | None = None,
     ) -> TurnReply:
         result = TurnReply(
             heard=heard,
@@ -69,11 +72,18 @@ class ReplyService:
         )
         check_deadline()
         speech = plain_speech_text(text).strip() if not text_only else ""
-        stream_reply = STREAM_REPLY.get()
+        stream_reply = audio_sink if audio_sink is not None else STREAM_REPLY.get()
         # Short state-changing confirmations are fully synthesized before the
         # commit, then returned as a buffered reply. A streamed success cannot
         # be retracted if the subsequent database/policy operation fails.
-        if speech and stream_reply is not None and not transactional:
+        if (
+            speech
+            and stream_reply is not None
+            and not transactional
+            and callable(getattr(self.app.tts, "stream", None))
+            and isinstance(getattr(self.app.tts, "sample_rate", None), int)
+            and not isinstance(getattr(self.app.tts, "sample_rate", None), bool)
+        ):
             tts = cast(StreamingSynthesizer, self.app.tts)
             with stage("stream_delivery"):
                 stream_reply(result, timed_audio(tts.stream(speech)), tts.sample_rate)
@@ -98,6 +108,7 @@ class ReplyService:
             audio = base64.b64encode(write_wav(pcm, rate)).decode("ascii")
         result.audio = audio
         result._voice_timing = timing
-        if len(result.model_dump_json().encode()) > MAX_BODY:
+        metadata_size = len(result.model_copy(update={"audio": ""}).model_dump_json().encode())
+        if metadata_size + len(audio) > MAX_BODY:
             raise ValueError("Synthesized reply exceeds the transport size limit")
         return result

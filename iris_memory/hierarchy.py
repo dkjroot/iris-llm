@@ -20,6 +20,7 @@ from iris_memory.controls import MemoryPolicyError
 from iris_memory.model_output import parse_memory_json, validation_reason
 from iris_memory.records import FactRecord, NoteRecord, RecallSource, SearchHit, TopicRecord
 from iris_memory.schema import HIERARCHY_SCHEMA
+from iris_memory.text import topic_terms
 from iris_turn import check_deadline, measured
 
 if TYPE_CHECKING:
@@ -110,9 +111,7 @@ DISMISS = re.compile(
 
 
 def terms(text: str) -> set[str]:
-    from iris_memory.index import query_terms
-
-    return set(query_terms(text)) - {"let", "lets", "talk", "discuss", "finished", "ago"}
+    return topic_terms(text)
 
 
 def attention_text(text: str) -> str:
@@ -201,32 +200,78 @@ class Hierarchy:
             ]
 
     @measured("memory_interpretation")
-    def prepare(
-        self, owner: str, conversation: str, text: str, selected_topic: str = ""
+    def prepare_for_exchange(
+        self,
+        owner: str,
+        conversation: str,
+        source: str,
+        text: str,
+        selected_topic: str = "",
+        *,
+        expected_epoch: int | None = None,
     ) -> Prepared | None:
-        with self.archive.snapshot():
+        """Prepare derived fact/topic updates asynchronously for an already-archived exchange."""
+        with self.archive.snapshot() as db:
             private, epoch = self.archive.policy(owner)
             if private or self.backend is None:
                 return None
-            with self.archive.connect() as db:
-                revision = int(
-                    db.execute(
-                        "SELECT COALESCE(MAX(sequence),0) FROM exchanges WHERE owner=?", (owner,)
-                    ).fetchone()[0]
+            if expected_epoch is not None and epoch != expected_epoch:
+                return None
+            row = db.execute(
+                "SELECT sequence, origin FROM exchanges WHERE owner=? AND id=?", (owner, source)
+            ).fetchone()
+            if row is None or row["origin"] != "human":
+                return None
+            source_seq = int(row["sequence"])
+            prior_rows = list(
+                db.execute(
+                    "SELECT origin, user_text, assistant_text FROM exchanges "
+                    "WHERE owner=? AND conversation=? AND sequence<? "
+                    "ORDER BY sequence DESC LIMIT 2",
+                    (owner, conversation, source_seq),
                 )
-            recent = self.archive.recent(owner, conversation, 2, 2000)
+            )
+            prior_rows.reverse()
             recent_context = [
                 {
-                    "origin": e.origin,
-                    "human": e.user_text[:300],
-                    "assistant": e.assistant_text[:300],
+                    "origin": e["origin"],
+                    "human": str(e["user_text"])[:300],
+                    "assistant": str(e["assistant_text"])[:300],
                 }
-                for e in recent
+                for e in prior_rows
             ]
             from iris_memory.recall import is_recall_request
 
             explicit = bool(selected_topic) or is_recall_request(text)
-            facts = self.facts(owner, limit=12, include_blocked=explicit)
+            facts = [
+                f
+                for f in self.facts(owner, limit=12, include_blocked=explicit)
+                if f["source"] != source
+            ]
+            seen_fact_ids = {f["id"] for f in facts}
+            query_words = sorted(terms(text))[:8]
+            if query_words:
+                score = " + ".join(
+                    "(instr(lower(f.fact_key),?)>0 OR instr(lower(f.value),?)>0)"
+                    for _ in query_words
+                )
+                params: list[object] = [owner, source, explicit]
+                for word in query_words:
+                    params.extend((word, word))
+                params.append(8)
+                for frow in db.execute(
+                    "SELECT f.*,e.created_at,e.conversation,e.sequence FROM memory_facts f "
+                    "JOIN exchanges e ON e.id=f.source WHERE f.owner=? AND f.source!=? "
+                    "AND f.status!='superseded' "
+                    "AND (? OR NOT EXISTS(SELECT 1 FROM recall_blocks b WHERE b.owner=f.owner "
+                    "AND b.conversation=e.conversation)) "
+                    "AND (" + score + ") > 0 ORDER BY e.sequence DESC LIMIT ?",
+                    params,
+                ):
+                    record = cast(FactRecord, dict(frow))
+                    if record["id"] not in seen_fact_ids:
+                        facts.append(record)
+                        seen_fact_ids.add(record["id"])
             from iris_memory.details import Details
 
             explicit_details = Details(self.archive).items(owner, limit=12, core_first=True)
@@ -259,8 +304,31 @@ class Hierarchy:
                 reverse=True,
             )
             topics = self.topics(owner, text, limit=16, include_blocked=explicit)
-        # All candidate data and the current text must fit the summary model window.
-        # No DB transaction spans inference. Only current human evidence can create a fact.
+        return self._interpret(
+            conversation,
+            text,
+            selected_topic,
+            recent_context,
+            facts,
+            topics,
+            source_seq,
+            epoch,
+            explicit,
+        )
+
+    def _interpret(
+        self,
+        conversation: str,
+        text: str,
+        selected_topic: str,
+        recent_context: list[dict[str, object]],
+        facts: list[FactRecord],
+        topics: list[TopicRecord],
+        revision: int,
+        epoch: int,
+        explicit: bool,
+    ) -> Prepared | None:
+        assert self.backend is not None
         active_topics = [
             t
             for t in topics
@@ -338,6 +406,256 @@ class Hierarchy:
             )
             return None
 
+    def commit_for_exchange(self, owner: str, source: str, prepared: Prepared) -> bool:
+        """Commit async hierarchy extraction for an already-archived exchange if still valid."""
+        from iris_memory import SQLiteMemory
+
+        with self.archive.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            private, epoch = SQLiteMemory._policy(db, owner)
+            if private or epoch != prepared.epoch:
+                return False
+            row = db.execute(
+                "SELECT * FROM exchanges WHERE owner=? AND id=?", (owner, source)
+            ).fetchone()
+            if row is None or row["origin"] != "human":
+                return False
+            if db.execute(
+                "SELECT 1 FROM memory_facts WHERE source=? "
+                "UNION SELECT 1 FROM memory_attention WHERE source=? LIMIT 1",
+                (source, source),
+            ).fetchone():
+                return False
+            extra_sources = self._apply_prepared(db, owner, source, row, prepared)
+            conversation = str(row["conversation"])
+            all_sources = tuple(dict.fromkeys((*prepared.source_conversations, *extra_sources)))
+            if self.archive.user_version >= 5:
+                for src in all_sources:
+                    if src != conversation:
+                        db.execute(
+                            "INSERT OR IGNORE INTO conversation_uses VALUES (?,?,?)",
+                            (owner, src, conversation),
+                        )
+                    db.execute(
+                        "INSERT OR IGNORE INTO detail_uses SELECT owner,label,? FROM detail_uses "
+                        "WHERE owner=? AND conversation=?",
+                        (conversation, owner, src),
+                    )
+            return True
+
+    @staticmethod
+    def _apply_prepared(
+        db: sqlite3.Connection,
+        owner: str,
+        source: str,
+        row: sqlite3.Row,
+        prepared: Prepared,
+    ) -> set[str]:
+        Hierarchy._validate(
+            str(row["user_text"]),
+            prepared.interpretation,
+            list(prepared.facts),
+            list(prepared.topics),
+            "resolved" if prepared.explicit_recall else "",
+        )
+        extra_sources: set[str] = set()
+        version = int(db.execute("PRAGMA user_version").fetchone()[0])
+        for fact in prepared.interpretation.facts:
+            old = db.execute(
+                "SELECT id,value FROM memory_facts WHERE owner=? AND fact_key=? AND scope=? "
+                "AND status NOT IN ('superseded','historical') ORDER BY rowid DESC LIMIT 1",
+                (owner, fact.key, fact.scope),
+            ).fetchone()
+            if old and fact.supersedes != old[0] and fact.status != "historical":
+                if old["value"] == fact.value:
+                    continue
+                LOGGER.warning("Skipping unresolved derived fact update; source exchange retained.")
+                continue
+            previous = next((f for f in prepared.facts if f["id"] == fact.supersedes), None)
+            detail_label = previous.get("detail_label") if previous else None
+            supersedes = (
+                fact.supersedes
+                if fact.supersedes and not fact.supersedes.startswith("detail:")
+                else None
+            )
+            if supersedes:
+                db.execute(
+                    "UPDATE memory_facts SET status_before_supersession=status, "
+                    "status='superseded' WHERE owner=? AND id=?",
+                    (owner, supersedes),
+                )
+            if detail_label is not None:
+                if version >= 10:
+                    db.execute(
+                        "INSERT OR IGNORE INTO detail_supersessions(owner,label,source) "
+                        "VALUES (?,?,?)",
+                        (owner, detail_label, source),
+                    )
+                else:
+                    db.execute(
+                        "INSERT OR IGNORE INTO detail_supersessions(owner,label) VALUES (?,?)",
+                        (owner, detail_label),
+                    )
+                db.execute(
+                    "INSERT OR IGNORE INTO detail_uses VALUES (?,?,?)",
+                    (owner, detail_label, row["conversation"]),
+                )
+            db.execute(
+                "INSERT INTO memory_facts(id,owner,fact_key,value,kind,scope,lifetime,importance,"
+                "status,source,evidence,supersedes,detail_label) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    str(uuid4()),
+                    owner,
+                    fact.key,
+                    fact.value,
+                    fact.kind,
+                    fact.scope,
+                    fact.lifetime,
+                    fact.importance,
+                    fact.status,
+                    source,
+                    fact.evidence,
+                    supersedes,
+                    detail_label,
+                ),
+            )
+        seen_targets: set[str] = set()
+        for topic in prepared.interpretation.topics:
+            target = topic.target
+            if target is None:
+                if not topic.engaged and topic.status == "unchanged":
+                    continue
+                folded = topic.label.casefold()
+                existing_rows = db.execute(
+                    "SELECT t.id, t.label, e.conversation FROM memory_topics t "
+                    "JOIN exchanges e ON e.id=t.source "
+                    "WHERE t.owner=? AND t.scope=? "
+                    "AND (? OR NOT EXISTS(SELECT 1 FROM recall_blocks b "
+                    "WHERE b.owner=t.owner AND b.conversation=e.conversation))",
+                    (owner, topic.scope, prepared.explicit_recall),
+                ).fetchall()
+                matched = next(
+                    (r for r in existing_rows if str(r["label"]).casefold() == folded), None
+                )
+                if matched is not None:
+                    target = str(matched["id"])
+                    if matched["conversation"]:
+                        extra_sources.add(str(matched["conversation"]))
+                else:
+                    target = str(uuid4())
+                    db.execute(
+                        "INSERT INTO memory_topics VALUES (?,?,?,?,?)",
+                        (target, owner, topic.label, topic.scope, source),
+                    )
+            if target in seen_targets:
+                continue
+            if topic.engaged or topic.status != "unchanged":
+                seen_targets.add(target)
+                db.execute(
+                    "INSERT INTO memory_attention VALUES (?,?,?,?,?)",
+                    (target, source, int(topic.engaged), topic.status, topic.evidence),
+                )
+        return extra_sources
+
+    @measured("memory_interpretation")
+    def prepare(
+        self, owner: str, conversation: str, text: str, selected_topic: str = ""
+    ) -> Prepared | None:
+        with self.archive.snapshot():
+            private, epoch = self.archive.policy(owner)
+            if private or self.backend is None:
+                return None
+            with self.archive.connect() as db:
+                revision = int(
+                    db.execute(
+                        "SELECT COALESCE(MAX(sequence),0) FROM exchanges WHERE owner=?", (owner,)
+                    ).fetchone()[0]
+                )
+            recent = self.archive.recent(owner, conversation, 2, 2000)
+            recent_context: list[dict[str, object]] = [
+                {
+                    "origin": e.origin,
+                    "human": e.user_text[:300],
+                    "assistant": e.assistant_text[:300],
+                }
+                for e in recent
+            ]
+            from iris_memory.recall import is_recall_request
+
+            explicit = bool(selected_topic) or is_recall_request(text)
+            facts = self.facts(owner, limit=12, include_blocked=explicit)
+            seen_fact_ids = {f["id"] for f in facts}
+            query_words = sorted(terms(text))[:8]
+            if query_words:
+                score = " + ".join(
+                    "(instr(lower(f.fact_key),?)>0 OR instr(lower(f.value),?)>0)"
+                    for _ in query_words
+                )
+                params: list[object] = [owner, explicit]
+                for word in query_words:
+                    params.extend((word, word))
+                params.append(8)
+                with self.archive.connect() as db:
+                    for row in db.execute(
+                        "SELECT f.*,e.created_at,e.conversation,e.sequence FROM memory_facts f "
+                        "JOIN exchanges e ON e.id=f.source WHERE f.owner=? "
+                        "AND f.status!='superseded' "
+                        "AND (? OR NOT EXISTS(SELECT 1 FROM recall_blocks b WHERE b.owner=f.owner "
+                        "AND b.conversation=e.conversation)) "
+                        "AND (" + score + ") > 0 ORDER BY e.sequence DESC LIMIT ?",
+                        params,
+                    ):
+                        record = cast(FactRecord, dict(row))
+                        if record["id"] not in seen_fact_ids:
+                            facts.append(record)
+                            seen_fact_ids.add(record["id"])
+            from iris_memory.details import Details
+
+            explicit_details = Details(self.archive).items(owner, limit=12, core_first=True)
+            for item in explicit_details:
+                if not item["available"]:
+                    continue
+                if any(f.get("detail_label") == item["label"] for f in facts):
+                    continue
+                facts.append(
+                    {
+                        "id": "detail:" + item["label"],
+                        "fact_key": item["label"],
+                        "value": item["text"],
+                        "scope": "fictional"
+                        if re.search(
+                            r"\b(?:fictional|story|character)\b",
+                            item["label"] + " " + item["text"],
+                            re.I,
+                        )
+                        else "real",
+                        "conversation": "",
+                        "detail_label": item["label"],
+                    }
+                )
+            facts.sort(
+                key=lambda f: (
+                    f.get("detail_label") in {"name", "my name", "preferred name"},
+                    f.get("kind") == "identity",
+                ),
+                reverse=True,
+            )
+            topics = self.topics(owner, text, limit=16, include_blocked=explicit)
+        # All candidate data and the current text must fit the summary model window.
+        # No DB transaction spans inference. Only current human evidence can create a fact.
+        return self._interpret(
+            conversation,
+            text,
+            selected_topic,
+            recent_context,
+            facts,
+            topics,
+            revision,
+            epoch,
+            explicit,
+        )
+
     @staticmethod
     def _validate(
         text: str,
@@ -400,13 +718,20 @@ class Hierarchy:
                 }:
                     raise ValueError("Uncertain correction cannot replace a confirmed fact")
         seen.clear()
+        seen_topic_labels: set[str] = set()
         switch = SWITCH.search(text)
         destination = attention_text(text)
         for topic in result.topics:
-            key = topic.target or topic.scope + ":" + topic.label.casefold()
-            if key in seen or topic.evidence not in text:
+            label_key = topic.scope + ":" + topic.label.casefold()
+            if (
+                (topic.target and topic.target in seen)
+                or label_key in seen_topic_labels
+                or topic.evidence not in text
+            ):
                 raise ValueError("Invalid topic evidence")
-            seen.add(key)
+            if topic.target:
+                seen.add(topic.target)
+            seen_topic_labels.add(label_key)
             if topic.target:
                 old_topic = topic_ids.get(topic.target)
                 if (
@@ -452,16 +777,27 @@ class Hierarchy:
             "(SELECT 1 FROM memory_facts f WHERE f.supersedes=memory_facts.id AND f.source!=?)",
             (owner, source, source),
         )
-        db.execute(
-            "DELETE FROM detail_supersessions WHERE owner=? AND label IN "
-            "(SELECT detail_label FROM memory_facts WHERE source=?) AND NOT EXISTS "
-            "(SELECT 1 FROM memory_facts f WHERE f.owner=detail_supersessions.owner "
-            "AND f.detail_label=detail_supersessions.label AND f.source!=?)",
-            (owner, source, source),
-        )
+        version = int(db.execute("PRAGMA user_version").fetchone()[0])
+        if version >= 10:
+            db.execute(
+                "DELETE FROM detail_supersessions WHERE owner=? AND label IN "
+                "(SELECT detail_label FROM memory_facts WHERE source=?) "
+                "AND (source=? OR (source IS NULL AND NOT EXISTS "
+                "(SELECT 1 FROM memory_facts f WHERE f.owner=detail_supersessions.owner "
+                "AND f.detail_label=detail_supersessions.label AND f.source!=?)))",
+                (owner, source, source, source),
+            )
+        else:
+            db.execute(
+                "DELETE FROM detail_supersessions WHERE owner=? AND label IN "
+                "(SELECT detail_label FROM memory_facts WHERE source=?) AND NOT EXISTS "
+                "(SELECT 1 FROM memory_facts f WHERE f.owner=detail_supersessions.owner "
+                "AND f.detail_label=detail_supersessions.label AND f.source!=?)",
+                (owner, source, source),
+            )
 
     @staticmethod
-    def commit(db: sqlite3.Connection, owner: str, source: str, prepared: Prepared) -> None:
+    def commit(db: sqlite3.Connection, owner: str, source: str, prepared: Prepared) -> set[str]:
         # Called inside the successful source-exchange transaction.
         from iris_memory import SQLiteMemory
 
@@ -483,87 +819,7 @@ class Hierarchy:
             or row["origin"] != "human"
         ):
             raise MemoryPolicyError("Memory changed during interpretation; retry this turn")
-        Hierarchy._validate(
-            str(row["user_text"]),
-            prepared.interpretation,
-            list(prepared.facts),
-            list(prepared.topics),
-            "resolved" if prepared.explicit_recall else "",
-        )
-        for fact in prepared.interpretation.facts:
-            old = db.execute(
-                "SELECT id,value FROM memory_facts WHERE owner=? AND fact_key=? AND scope=? "
-                "AND status NOT IN ('superseded','historical') ORDER BY rowid DESC LIMIT 1",
-                (owner, fact.key, fact.scope),
-            ).fetchone()
-            if old and fact.supersedes != old[0] and fact.status != "historical":
-                if old["value"] == fact.value:
-                    continue
-                raise MemoryPolicyError(
-                    "The correction target is unresolved; try naming the detail"
-                )
-            previous = next((f for f in prepared.facts if f["id"] == fact.supersedes), None)
-            detail_label = previous.get("detail_label") if previous else None
-            supersedes = (
-                fact.supersedes
-                if fact.supersedes and not fact.supersedes.startswith("detail:")
-                else None
-            )
-            if supersedes:
-                db.execute(
-                    "UPDATE memory_facts SET status_before_supersession=status, "
-                    "status='superseded' WHERE owner=? AND id=?",
-                    (owner, supersedes),
-                )
-            if detail_label is not None:
-                db.execute(
-                    "INSERT OR IGNORE INTO detail_supersessions VALUES (?,?)", (owner, detail_label)
-                )
-                db.execute(
-                    "INSERT OR IGNORE INTO detail_uses VALUES (?,?,?)",
-                    (owner, detail_label, row["conversation"]),
-                )
-            db.execute(
-                "INSERT INTO memory_facts(id,owner,fact_key,value,kind,scope,lifetime,importance,"
-                "status,source,evidence,supersedes,detail_label) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    str(uuid4()),
-                    owner,
-                    fact.key,
-                    fact.value,
-                    fact.kind,
-                    fact.scope,
-                    fact.lifetime,
-                    fact.importance,
-                    fact.status,
-                    source,
-                    fact.evidence,
-                    supersedes,
-                    detail_label,
-                ),
-            )
-        for topic in prepared.interpretation.topics:
-            target = topic.target
-            if target is None:
-                if not topic.engaged and topic.status == "unchanged":
-                    continue
-                old = db.execute(
-                    "SELECT id FROM memory_topics WHERE owner=? AND lower(label)=? "
-                    "AND scope=? LIMIT 1",
-                    (owner, topic.label.casefold(), topic.scope),
-                ).fetchone()
-                target = str(old[0]) if old else str(uuid4())
-                if not old:
-                    db.execute(
-                        "INSERT INTO memory_topics VALUES (?,?,?,?,?)",
-                        (target, owner, topic.label, topic.scope, source),
-                    )
-            if topic.engaged or topic.status != "unchanged":
-                db.execute(
-                    "INSERT INTO memory_attention VALUES (?,?,?,?,?)",
-                    (target, source, int(topic.engaged), topic.status, topic.evidence),
-                )
+        return Hierarchy._apply_prepared(db, owner, source, row, prepared)
 
     def context(
         self, owner: str, query: str, prepared: Prepared | None, *, limit: int = 1200

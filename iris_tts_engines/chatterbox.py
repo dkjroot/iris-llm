@@ -87,7 +87,15 @@ class Chatterbox(SpeechWorker):
             reply = self.receive(timeout=180)
             if reply.status != "audio" or reply.rate <= 0:
                 raise RuntimeError("Chatterbox could not synthesize this reply.")
-            samples = np.frombuffer(base64.b64decode(reply.samples, validate=True), dtype="<f4")
+            raw = base64.b64decode(reply.samples, validate=True)
+            if reply.format == "i16":
+                if len(raw) % 2:
+                    raise RuntimeError("Chatterbox returned invalid PCM audio.")
+                samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / np.float32(32767)
+            else:
+                if len(raw) % 4:
+                    raise RuntimeError("Chatterbox returned invalid float audio.")
+                samples = np.frombuffer(raw, dtype="<f4")
             if not samples.size or not np.isfinite(samples).all() or not samples.any():
                 raise RuntimeError("Chatterbox returned empty, invalid or silent audio.")
             if self.receive(timeout=180).status != "done":

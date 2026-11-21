@@ -153,8 +153,9 @@ def test_voice_client_displays_the_pc_expression_during_audio(monkeypatch, tmp_p
         assert read_state()["activity"] == "listening"
         return RECORDING
 
-    tts.stream = generate_audio
-    tts.sample_rate = 24000
+    if stream:
+        tts.stream = generate_audio
+        tts.sample_rate = 24000
     monkeypatch.setenv("IRIS_DROID_TOKEN", TOKEN)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setattr(FaceDisplay, "serve", on_test_port)

@@ -64,8 +64,12 @@ def load_model(directory: Path) -> Model:
     config["weights_path"] = str(weights)
     config["weights_path_without_voice_cloning"] = None
     config["flow_lm"]["lookup_table"]["tokenizer_path"] = str(tokenizer)
-    torch.set_num_threads(2)
-    with tempfile.TemporaryDirectory(dir=directory) as staging:
+    threads_env = os.environ.get("OMP_NUM_THREADS", "").strip()
+    if threads_env.isdigit() and int(threads_env) > 0:
+        torch.set_num_threads(int(threads_env))
+    else:
+        torch.set_num_threads(min(4, os.cpu_count() or 2))
+    with tempfile.TemporaryDirectory() as staging:
         path = Path(staging) / "english.yaml"
         path.write_text(yaml.safe_dump(config, allow_unicode=True), encoding="utf-8")
         return cast(Model, pocket_tts.TTSModel.load_model(config=path))
@@ -99,7 +103,9 @@ def serve(model: Model, voice: Path, output: TextIO) -> None:
 
     def emit(status: str, samples: str = "") -> None:
         print(
-            json.dumps({"status": status, "samples": samples, "request_id": request_id}),
+            json.dumps(
+                {"protocol": 1, "status": status, "samples": samples, "request_id": request_id}
+            ),
             file=output,
             flush=True,
         )
@@ -158,8 +164,12 @@ def main() -> int:
         sys.addaudithook(keep_inference_local)
         if args.voice is None:
             raise ValueError("Supply a prepared voice path.")
-        output = sys.stdout
-        with redirect_stdout(sys.stderr):
+        protocol_fd = os.dup(1)
+        os.dup2(2, 1)
+        with (
+            os.fdopen(protocol_fd, "w", encoding="utf-8", buffering=1) as output,
+            redirect_stdout(sys.stderr),
+        ):
             model = load_model(args.model_dir)
             if args.action == "prepare":
                 if args.reference is None:

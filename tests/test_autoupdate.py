@@ -121,42 +121,80 @@ def test_checkout_lock(repos: tuple[Path, Checkout]) -> None:
         pass
 
 
-def test_restarts_active_client_and_home_service_and_skips_missing_unit(monkeypatch):
-    import subprocess
+def test_rollback_on_verify_failure_skips_bad_commit_until_upstream_advances(
+    repos: tuple[Path, Checkout],
+) -> None:
+    upstream, repo = repos
+    before = git(repo.path, "rev-parse", "HEAD")
+    (upstream / "code.txt").write_text("broken", encoding="utf-8")
+    bad = commit(upstream, "Broken release")
+    events: list[str] = []
 
-    from scripts.iris_autoupdate import restart_services
+    def install() -> None:
+        events.append("install:" + (repo.path / "code.txt").read_text(encoding="utf-8"))
 
-    calls = []
+    def restart() -> None:
+        events.append("restart:" + (repo.path / "code.txt").read_text(encoding="utf-8"))
 
-    def run(argv, **kwargs):
-        calls.append(argv)
-        name = argv[-1]
-        if "show" in argv:
-            state = "not-found" if name == "missing.service" else "loaded"
-            return subprocess.CompletedProcess(argv, int(state == "not-found"), stdout=state)
-        if "is-failed" in argv:
-            return subprocess.CompletedProcess(argv, int(name != "iris-home.service"))
-        return subprocess.CompletedProcess(argv, 0)
+    def verify() -> None:
+        current = (repo.path / "code.txt").read_text(encoding="utf-8")
+        events.append("verify:" + current)
+        if current == "broken":
+            raise UpdateError("health failed")
 
-    monkeypatch.setattr(subprocess, "run", run)
-    restart_services(["iris-client.service", "iris-home.service", "missing.service"])
-    assert [(argv[2], argv[-1]) for argv in calls if argv[2] in {"try-restart", "restart"}] == [
-        ("try-restart", "iris-client.service"),
-        ("restart", "iris-home.service"),
+    with pytest.raises(UpdateError, match="rolled back"):
+        repo.update(install, restart, verify=verify, rollback_on_failure=True)
+    assert git(repo.path, "rev-parse", "HEAD") == before
+    assert not repo.pending_path.exists()
+    assert repo.load_failed() == bad
+    assert events == [
+        "install:broken",
+        "restart:broken",
+        "verify:broken",
+        "install:original",
+        "restart:original",
+        "verify:original",
     ]
 
+    # Next timer tick skips the failed commit cleanly without touching services.
+    events.clear()
+    repo.update(install, restart, verify=verify, rollback_on_failure=True)
+    assert events == []
+    assert git(repo.path, "rev-parse", "HEAD") == before
 
-def test_home_service_is_restarted_even_if_client_restart_fails(monkeypatch):
-    from scripts import iris_autoupdate
+    # Once upstream advances past the broken commit, the updater applies the fix and clears state.
+    (upstream / "code.txt").write_text("fixed", encoding="utf-8")
+    fixed = commit(upstream, "Fixed release")
+    repo.update(install, restart, verify=verify, rollback_on_failure=True)
+    assert git(repo.path, "rev-parse", "HEAD") == fixed
+    assert repo.load_failed() is None
+    assert events == ["install:fixed", "restart:fixed", "verify:fixed"]
 
-    attempts = []
 
-    def restart(name):
-        attempts.append(name)
-        if name == "iris-client.service":
-            raise OSError("client restart failed")
+def test_merge_failure_restarts_stopped_services_and_clears_pending(
+    repos: tuple[Path, Checkout],
+) -> None:
+    upstream, repo = repos
+    (upstream / ".gitignore").write_text("", encoding="utf-8")
+    (upstream / "local.txt").write_text("upstream", encoding="utf-8")
+    (repo.path / "local.txt").write_text("settings", encoding="utf-8")
+    commit(upstream, "Collision")
+    events: list[str] = []
 
-    monkeypatch.setattr(iris_autoupdate, "restart_service", restart)
-    with pytest.raises(UpdateError, match="iris-client.service"):
-        iris_autoupdate.restart_services(["iris-client.service", "iris-home.service"])
-    assert attempts == ["iris-client.service", "iris-home.service"]
+    with pytest.raises(UpdateError):
+        repo.update(
+            lambda: events.append("install"),
+            lambda: events.append("restart"),
+            prepare=lambda _: events.append("stop"),
+            rollback_on_failure=True,
+        )
+    assert events == ["stop", "restart"]
+    assert not repo.pending_path.exists()
+
+
+def test_health_probe_rejects_control_characters_in_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts.iris_autoupdate import HealthProbe
+
+    monkeypatch.setenv("IRIS_DROID_TOKEN", "bad\r\nX-Injected: 1")
+    with pytest.raises(UpdateError, match="environment"):
+        HealthProbe("http://127.0.0.1:8765/v1/health")

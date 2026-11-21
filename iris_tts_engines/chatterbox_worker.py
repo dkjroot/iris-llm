@@ -46,7 +46,7 @@ class Model(Protocol):
 
 
 def emit(stream: TextIO, payload: dict[str, str | int | None]) -> None:
-    print(json.dumps(payload), file=stream, flush=True)
+    print(json.dumps({"protocol": 1, **payload}), file=stream, flush=True)
 
 
 def serve(model: Model, output: TextIO) -> None:
@@ -70,8 +70,11 @@ def serve(model: Model, output: TextIO) -> None:
                 raise ValueError("Invalid speech request")
             request_id = request["request_id"]
             text = request["text"]
-            samples = np.asarray(model.generate(text).numpy(), dtype="<f4").reshape(-1)
-            if samples.nbytes > 20_000_000:
+            samples = np.asarray(model.generate(text).numpy(), dtype=np.float32).reshape(-1)
+            if not samples.size or not np.isfinite(samples).all():
+                raise ValueError("Chatterbox returned invalid audio")
+            pcm = (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
+            if len(pcm) > 10_000_000:
                 raise ValueError("Speech reply exceeds transport limit")
             emit(
                 output,
@@ -79,7 +82,8 @@ def serve(model: Model, output: TextIO) -> None:
                     "status": "audio",
                     "request_id": request_id,
                     "rate": model.sr,
-                    "samples": base64.b64encode(samples.tobytes()).decode("ascii"),
+                    "format": "i16",
+                    "samples": base64.b64encode(pcm).decode("ascii"),
                 },
             )
             emit(output, {"status": "done", "request_id": request_id})
@@ -137,10 +141,14 @@ def main() -> int:
                 f"Chatterbox model files missing in {args.model_dir}. Run iris voice download."
             )
 
-        output = sys.stdout
-        # PyTorch and the model use stdout for diagnostics. Reserve the original
-        # stream for responses so the server never has to parse progress messages.
-        with redirect_stdout(sys.stderr):
+        # Redirect OS fd 1 as well as Python sys.stdout so native C/CUDA/PyTorch
+        # diagnostics can never corrupt the NDJSON protocol pipe.
+        protocol_fd = os.dup(1)
+        os.dup2(2, 1)
+        with (
+            os.fdopen(protocol_fd, "w", encoding="utf-8", buffering=1) as output,
+            redirect_stdout(sys.stderr),
+        ):
             import torch
             from chatterbox.tts_turbo import ChatterboxTurboTTS, Conditionals  # type: ignore[import-not-found]
 

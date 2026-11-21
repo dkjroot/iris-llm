@@ -3,26 +3,18 @@
 from __future__ import annotations
 
 import base64
-import json
 import os
-import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from functools import partial
 from importlib.resources import files
-from math import isfinite
-from pathlib import Path
-from queue import Empty, SimpleQueue
-from threading import Event, Thread
-from time import monotonic, time_ns
-from typing import TYPE_CHECKING, Protocol, TypedDict
-from urllib.parse import urlsplit
-from uuid import uuid4
+from threading import Event
+from time import monotonic as monotonic
+from time import time_ns as time_ns
+from typing import TYPE_CHECKING, TypedDict
 
 import httpx
-from pydantic import ValidationError
 
-from iris_domain.replies import COMMAND_FEEDBACK_HEADER, CommandFeedback
 from iris_droid.capture import (
     DEFAULT_MICROPHONE_BUFFER,
     CaptureCalibration,
@@ -32,44 +24,83 @@ from iris_droid.capture import (
 )
 from iris_droid.client_settings import ClientOptions, parse_client_args
 from iris_droid.companion import CompanionTimer, ConsoleInput
-from iris_droid.controller import ClientController
 from iris_droid.conversation import WakeConversation
-from iris_droid.expression import FACE_HEADER
 from iris_droid.face_display import FaceDisplay
 from iris_droid.feedback import ClientFeedback
-from iris_droid.personalities import PERSONALITY_HEADER, load_personalities
+from iris_droid.playback import (
+    AudioAnimation,
+    AudioClock,
+    OutputStatus,
+    PlaybackTrace,
+    output_delay,
+    play_stream,
+    play_timed,
+    play_wav,
+    report_stream_timing,
+    report_voice_timing,
+    resolve_audio_name,
+    resolve_microphone,
+    resolve_speaker,
+    scheduled_output,
+    stop_playback,
+)
 from iris_droid.protocol import (
-    COMPLETION_HEADER,
-    MAX_BODY,
-    VOICE_CANCEL_PATH,
-    VOICE_DECISION_PATH,
-    VOICE_STREAM_TYPE,
-    VOICE_TIMING_HEADER,
-    VOICE_TURN_HEADER,
     TurnCancelled,
-    TurnCompletion,
-    TurnReply,
     VoiceStreamStart,
-    VoiceTiming,
     is_clear_context,
     is_delete_previous,
     is_stop_listening,
     read_wav,
-    validate_token,
     write_wav,
 )
 from iris_droid.touch_commands import TouchCommands
-from iris_droid.volume import VolumeBackend, execute_volume, make_volume_backend, volume_command
+from iris_droid.transport import DroidClient
+from iris_droid.turn_state import ClientTurnState, TurnOrigin, TurnPhase
+from iris_droid.volume import make_volume_backend
 from iris_droid.wake import WakeDetector
-from iris_frames import ndjson_lines
-from iris_turn import configure_diagnostics, measured
+from iris_turn import configure_diagnostics
 
 if TYPE_CHECKING:
-    import numpy as np
-    import numpy.typing as npt
     import speech_recognition as sr
 
     from iris_droid.vad import SpeechDetector
+
+__all__ = [
+    "AudioAnimation",
+    "AudioClock",
+    "CaptureCalibration",
+    "CaptureInterrupted",
+    "CaptureOptions",
+    "CheckedMicrophoneStream",
+    "ClientFeedback",
+    "ClientTurnState",
+    "CompanionTimer",
+    "ConsoleInput",
+    "DroidClient",
+    "OutputStatus",
+    "PlaybackTrace",
+    "TurnOrigin",
+    "TurnPhase",
+    "WakeConversation",
+    "WakeDetector",
+    "main",
+    "monotonic",
+    "open_microphone",
+    "output_delay",
+    "play_stream",
+    "play_timed",
+    "play_wav",
+    "record_turn",
+    "report_stream_timing",
+    "report_voice_timing",
+    "resolve_audio_name",
+    "resolve_microphone",
+    "resolve_speaker",
+    "scheduled_output",
+    "stop_playback",
+    "time_ns",
+    "write_wav",
+]
 
 
 class CaptureOptions(TypedDict, total=False):
@@ -77,734 +108,6 @@ class CaptureOptions(TypedDict, total=False):
     vad_threshold: float
     on_listening: Callable[[], None]
     interrupt: Event
-
-
-class DroidClient:
-    def __init__(
-        self,
-        url: str,
-        token: str,
-        client: httpx.Client,
-        *,
-        wake_conversation: bool = False,
-        volume_backend: VolumeBackend | None = None,
-        trace_voice: bool = False,
-        stream_player: Callable[[VoiceStreamStart, Iterator[bytes]], int | None] | None = None,
-        face: bool = False,
-        cancel_listener: Callable[[Event], bool] | None = None,
-        cancel_feedback: ClientFeedback | None = None,
-        personalities_file: Path | None = None,
-    ) -> None:
-        parts = urlsplit(url)
-        _ = parts.port
-        if (
-            parts.scheme not in {"http", "https"}
-            or not parts.hostname
-            or parts.username
-            or parts.password
-            or parts.query
-            or parts.fragment
-            or parts.path not in {"", "/"}
-        ):
-            raise ValueError(
-                "Use the Iris droid server's http(s) origin, e.g. http://192.168.1.10:8765"
-            )
-        validate_token(token)
-        self.url = url.rstrip("/")
-        self.client = client
-        self.volume_backend = volume_backend
-        self.trace_voice = trace_voice
-        self.stream_player = stream_player
-        self.cancel_listener = cancel_listener
-        self.cancel_feedback = cancel_feedback
-        self.personality_headers = {
-            name: context.to_header()
-            for name, context in load_personalities(personalities_file).items()
-        }
-        self.state = ClientController(self.personality_headers)
-        self.headers = {"Authorization": f"Bearer {token}", "X-Iris-Session": str(uuid4())}
-        self.headers["X-Iris-Volume"] = "1"
-        self.headers[COMMAND_FEEDBACK_HEADER] = "1"
-        if wake_conversation:
-            self.headers["X-Iris-Wake-Conversation"] = "1"
-        if face:
-            self.headers[FACE_HEADER] = "1"
-
-    @property
-    def private_mode(self) -> bool:
-        return self.state.private_mode
-
-    @private_mode.setter
-    def private_mode(self, value: bool) -> None:
-        self.state.private_mode = value
-
-    @property
-    def personality(self) -> str | None:
-        return self.state.selection()[0]
-
-    def select_personality(self, name: str) -> bool:
-        return self.state.select(name)
-
-    def turn(
-        self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
-    ) -> TurnReply:
-        with self.state.turn():
-            return self._turn(body, text_only=text_only, companion_idle=companion_idle)
-
-    def _turn(
-        self, body: bytes, *, text_only: bool = False, companion_idle: bool = False
-    ) -> TurnReply:
-        if not 0 < len(body) <= MAX_BODY:
-            raise ValueError("Turn is empty or exceeds the transport size limit")
-        headers = {
-            **self.headers,
-            "Content-Type": "text/plain" if text_only or companion_idle else "audio/wav",
-        }
-        personality, personality_revision = self.state.selection()
-        if personality is not None:
-            headers[PERSONALITY_HEADER] = self.personality_headers[personality]
-        if companion_idle:
-            headers["X-Iris-Companion-Idle"] = "1"
-        path = "/v1/text" if text_only else "/v1/voice"
-        if self.cancel_listener is not None and not (text_only or companion_idle):
-            path = VOICE_CANCEL_PATH
-            headers[VOICE_TURN_HEADER] = str(uuid4())
-        try:
-            reply = self._request(path, body, headers)
-        except TurnCancelled:
-            if self.cancel_feedback is not None:
-                self.cancel_feedback.cancelled()
-            raise
-        self.state.acknowledge(reply, personality_revision, companion_idle=companion_idle)
-        if (
-            reply.selected_personality is not None
-            and self.personality != reply.selected_personality
-        ):
-            reply.command = CommandFeedback(
-                title="Personality unchanged",
-                message=f"Keeping your newer selection: {self.personality}.",
-                status="info",
-            )
-        if reply.volume is not None:
-            if companion_idle or reply.volume != volume_command(reply.heard):
-                raise ValueError("Unexpected speaker volume action")
-            result = execute_volume(self.volume_backend, reply.volume)
-            # Report the actual read-back, never an assumed success. This second
-            # request only synthesizes a fixed acknowledgement; it cannot act.
-            heard = reply.heard
-            print(result.description(), flush=True)
-            reply = self._request(
-                "/v1/volume-result",
-                result.model_dump_json().encode(),
-                {
-                    **self.headers,
-                    "Content-Type": "application/json",
-                    "X-Iris-Text-Only": "1" if text_only else "0",
-                },
-            )
-            if reply.volume is not None:
-                raise ValueError("Unexpected action in volume acknowledgement")
-            reply.heard = heard
-            reply.command = CommandFeedback(
-                title="Speaker volume",
-                message=result.description(),
-                status="success" if result.state is not None else "error",
-            )
-        return reply
-
-    def _request(self, path: str, body: bytes, headers: dict[str, str]) -> TurnReply:
-        headers = {**headers, COMPLETION_HEADER: "1", "Accept-Encoding": "identity"}
-        if self.trace_voice:
-            headers = {**headers, VOICE_TIMING_HEADER: "1"}
-        if path != "/v1/text" and self.stream_player is not None:
-            headers = {**headers, "Accept": VOICE_STREAM_TYPE}
-        with self.client.stream(
-            "POST", f"{self.url}{path}", content=body, headers=headers
-        ) as response:
-            response.raise_for_status()
-            if response.headers.get("Content-Encoding", "identity") != "identity":
-                raise httpx.RemoteProtocolError("Unexpected encoded Iris response")
-            private = response.headers.get("X-Iris-Private")
-            if private in {"0", "1"}:
-                self.private_mode = private == "1"
-            if path == VOICE_CANCEL_PATH:
-                return self._cancellable_reply(response, headers[VOICE_TURN_HEADER])
-            if response.headers.get("Content-Type") == VOICE_STREAM_TYPE:
-                lines = self._frames(response)
-                try:
-                    return self._stream_reply(response, next(lines, ""), lines)
-                except ValueError as error:
-                    raise httpx.RemoteProtocolError(str(error), request=response.request) from error
-            timing = response.headers.get(VOICE_TIMING_HEADER)
-            data = bytearray()
-            for chunk in response.iter_bytes():
-                data.extend(chunk)
-                if len(data) > MAX_BODY:
-                    raise ValueError("Server response exceeds the transport size limit")
-        reply = TurnReply.model_validate_json(bytes(data))
-        reply._exchange_id = response.headers.get("X-Iris-Exchange")
-        reply._deleted_exchange_id = response.headers.get("X-Iris-Deleted-Exchange")
-        if response.headers.get(COMPLETION_HEADER) == "1":
-            self._complete(
-                reply,
-                {
-                    "completion": {
-                        "outcome": "committed",
-                        "private": private == "1" if private in {"0", "1"} else None,
-                        "exchange_id": reply._exchange_id,
-                        "deleted_exchange_id": reply._deleted_exchange_id,
-                    }
-                },
-                response,
-            )
-        if self.trace_voice and timing is not None:
-            try:
-                reply._voice_timing = VoiceTiming.model_validate_json(timing)
-            except ValidationError:
-                print("Voice timing unavailable: invalid server timing.", flush=True)
-        return reply
-
-    @staticmethod
-    def _frames(response: httpx.Response) -> Iterator[str]:
-        return ndjson_lines(
-            response.iter_bytes(),
-            max_frame=MAX_BODY * 3 + 1024,
-            max_total=MAX_BODY * 4 + 65536,
-            max_frames=8192,
-        )
-
-    def _complete(
-        self, reply: TurnReply, frame: dict[str, object], response: httpx.Response
-    ) -> None:
-        value = frame.get("completion")
-        if value is None and response.headers.get(COMPLETION_HEADER) != "1":
-            return  # Older servers do not promise authoritative final metadata.
-        completion = TurnCompletion.model_validate(value)
-        self.private_mode = completion.private
-        if completion.command is not None:
-            reply.command = completion.command
-        reply._completion = completion
-        reply._exchange_id = completion.exchange_id
-        reply._deleted_exchange_id = completion.deleted_exchange_id
-
-    def _cancellable_reply(self, response: httpx.Response, turn_id: str) -> TurnReply:
-        lines = self._frames(response)
-        if response.headers.get("Content-Type") != VOICE_STREAM_TYPE:
-            raise httpx.RemoteProtocolError("Expected a cancellable voice stream")
-        try:
-            if json.loads(next(lines, "")) != {"event": "processing"}:
-                raise ValueError("Expected the voice processing event")
-        except ValueError as error:
-            raise httpx.RemoteProtocolError(str(error), request=response.request) from error
-        feedback = self.cancel_feedback
-        listener = self.cancel_listener
-        assert listener is not None
-        stop = Event()
-        cancelled = Event()
-        confirmed = Event()
-        retired = Event()
-
-        def decide(command: bytes) -> None:
-            result = self.client.post(
-                f"{self.url}{VOICE_DECISION_PATH}",
-                headers={**self.headers, VOICE_TURN_HEADER: turn_id},
-                content=command,
-                timeout=5,
-            )
-            result.raise_for_status()
-            if result.status_code != 204:
-                raise httpx.RemoteProtocolError("Unexpected voice turn decision response")
-
-        def listen() -> None:
-            try:
-                matched = listener(stop)
-            except Exception:
-                print("Cancel listener failed. Discarding this voice turn.", flush=True)
-                matched = True
-            if matched and not retired.is_set() and not self.state.closed:
-                cancelled.set()
-                try:
-                    decide(b"cancel")
-                except httpx.HTTPError:
-                    # The processing request can still confirm cancellation or
-                    # retry the decision when it reaches the acceptance boundary.
-                    return
-                confirmed.set()
-
-        with feedback.working() if feedback is not None else nullcontext():
-            worker = Thread(target=listen, name="iris-cancel-listener", daemon=True)
-            worker.start()
-            accepted = False
-            try:
-                for line in lines:
-                    # ASCII JSON escaping can turn a two-byte character into six bytes.
-                    if len(line) > MAX_BODY * 3 + 1024:
-                        raise ValueError("Oversized voice stream frame")
-                    frame = json.loads(line)
-                    if not isinstance(frame, dict):
-                        raise ValueError("Invalid voice stream frame")
-                    event = frame.get("event")
-                    if event == "ready" and not accepted:
-                        stop.set()
-                        worker.join(timeout=6)
-                        if worker.is_alive():
-                            retired.set()
-                            raise ValueError("Cancel listener did not stop; turn not accepted")
-                        if cancelled.is_set():
-                            if not confirmed.is_set():
-                                try:
-                                    decide(b"cancel")
-                                except httpx.HTTPStatusError as error:
-                                    if error.response.status_code != 409:
-                                        raise
-                                    # The first attempt may have cancelled and closed
-                                    # the turn before its acknowledgement reached us.
-                                else:
-                                    confirmed.set()
-                        else:
-                            decide(b"accept")
-                            accepted = True
-                    elif event == "cancelled":
-                        stop.set()
-                        worker.join(timeout=6)
-                        if worker.is_alive():
-                            retired.set()
-                            raise ValueError("Cancel listener did not stop; turn not accepted")
-                        raise TurnCancelled()
-                    elif event == "failed":
-                        stop.set()
-                        worker.join(timeout=6)
-                        if worker.is_alive():
-                            retired.set()
-                            raise ValueError("Cancel listener did not stop; turn not accepted")
-                        if confirmed.is_set():
-                            raise TurnCancelled()
-                        status = frame.get("status")
-                        if type(status) is not int or not 400 <= status <= 599:
-                            raise ValueError("Invalid voice error status")
-                        raise httpx.HTTPStatusError(
-                            "Voice turn failed",
-                            request=response.request,
-                            response=httpx.Response(status, request=response.request),
-                        )
-                    elif event == "start" and accepted:
-                        return self._stream_reply(response, line, lines)
-                    elif event == "result" and accepted:
-                        reply = TurnReply.model_validate(frame.get("reply"))
-                        if next(lines, None) is not None:
-                            raise ValueError("Voice stream continued after completion")
-                        private = frame.get("private")
-                        if isinstance(private, bool):
-                            self.private_mode = private
-                        if self.trace_voice and frame.get("timing") is not None:
-                            reply._voice_timing = VoiceTiming.model_validate(frame["timing"])
-                        self._complete(reply, frame, response)
-                        return reply
-                    else:
-                        raise ValueError("Unexpected cancellable voice event")
-                if confirmed.is_set():
-                    raise TurnCancelled()
-                raise ValueError("Cancellable voice stream ended before the reply")
-            except ValueError as error:
-                raise httpx.RemoteProtocolError(str(error), request=response.request) from error
-            finally:
-                retired.set()
-                stop.set()
-                worker.join(timeout=6)
-
-    def _stream_reply(
-        self, response: httpx.Response, first: str, lines: Iterator[str]
-    ) -> TurnReply:
-        timing: VoiceTiming | None = None
-        completion: dict[str, object] | None = None
-
-        def chunks() -> Iterator[bytes]:
-            nonlocal timing, completion
-            size = 0
-            for line in lines:
-                if len(line) > MAX_BODY:
-                    raise ValueError("Oversized voice stream frame")
-                frame = json.loads(line)
-                if not isinstance(frame, dict):
-                    raise ValueError("Invalid voice stream frame")
-                event = frame.get("event")
-                if event == "done":
-                    timing = VoiceTiming.model_validate(frame.get("timing"))
-                    if next(lines, None) is not None:
-                        raise ValueError("Voice stream continued after completion")
-                    completion = frame
-                    return
-                if event != "audio" or not isinstance(frame.get("pcm"), str):
-                    raise ValueError("Voice stream stopped before the reply finished")
-                pcm = base64.b64decode(frame["pcm"], validate=True)
-                size += len(pcm)
-                if not pcm or len(pcm) % 2 or size > MAX_BODY:
-                    raise ValueError("Invalid voice stream audio")
-                yield pcm
-            raise ValueError("Voice stream ended without a completion frame")
-
-        try:
-            if self.stream_player is None:
-                raise ValueError("Unexpected voice stream")
-            if len(first) > MAX_BODY:
-                raise ValueError("Oversized voice stream header")
-            start = VoiceStreamStart.model_validate_json(first)
-            scheduled_ns = self.stream_player(start, chunks())
-            completed = timing
-            if completed is None:
-                raise ValueError("Incomplete voice stream")
-            assert completion is not None
-            self._complete(start.reply, completion, response)
-        except ValueError as error:
-            raise httpx.RemoteProtocolError(str(error), request=response.request) from error
-        if self.trace_voice:
-            report_stream_timing(completed, start.first_audio_ns, scheduled_ns)
-        start.reply._streamed = True
-        return start.reply
-
-
-def play_wav(
-    data: bytes,
-    device: int | None = None,
-    *,
-    loop: bool = False,
-    lead_in: float = 0,
-    primer: bool = False,
-    on_speech_start: Callable[[int | None], None] | None = None,
-    on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
-) -> None:
-    if not 0 <= lead_in <= 2:
-        raise ValueError("Speech lead-in must be between 0 and 2 seconds")
-    import numpy as np
-    import sounddevice as sd
-    import speech_recognition as sr
-
-    pcm, rate = read_wav(data)
-    try:
-        try:
-            sd.check_output_settings(device=device, channels=1, dtype="int16", samplerate=rate)
-        except sd.PortAudioError:
-            # Direct ALSA hardware often accepts only 44.1/48 kHz. Convert the
-            # samples too: changing just the rate would change pitch and speed.
-            output_rate = int(sd.query_devices(device, "output")["default_samplerate"])
-            sd.check_output_settings(
-                device=device, channels=1, dtype="int16", samplerate=output_rate
-            )
-            pcm = sr.AudioData(pcm, rate, 2).get_raw_data(convert_rate=output_rate)
-            rate = output_rate
-        samples = np.frombuffer(pcm, dtype="<i2")
-        prefixes = []
-        if primer:
-            cue, cue_rate = read_wav(files("iris_sounds").joinpath("chirp.wav").read_bytes())
-            cue = sr.AudioData(cue, cue_rate, 2).get_raw_data(convert_rate=rate)
-            prefixes.append(np.frombuffer(cue, dtype="<i2"))
-        if lead_in:
-            prefixes.append(np.zeros(round(rate * lead_in), dtype="<i2"))
-        if on_speech_start is not None and not loop:
-            # Ignore the primer, padding and exact silence in the synthesized WAV.
-            first = int(np.argmax(samples != 0)) if samples.any() else None
-            speech_frame = (
-                None if first is None else sum(len(prefix) for prefix in prefixes) + first
-            )
-        else:
-            speech_frame = None
-        prefix_frames = sum(len(prefix) for prefix in prefixes)
-        if prefixes:
-            samples = np.concatenate([*prefixes, samples])
-        if loop:
-            sd.play(samples, rate, device=device, blocking=False, loop=True, latency="high")
-        elif on_speech_start is not None or on_audio is not None:
-            play_timed(
-                samples,
-                rate,
-                device,
-                speech_frame,
-                on_speech_start,
-                on_audio=on_audio,
-                prefix_frames=prefix_frames,
-            )
-        else:
-            sd.play(samples, rate, device=device, blocking=False, latency="high")
-            stream = sd.get_stream()
-            expires = monotonic() + len(samples) / rate + 5
-            try:
-                # play() owns its callback. Watch the public stream state instead
-                # of passing a second finished_callback through its keyword args.
-                pause = Event()
-                while stream.active:
-                    remaining = expires - monotonic()
-                    if remaining <= 0:
-                        stream.abort()
-                        raise OSError("Speaker playback did not finish")
-                    pause.wait(min(0.05, remaining))
-            finally:
-                stream.close()
-            status = sd.get_status()
-            if status is not None and status.output_underflow:
-                print("Speaker playback underrun: some audio may have been lost.", flush=True)
-    except sd.PortAudioError as error:
-        raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
-
-
-class AudioClock(Protocol):
-    @property
-    def currentTime(self) -> float: ...
-
-    @property
-    def outputBufferDacTime(self) -> float: ...
-
-
-class OutputStatus(Protocol):
-    @property
-    def output_underflow(self) -> bool: ...
-
-
-class AudioAnimation(TypedDict, total=False):
-    on_audio: Callable[[npt.NDArray[np.int16], int, float], None]
-
-
-class PlaybackTrace(TypedDict, total=False):
-    on_speech_start: Callable[[int | None], None]
-
-
-def output_delay(timing: AudioClock) -> float:
-    delay = timing.outputBufferDacTime - timing.currentTime
-    return delay if isfinite(delay) and 0 <= delay <= 2 else 0.0
-
-
-def scheduled_output(timing: AudioClock, frame: int, rate: int) -> int | None:
-    callback_ns = time_ns()
-    current = timing.currentTime
-    dac = timing.outputBufferDacTime
-    if isfinite(current) and isfinite(dac) and dac >= current and dac > 0:
-        return callback_ns + round((dac - current + frame / rate) * 1e9)
-    return None
-
-
-@measured("playback")
-def play_timed(
-    samples: npt.NDArray[np.int16],
-    rate: int,
-    device: int | None,
-    speech_frame: int | None,
-    on_speech_start: Callable[[int | None], None] | None,
-    *,
-    on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
-    prefix_frames: int = 0,
-) -> None:
-    import sounddevice as sd
-
-    finished = Event()
-    position = 0
-    scheduled_ns: int | None = None
-    underrun = False
-
-    def callback(
-        outdata: npt.NDArray[np.int16], frames: int, timing: AudioClock, status: OutputStatus
-    ) -> None:
-        nonlocal position, scheduled_ns, underrun
-        underrun |= status.output_underflow
-        if speech_frame is not None and position <= speech_frame < position + frames:
-            scheduled_ns = scheduled_output(timing, speech_frame - position, rate)
-        count = min(frames, len(samples) - position)
-        outdata[:count, 0] = samples[position : position + count]
-        outdata[count:].fill(0)
-        if on_audio is not None:
-            visual = outdata[:, 0].copy()
-            visual[: max(0, min(count, prefix_frames - position))] = 0
-            on_audio(visual, rate, output_delay(timing))
-        position += count
-        if position == len(samples):
-            raise sd.CallbackStop
-
-    with sd.OutputStream(
-        samplerate=rate,
-        channels=1,
-        dtype="int16",
-        device=device,
-        latency="high",
-        callback=callback,
-        finished_callback=finished.set,
-    ):
-        if not finished.wait(len(samples) / rate + 5):
-            raise OSError("Speaker playback did not finish")
-    if on_speech_start is not None:
-        on_speech_start(scheduled_ns)
-    if underrun:
-        print("Speaker playback underrun: some audio may have been lost.", flush=True)
-
-
-@measured("playback")
-def play_stream(
-    chunks: Iterator[bytes],
-    rate: int,
-    device: int | None,
-    *,
-    lead_in: float,
-    primer: bool,
-    before_output: Callable[[], None] | None = None,
-    on_audio: Callable[[npt.NDArray[np.int16], int, float], None] | None = None,
-) -> int | None:
-    import numpy as np
-    import sounddevice as sd
-    import speech_recognition as sr
-
-    try:
-        try:
-            sd.check_output_settings(device=device, channels=1, dtype="int16", samplerate=rate)
-            output_rate = rate
-        except sd.PortAudioError:
-            output_rate = int(sd.query_devices(device, "output")["default_samplerate"])
-            sd.check_output_settings(
-                device=device, channels=1, dtype="int16", samplerate=output_rate
-            )
-        # Buffer a small amount before opening the device to absorb network jitter.
-        initial: list[bytes] = []
-        size = 0
-        while size < round(rate * 0.16) * 2:
-            pcm = next(chunks, None)
-            if pcm is None:
-                break
-            initial.append(pcm)
-            size += len(pcm)
-        if not initial:
-            raise ValueError("Voice stream returned no audio")
-
-        queue: SimpleQueue[tuple[npt.NDArray[np.int16], int | None] | None] = SimpleQueue()
-        if primer:
-            cue, cue_rate = read_wav(files("iris_sounds").joinpath("chirp.wav").read_bytes())
-            cue = sr.AudioData(cue, cue_rate, 2).get_raw_data(convert_rate=output_rate)
-            queue.put((np.frombuffer(cue, dtype="<i2"), None))
-        if lead_in:
-            queue.put((np.zeros(round(output_rate * lead_in), dtype="<i2"), None))
-
-        converter = None
-        queued_seconds = lead_in + 2
-
-        def enqueue(pcm: bytes) -> None:
-            nonlocal converter, queued_seconds
-            queued_seconds += len(pcm) / (rate * 2)
-            if output_rate != rate:
-                pcm, converter = sr.audioop.ratecv(pcm, 2, 1, rate, output_rate, converter)
-            samples = np.frombuffer(pcm, dtype="<i2")
-            if samples.size:
-                first = int(np.argmax(samples != 0)) if samples.any() else None
-                queue.put((samples, first))
-
-        for pcm in initial:
-            enqueue(pcm)
-        finished = Event()
-        current: tuple[npt.NDArray[np.int16], int | None] | None = None
-        offset = 0
-        scheduled_ns: int | None = None
-        found_speech = False
-        underrun = False
-
-        def callback(
-            outdata: npt.NDArray[np.int16], frames: int, timing: AudioClock, status: OutputStatus
-        ) -> None:
-            nonlocal current, offset, scheduled_ns, found_speech, underrun
-            underrun |= status.output_underflow
-            outdata.fill(0)
-            visual = np.zeros(frames, dtype=np.int16) if on_audio is not None else None
-            written = 0
-            try:
-                while written < frames:
-                    if current is None:
-                        try:
-                            current = queue.get_nowait()
-                        except Empty:
-                            underrun = True
-                            return
-                        if current is None:
-                            raise sd.CallbackStop
-                        offset = 0
-                    samples, first = current
-                    count = min(frames - written, len(samples) - offset)
-                    if not found_speech and first is not None and offset <= first < offset + count:
-                        scheduled_ns = scheduled_output(
-                            timing, written + first - offset, output_rate
-                        )
-                        found_speech = True
-                    outdata[written : written + count, 0] = samples[offset : offset + count]
-                    if visual is not None and first is not None:
-                        visual[written : written + count] = samples[offset : offset + count]
-                    written += count
-                    offset += count
-                    if offset == len(samples):
-                        current = None
-            finally:
-                if on_audio is not None and visual is not None:
-                    on_audio(visual, output_rate, output_delay(timing))
-
-        if before_output is not None:
-            before_output()
-        with sd.OutputStream(
-            samplerate=output_rate,
-            channels=1,
-            dtype="int16",
-            device=device,
-            latency="high",
-            callback=callback,
-            finished_callback=finished.set,
-        ):
-            for pcm in chunks:
-                enqueue(pcm)
-            queue.put(None)
-            if not finished.wait(queued_seconds + 5):
-                raise OSError("Speaker stream did not finish")
-        if underrun:
-            print("Speaker stream underrun: playback may have paused.", flush=True)
-        return scheduled_ns
-    except sd.PortAudioError as error:
-        raise OSError(f"Speaker {device if device is not None else 'default'}: {error}") from error
-
-
-def report_stream_timing(
-    timing: VoiceTiming, first_audio_ns: int, scheduled_ns: int | None
-) -> None:
-    message = (
-        f"Voice timing ({timing.engine}, {timing.words} words, streaming) | "
-        f"first chunk {first_audio_ns / 1e9:.3f} s | synthesis {timing.synthesis_ns / 1e9:.3f} s | "
-        f"audio length {timing.audio_seconds:.3f} s"
-    )
-    if scheduled_ns is not None and scheduled_ns - timing.started_ns >= first_audio_ns:
-        message += (
-            f" | synthesis start to speaker {(scheduled_ns - timing.started_ns) / 1e9:.3f} s "
-            "(estimated)"
-        )
-    else:
-        message += " | speaker timing unavailable (check output device and system clocks)"
-    print(message, flush=True)
-
-
-def report_voice_timing(timing: VoiceTiming, scheduled_ns: int | None) -> None:
-    synthesis = timing.synthesis_ns / 1e9
-    message = (
-        f"Voice timing ({timing.engine}, {timing.words} words) | "
-        f"synthesis {synthesis:.3f} s | audio length {timing.audio_seconds:.3f} s"
-    )
-    if scheduled_ns is None:
-        message += " | speaker timing unavailable"
-    elif scheduled_ns - timing.started_ns < timing.synthesis_ns:
-        message += " | speaker timing unavailable (check both system clocks)"
-    else:
-        elapsed = (scheduled_ns - timing.started_ns) / 1e9
-        after_synthesis = elapsed - synthesis
-        message += (
-            f" | synthesis start to speaker {elapsed:.3f} s (estimated)"
-            f" | after synthesis {after_synthesis:.3f} s"
-        )
-    print(message, flush=True)
-
-
-def stop_playback() -> None:
-    import sounddevice as sd
-
-    try:
-        sd.stop()
-    except sd.PortAudioError as error:
-        raise OSError(f"Cannot stop feedback playback: {error}") from error
 
 
 @contextmanager
@@ -947,6 +250,7 @@ def record_turn(
                 pause=pause_threshold,
                 threshold=vad_threshold,
                 on_speech=on_listening,
+                trim_silence=True,
             )
         else:
             audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=limit)
@@ -955,62 +259,6 @@ def record_turn(
     if feedback is not None and not quiet:
         feedback.recorded()
     return write_wav(pcm[: int(limit * 16000) * 2], 16000)
-
-
-def resolve_audio_name(
-    name: str, devices: Iterable[tuple[int, str]], *, option: str, list_command: str
-) -> int:
-    def stable_name(value: str) -> str:
-        # PortAudio's ALSA names can embed the changing card index.
-        return re.sub(r"\(hw:\d+,(\d+)\)$", r"(hw:*,\1)", value.strip()).casefold()
-
-    wanted = stable_name(name)
-    exact = []
-    partial = []
-    for index, label in devices:
-        candidate = stable_name(label)
-        if wanted == candidate:
-            exact.append(index)
-        elif wanted in candidate:
-            partial.append(index)
-    matches = exact or partial
-    if len(matches) == 1:
-        return matches[0]
-    reason = f"matches indices {', '.join(map(str, matches))}" if matches else "was not found"
-    raise ValueError(f"{option} {name!r} {reason}. Check {list_command} for a unique device name.")
-
-
-def resolve_microphone(name: str) -> int:
-    import speech_recognition as sr
-
-    audio = sr.Microphone.get_pyaudio().PyAudio()
-    try:
-        devices = []
-        for index in range(audio.get_device_count()):
-            info = audio.get_device_info_by_index(index)
-            if info["maxInputChannels"] > 0:
-                devices.append((index, str(info["name"])))
-    finally:
-        audio.terminate()
-    return resolve_audio_name(
-        name,
-        devices,
-        option="--microphone",
-        list_command="python iris.py client --list-microphones",
-    )
-
-
-def resolve_speaker(name: str) -> int:
-    import sounddevice as sd
-
-    devices = (
-        (index, str(info["name"]))
-        for index, info in enumerate(sd.query_devices())
-        if info["max_output_channels"] > 0
-    )
-    return resolve_audio_name(
-        name, devices, option="--speaker", list_command="python -m sounddevice"
-    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1132,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
                     capture_options["on_listening"] = show_listening
 
                 def stream_player(start: VoiceStreamStart, chunks: Iterator[bytes]) -> int | None:
+                    turn_state.begin_speaking()
                     display.clear_notice()
                     with display.speaking(start.reply.expression):
                         return play_stream(
@@ -1198,13 +447,19 @@ def main(argv: list[str] | None = None) -> int:
                         flush=True,
                     )
                 conversation = wake_window if wake is not None else None
-                calibration = CaptureCalibration() if conversation is not None else None
+                calibration = (
+                    CaptureCalibration() if vad is None and args.energy_threshold is None else None
+                )
                 companion_calibration = CaptureCalibration()
                 first_capture = True
+                turn_state = ClientTurnState()
                 print("Iris droid ready. Say/type exit to finish; Ctrl-C also stops the client.")
                 while True:
                     touch.listen()
                     tapped = touch.take()
+                    turn_state.finish_turn(
+                        wake_active=conversation is not None and conversation.active
+                    )
                     if not args.text:
                         display.show("idle")
                     if (
@@ -1214,13 +469,22 @@ def main(argv: list[str] | None = None) -> int:
                         and conversation.remaining() <= 0
                     ):
                         conversation.sleep()
+                        turn_state.finish_turn(wake_active=False)
                         print("Conversation idle; returning to wake waiting.", flush=True)
-                    proactive = False
-                    if not args.text and args.activation == "enter" and not companion.enabled:
+                    origin: TurnOrigin = (
+                        "touch" if tapped is not None else ("text" if args.text else "voice")
+                    )
+                    if (
+                        tapped is None
+                        and not args.text
+                        and args.activation == "enter"
+                        and not companion.enabled
+                    ):
                         feedback.ready()
                     if tapped is not None:
                         body = tapped.encode()
                     elif args.text:
+                        turn_state.begin_listening("text")
                         try:
                             line = console.read(
                                 "You: ",
@@ -1229,9 +493,10 @@ def main(argv: list[str] | None = None) -> int:
                             )
                         except CaptureInterrupted:
                             continue
-                        proactive = line is None
-                        body = b"idle" if proactive else (line or "").encode()
-                        if not proactive and not body.strip():
+                        if line is None:
+                            origin = "proactive"
+                        body = b"idle" if origin == "proactive" else (line or "").encode()
+                        if origin != "proactive" and not body.strip():
                             continue
                     else:
                         import speech_recognition as sr
@@ -1257,6 +522,7 @@ def main(argv: list[str] | None = None) -> int:
                             )
                         )
                         first_capture = False
+                        turn_state.begin_listening("voice")
                         try:
                             body = record_turn(
                                 microphone,
@@ -1287,10 +553,11 @@ def main(argv: list[str] | None = None) -> int:
                             continue
                         except sr.WaitTimeoutError:
                             if companion.enabled:
-                                proactive = True
+                                origin = "proactive"
                                 body = b"idle"
                             elif conversation is not None and conversation.active:
                                 conversation.sleep()
+                                turn_state.finish_turn(wake_active=False)
                                 print("Conversation idle; returning to wake waiting.", flush=True)
                                 continue
                             else:
@@ -1300,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
                                 continue
                         if conversation is not None:
                             conversation.activate()
-                        if args.echo_recording and not proactive:
+                        if args.echo_recording and origin != "proactive":
                             pcm, rate = read_wav(body, input_audio=True)
                             print(
                                 f"Recorded {len(pcm) / (rate * 2):.1f} seconds. "
@@ -1308,23 +575,29 @@ def main(argv: list[str] | None = None) -> int:
                                 flush=True,
                             )
                             play_wav(body, speaker)
-                    if tapped is None and not touch.begin_voice():
+                    if origin != "touch" and not touch.begin_voice():
                         continue
+                    proactive = origin == "proactive"
+                    turn_state.begin_processing(origin)
                     try:
                         display.show("thinking")
                         if not proactive:
                             display.notify(
                                 "Processing…",
-                                "Applying your command." if tapped else "Checking what you said.",
+                                "Applying your command."
+                                if origin == "touch"
+                                else "Checking what you said.",
                                 "processing",
                                 seconds=600,
                             )
                         with (
-                            nullcontext() if proactive or args.voice_cancel else feedback.working()
+                            nullcontext()
+                            if proactive or (args.voice_cancel and origin == "voice")
+                            else feedback.working()
                         ):
                             reply = client.turn(
                                 body,
-                                text_only=args.text or tapped is not None,
+                                text_only=args.text or origin == "touch",
                                 **({"companion_idle": True} if proactive else {}),
                             )
                     except TurnCancelled:
@@ -1409,6 +682,7 @@ def main(argv: list[str] | None = None) -> int:
                                 playback_trace["on_speech_start"] = partial(
                                     report_voice_timing, reply._voice_timing
                                 )
+                        turn_state.begin_speaking()
                         cue = reply.expression if face_port is not None else None
                         with display.speaking(cue):
                             play_wav(
@@ -1424,6 +698,7 @@ def main(argv: list[str] | None = None) -> int:
                     if stop_listening and conversation is not None:
                         companion.update(False)
                         conversation.sleep()
+                        turn_state.finish_turn(wake_active=False)
                         print(f'Waiting for "{args.wake_phrase}" again.', flush=True)
                         continue
                     if reply.finished:
@@ -1435,7 +710,9 @@ def main(argv: list[str] | None = None) -> int:
                             Event().wait(3)
                         return 0
                     companion.update(reply.companion_mode, proactive=proactive)
-                    if conversation is not None:
+                    if conversation is not None and turn_state.should_activate_wake(
+                        was_wake_active=conversation.active
+                    ):
                         # Give the user a full idle interval after the reply finishes.
                         conversation.activate()
     except (KeyboardInterrupt, EOFError):

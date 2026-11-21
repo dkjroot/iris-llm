@@ -47,6 +47,7 @@ margin and 1,024 prompt tokens must fit inside the model context window.
 | `memory_companion_followups` | `false` | boolean | Allow eligible archived topics in companion openers. |
 | `memory_search_tool` | `true` | boolean | Expose read-only archive search when memory and tools permit it. |
 | `memory_hierarchy_enabled` | `true` | boolean | Interpret facts, corrections and topic attention with a bounded metadata model pass |
+| `memory_extraction_model` | `null` | string or null | Optional model name for background memory summaries and hierarchy extraction; null uses model |
 | `memory_semantic_enabled` | `false` | boolean | Enable prepared embedding retrieval; requires memory_enabled. |
 | `memory_embedding_model_dir` | `null` | string or null | Prepared semantic model directory; null uses the default |
 | `memory_semantic_min_score` | `0.45` | number; minimum=0; maximum=1 | Minimum semantic similarity, from 0 to 1 |
@@ -75,6 +76,8 @@ margin and 1,024 prompt tokens must fit inside the model context window.
 | `pushover_device` | `""` | string; maxLength=25; pattern="^[A-Za-z0-9_-]*$" | Optional Pushover destination; empty uses account defaults. |
 | `stt_engine` | `"whisper"` | "whisper", "wav2vec2", "google" | Speech recogniser: local whisper/wav2vec2 or explicitly online google. |
 | `whisper_model` | `"base.en"` | string | Whisper model name or local path |
+| `whisper_vad_filter` | `true` | boolean | Filter silence in Whisper STT; disable if client VAD is already active |
+| `whisper_beam_size` | `5` | integer; minimum=1; maximum=10 | Whisper beam search width (1 is fastest greedy decoding, 5 is default) |
 | `device` | `"cpu"` | "cpu", "cuda", "auto" | Speech recognition device: cpu, cuda or auto |
 | `compute_type` | `"int8"` | string | Whisper compute type, such as int8 or float16 |
 | `language` | `"en"` | string or null | Recognition language code; null enables automatic detection |
@@ -161,6 +164,7 @@ be unique. See [home setup](home-automation.md) for pairing and an explained exa
 | `database` | `required` | string |
 | `clock_sync_file` | `null` | string or null |
 | `chip_tool` | `"chip-tool"` | string |
+| `chip_tool_interactive` | `false` | boolean |
 | `matter_storage` | `required` | string |
 | `devices` | `required` | object |
 

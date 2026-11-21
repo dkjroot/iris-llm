@@ -59,15 +59,21 @@ class HomeClient:
         yield client
 
     def execute(self, operation: str, args: BaseModel) -> dict[str, object]:
-        if self.url is None or self.token is None:
+        if self.url is None:
             return {"error": "The home service is not configured."}
+        token = self.token.get_secret_value() if self.token is not None else ""
+        if len(token) < 32 or not token.isascii() or not token.isalnum():
+            return {
+                "error": "Set IRIS_HOME_SERVICE_TOKEN to at least 32 ASCII letters or digits "
+                "on the Iris server."
+            }
         try:
             with self.transport() as client:
                 response = client.post(
                     f"{self.url}/v1/{operation}",
                     json=args.model_dump(),
                     timeout=remaining_timeout(20),
-                    headers={"Authorization": f"Bearer {self.token.get_secret_value()}"},
+                    headers={"Authorization": f"Bearer {token}"},
                 )
             payload = response.json()
         except (OSError, ValueError, httpx.HTTPError):

@@ -130,7 +130,7 @@ class Details:
                     "DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at",
                     (owner, command.label, command.text, datetime.now(UTC).isoformat()),
                 )
-            if db.execute("PRAGMA user_version").fetchone()[0] >= 6:
+            if self.archive.user_version >= 6:
                 db.execute(
                     "DELETE FROM detail_supersessions WHERE owner=? AND label=?",
                     (owner, command.label),

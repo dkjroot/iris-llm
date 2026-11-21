@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from collections.abc import Iterator
-from contextlib import contextmanager
-from threading import Lock
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager, nullcontext
+from contextvars import copy_context
+from dataclasses import replace
+from queue import SimpleQueue
+from threading import Event, Lock, Thread
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import speech_recognition as sr
 
+from iris_app.replies import BEFORE_STREAM, STREAM_PIPELINE, STREAM_REPLY, timed_audio
 from iris_app.turn import CURRENT_EFFECTS, TurnEffects, TurnInput
 from iris_audio import read_wav
-from iris_domain.expression import FaceExpression
+from iris_chat_engines.backends import capabilities
+from iris_domain.audio import StreamingSynthesizer
+from iris_domain.expression import FaceExpression, ModelReply
 from iris_domain.personality import (
     PersonalityContext,
 )
@@ -75,64 +81,75 @@ class TurnCoordinator:
             stage("turn"),
             self.app.lifetime.lease(),
             turn_budget(self.app.settings.turn_timeout),
-            self._exclusive(),
+            self.app.memory_worker.foreground_turn()
+            if self.app.memory_worker is not None
+            else nullcontext(),
         ):
-            self.app._sync_policy()
-            epoch = self.app.policy_epoch
-            sessions = self.app.sessions.copy()
-            chat = sessions.get(request.session)
-            previous = chat.checkpoint() if chat is not None and decision is not None else None
-            execution = execution if execution is not None else TurnExecution()
-            if effects is not None:
-                execution.effects = effects
-            execution.phase = "prepared"
-            token = CURRENT_EFFECTS.set(execution.effects)
+            decoded_audio: tuple[bytes, int] | None = None
+            if not request.companion_idle and not request.text_only:
+                pcm, rate = read_wav(request.body, input_audio=True)
+                if len(pcm) > rate * 2 * self.app.settings.phrase_time_limit:
+                    raise ValueError("Recording exceeds the configured phrase_time_limit")
+                decoded_audio = (pcm, rate)
+            with self._exclusive():
+                self.app._sync_policy()
+                epoch = self.app.policy_epoch
+                sessions = self.app.session_store.snapshot()
+                chat = sessions.get(request.session)
+                previous = chat.checkpoint() if chat is not None and decision is not None else None
+                execution = execution if execution is not None else TurnExecution()
+                if effects is not None:
+                    execution.effects = effects
+                execution.phase = "prepared"
+                token = CURRENT_EFFECTS.set(execution.effects)
 
-            def accepted() -> None:
-                execution.phase = "accepted"
+                def accepted() -> None:
+                    execution.phase = "accepted"
 
-            previous_callback = decision.on_accept if decision is not None else None
-            if decision is not None:
-                decision.on_accept = accepted
-            else:
-                execution.phase = "accepted"
-            try:
-                result = self.run(
-                    request.session,
-                    request.body,
-                    text_only=request.text_only,
-                    wake_conversation=request.wake_conversation,
-                    companion_idle=request.companion_idle,
-                    volume_supported=request.volume_supported,
-                    face=request.face,
-                    decision=decision,
-                    personality=request.personality,
-                )
-                execution.phase = "completed"
-                return result
-            except BaseException as error:
-                execution.phase = (
-                    "discarded" if decision is not None and not decision.accepted else "failed"
-                )
-                # Callers can inspect attempted effects even when no reply exists.
-                error.iris_execution = execution  # type: ignore[attr-defined]
-                if (
-                    decision is not None
-                    and not decision.accepted
-                    and self.app.policy_epoch == epoch
-                ):
-                    if chat is not None and previous is not None:
-                        chat.restore(previous)
-                    self.app.sessions = sessions
-                raise
-            finally:
+                previous_callback = decision.on_accept if decision is not None else None
                 if decision is not None:
-                    decision.on_accept = previous_callback
-                current = CURRENT_EFFECTS.get()
-                if current is not None:
-                    current.attempted.clear()
-                    current.blocked.clear()
-                CURRENT_EFFECTS.reset(token)
+                    decision.on_accept = accepted
+                else:
+                    execution.phase = "accepted"
+                try:
+                    result = self.run(
+                        request.session,
+                        request.body,
+                        text_only=request.text_only,
+                        wake_conversation=request.wake_conversation,
+                        companion_idle=request.companion_idle,
+                        volume_supported=request.volume_supported,
+                        face=request.face,
+                        decision=decision,
+                        personality=request.personality,
+                        decoded_audio=decoded_audio,
+                        audio_sink=request.audio_sink,
+                    )
+                    execution.phase = "completed"
+                    return result
+                except BaseException as error:
+                    execution.phase = (
+                        "discarded" if decision is not None and not decision.accepted else "failed"
+                    )
+                    # Callers can inspect attempted effects even when no reply exists.
+                    error.iris_execution = execution  # type: ignore[attr-defined]
+                    if (
+                        decision is not None
+                        and not decision.accepted
+                        and self.app.policy_epoch == epoch
+                    ):
+                        if chat is not None and previous is not None:
+                            chat.restore(previous)
+                        self.app.session_store.restore(sessions)
+                    raise
+                finally:
+                    if decision is not None:
+                        decision.on_accept = previous_callback
+                    current = CURRENT_EFFECTS.get()
+                    if current is not None:
+                        current.attempted.clear()
+                        current.blocked.clear()
+                    CURRENT_EFFECTS.reset(token)
 
     def run(
         self,
@@ -146,8 +163,9 @@ class TurnCoordinator:
         face: bool,
         decision: VoiceDecision | None,
         personality: PersonalityContext | None,
+        decoded_audio: tuple[bytes, int] | None = None,
+        audio_sink: Callable[..., None] | None = None,
     ) -> TurnReply:
-        self.app._sync_policy()
         if companion_idle:
             chat = self.app.sessions.get(session)
             if chat is None or not chat.companion_mode:
@@ -158,9 +176,12 @@ class TurnCoordinator:
             if len(heard) > 8000:
                 raise ValueError("Text turn exceeds 8000 characters")
         else:
-            pcm, rate = read_wav(body, input_audio=True)
-            if len(pcm) > rate * 2 * self.app.settings.phrase_time_limit:
-                raise ValueError("Recording exceeds the configured phrase_time_limit")
+            if decoded_audio is None:
+                pcm, rate = read_wav(body, input_audio=True)
+                if len(pcm) > rate * 2 * self.app.settings.phrase_time_limit:
+                    raise ValueError("Recording exceeds the configured phrase_time_limit")
+            else:
+                pcm, rate = decoded_audio
             if decision is not None:
                 decision.check()
             with stage("recognition"):
@@ -194,47 +215,6 @@ class TurnCoordinator:
             decision,
         )
         if control is not None:
-            # Stamp only deterministic command outcomes. Streamed replies carry
-            # this receipt in their final completion frame, after execution.
-            if control.volume is None and control.command is None:
-                kind = parsed.first or "command"
-                title = {
-                    "companion": "Companion mode status",
-                    "clear": "Context cleared",
-                    "stop": "Stopped listening",
-                    "personality": "Personality",
-                    "volume": "Speaker volume",
-                    "delete": "Delete previous",
-                }.get(kind, "Command response")
-                status: Literal["success", "error", "info"] = (
-                    "success" if kind in {"clear", "stop"} else "info"
-                )
-                if kind == "volume":
-                    status = "error"
-                if kind == "personality" and parsed.personality:
-                    status = "success" if control.selected_personality is not None else "error"
-                if kind == "memory":
-                    title = {
-                        "private_on": "Private mode on",
-                        "private_off": "Private mode off",
-                        "status": "Memory status",
-                        "forget": "Forgetting request",
-                        "forget_recalled": "Forgetting request",
-                        "confirm_forget": "Forgetting response",
-                        "cancel_forget": "Forgetting cancelled",
-                    }.get(parsed.action or "", "Memory command")
-                    if parsed.action in {"private_on", "private_off", "cancel_forget"}:
-                        status = "success"
-                elif kind == "detail":
-                    title = "Remembered details"
-                elif kind == "block_followup":
-                    title = "Companion follow-up"
-                receipt_text = control.text
-                if len(receipt_text) > 320:
-                    receipt_text = receipt_text[:319] + "…"
-                control.command = CommandFeedback(
-                    title=title, message=receipt_text[:320] or "Command handled.", status=status
-                )
             return control
         chat = self.app._session(session)
         # All clients for an owner deliberately share one active conversation.
@@ -257,16 +237,16 @@ class TurnCoordinator:
         detail_labels: tuple[str, ...] = ()
         followup_conversation: str | None = None
         hierarchy_plan = None
+        selected_topic = ""
         expression: FaceExpression | None = None
         recall_reply: str | None = None
         recall_found = False
         personality_prompt = personality.prompt if personality is not None else ""
+        text = ""
         try:
+            pipelined_result: TurnReply | None = None
             if command is not None:
-                if not command:
-                    self.app._checkpoint(conversation)
-                chat.companion_mode = command
-                text = "Companion mode on. Let's hang out." if command else "Companion mode off."
+                pass
             elif companion_idle:
                 chat.memory_context = ""
                 if (
@@ -300,11 +280,100 @@ class TurnCoordinator:
                 recall_found = prepared.recall_found
                 detail_labels = prepared.detail_labels
                 hierarchy_plan = prepared.hierarchy
+                selected_topic = prepared.selected_topic
+                stream_reply = audio_sink if audio_sink is not None else STREAM_REPLY.get()
+                can_pipeline = (
+                    recall_reply is None
+                    and not finished
+                    and not text_only
+                    and STREAM_PIPELINE.get()
+                    and stream_reply is not None
+                    and chat.settings.reply_encoding == "text"
+                    and capabilities(chat.backend).streaming
+                    and callable(getattr(self.app.tts, "stream", None))
+                    and isinstance(getattr(self.app.tts, "sample_rate", None), int)
+                    and not isinstance(getattr(self.app.tts, "sample_rate", None), bool)
+                )
                 if recall_reply is not None:
                     text = recall_reply
                     chat.remember_reply(heard, text)
                 elif finished:
-                    text = "Shutting down"
+                    pass
+                elif can_pipeline and stream_reply is not None:
+                    tts = cast(StreamingSynthesizer, self.app.tts)
+                    sentences: SimpleQueue[tuple[str, FaceExpression | None] | None] = SimpleQueue()
+                    abort = Event()
+                    generated_box: list[ModelReply] = []
+                    error_box: list[BaseException] = []
+
+                    def produce() -> None:
+                        try:
+                            generated_box.append(
+                                chat.generate_reply(
+                                    heard,
+                                    face=face,
+                                    personality_prompt=personality_prompt,
+                                    before_tools=decision.require_acceptance if decision else None,
+                                    check_cancelled=decision.check if decision else None,
+                                    on_sentence=lambda s, expr: sentences.put((s, expr)),
+                                    should_stop=abort.is_set,
+                                )
+                            )
+                        except BaseException as error:
+                            error_box.append(error)
+                        finally:
+                            sentences.put(None)
+
+                    producer = Thread(
+                        target=copy_context().run,
+                        args=(produce,),
+                        name="iris-llm-stream",
+                        daemon=True,
+                    )
+                    producer.start()
+                    first_item = sentences.get()
+                    if first_item is None:
+                        producer.join()
+                        if error_box:
+                            raise error_box[0]
+                        generated = generated_box[0]
+                        text, expression = generated.text, generated.expression
+                    else:
+                        provisional = TurnReply(
+                            heard=heard,
+                            text=first_item[0],
+                            finished=False,
+                            companion_mode=chat.companion_mode,
+                            expression=first_item[1],
+                        )
+
+                        def pipelined_pcm() -> Generator[bytes]:
+                            try:
+                                yield from timed_audio(tts.stream(first_item[0]))
+                                while True:
+                                    nxt = sentences.get()
+                                    if nxt is None:
+                                        break
+                                    yield from timed_audio(tts.stream(nxt[0]))
+                            except BaseException:
+                                abort.set()
+                                raise
+                            finally:
+                                abort.set()
+                                producer.join(timeout=5)
+                            if error_box:
+                                raise error_box[0]
+
+                        with stage("stream_delivery"):
+                            stream_reply(provisional, pipelined_pcm(), tts.sample_rate)
+                        producer.join(timeout=5)
+                        if error_box:
+                            raise error_box[0]
+                        generated = generated_box[0]
+                        text, expression = generated.text, generated.expression
+                        provisional.text = text
+                        provisional.expression = expression
+                        pipelined_result = provisional
                 else:
                     generated = chat.generate_reply(
                         heard,
@@ -317,62 +386,111 @@ class TurnCoordinator:
             if decision is not None:
                 decision.check()
             check_deadline()
-            result = self.app._reply(
-                heard,
-                text,
-                text_only=text_only,
-                companion=chat.companion_mode,
-                finished=finished,
-                expression=expression,
-                transactional=command is not None,
-            )
-            if decision is not None:
-                decision.require_acceptance()
-                if new_conversation and self.app.memory is not None and command is None:
-                    conversation = self.app.memory.active_conversation(
-                        self.app.settings.memory_owner
+            committed = False
+            committed_exchange_id: str | None = None
+
+            def commit_turn() -> None:
+                nonlocal committed, committed_exchange_id, conversation
+                if committed:
+                    return
+                if decision is not None:
+                    decision.require_acceptance()
+                    if new_conversation and self.app.memory is not None and command is None:
+                        conversation = self.app.memory.active_conversation(
+                            self.app.settings.memory_owner
+                        )
+                        if chat.pending_recall is not None:
+                            chat.pending_recall = replace(chat.pending_recall, active=conversation)
+                if command is None and not finished:
+                    check_deadline()
+                    exchange = Exchange(
+                        str(uuid4()),
+                        "automatic" if companion_idle else "human",
+                        AUTOMATIC_EVENT if companion_idle else heard,
+                        text,
+                        chat.last_tool_names,
                     )
-            if command is None and not finished:
-                check_deadline()
-                exchange = Exchange(
-                    str(uuid4()),
-                    "automatic" if companion_idle else "human",
-                    AUTOMATIC_EVENT if companion_idle else heard,
-                    text,
-                    chat.last_tool_names,
-                )
-                if self.app.memory is not None and conversation is not None:
-                    self.app.memory.append(
-                        self.app.settings.memory_owner,
-                        conversation,
-                        exchange,
-                        expected_epoch=self.app.policy_epoch,
-                        detail_labels=detail_labels,
-                        source_conversations=tuple(chat.memory_sources),
-                        followup_conversation=followup_conversation,
-                        hierarchy=hierarchy_plan,
+                    if self.app.memory is not None and conversation is not None:
+                        self.app.memory.append(
+                            self.app.settings.memory_owner,
+                            conversation,
+                            exchange,
+                            expected_epoch=self.app.policy_epoch,
+                            detail_labels=detail_labels,
+                            source_conversations=tuple(chat.memory_sources),
+                            followup_conversation=followup_conversation,
+                            hierarchy=hierarchy_plan,
+                        )
+                        chat.memory_revision = (conversation, exchange.id)
+                        if self.app.memory_worker is not None:
+                            owner = self.app.settings.memory_owner
+                            if not companion_idle and recall_reply is None:
+                                self.app.memory_worker.enqueue_hierarchy(
+                                    owner,
+                                    conversation,
+                                    exchange.id,
+                                    heard,
+                                    selected_topic,
+                                    self.app.policy_epoch,
+                                )
+                            self.app.memory_worker.enqueue_summary(owner, conversation)
+                            self.app.memory_worker.enqueue_embeddings(owner)
+                    if followup_conversation is not None:
+                        chat.last_followup = followup_conversation
+                    committed_exchange_id = exchange.id
+                    if chat.history:
+                        for message in reversed(chat.history):
+                            if message.role == "user":
+                                message._exchange_id = exchange.id
+                                break
+                committed = True
+
+            if pipelined_result is not None:
+                result = pipelined_result
+            elif command is not None:
+                before_token = BEFORE_STREAM.set(None)
+                try:
+                    result = self.app.commands.handle_companion(
+                        heard,
+                        chat,
+                        command,
+                        text_only=text_only,
+                        on_disable=lambda: self.app._checkpoint(conversation),
+                        audio_sink=audio_sink,
                     )
-                    chat.memory_revision = (conversation, exchange.id)
-                if followup_conversation is not None:
-                    chat.last_followup = followup_conversation
-                result._exchange_id = exchange.id
-                if chat.history:
-                    for message in reversed(chat.history):
-                        if message.role == "user":
-                            message._exchange_id = exchange.id
-                            break
+                finally:
+                    BEFORE_STREAM.reset(before_token)
+            elif finished:
+                before_token = BEFORE_STREAM.set(None)
+                try:
+                    result = self.app.commands.handle_exit(
+                        heard,
+                        chat,
+                        text_only=text_only,
+                        audio_sink=audio_sink,
+                    )
+                finally:
+                    BEFORE_STREAM.reset(before_token)
+            else:
+                before_token = BEFORE_STREAM.set(commit_turn)
+                try:
+                    result = self.app._reply(
+                        heard,
+                        text,
+                        text_only=text_only,
+                        companion=chat.companion_mode,
+                        finished=finished,
+                        expression=expression,
+                        audio_sink=audio_sink,
+                    )
+                finally:
+                    BEFORE_STREAM.reset(before_token)
+            commit_turn()
+            result._exchange_id = committed_exchange_id
         except BaseException:
             chat.restore(previous)
             raise
-        if command is not None:
-            result.command = CommandFeedback(
-                title="Companion mode on" if command else "Companion mode off",
-                message="Enabled for this conversation."
-                if command
-                else "Automatic conversation is off.",
-                status="success",
-            )
-        elif recall_reply is not None:
+        if recall_reply is not None:
             result.command = CommandFeedback(
                 title="Memory recall",
                 message=text[:319] + "…" if len(text) > 320 else text,
@@ -385,10 +503,5 @@ class TurnCoordinator:
                 status="success",
             )
         if finished:
-            result.command = CommandFeedback(
-                title="Conversation ended",
-                message="Iris is stopping this conversation.",
-                status="success",
-            )
-            del self.app.sessions[session]
+            self.app.session_store.pop(session)
         return result

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from importlib.resources import files
 from threading import Event, Lock
 
 
+@lru_cache(maxsize=4)
 def touch_commands(target: str) -> frozenset[str]:
     catalog = json.loads(files("iris_droid").joinpath("web/commands.json").read_text("utf-8"))
     return frozenset(

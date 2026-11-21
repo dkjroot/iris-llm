@@ -19,6 +19,13 @@ let lastDraw = null;
 const pose = { ...expressions.neutral };
 let audioMouth = null;
 let localMouth = [];
+let cachedWidth = canvas.clientWidth;
+let cachedHeight = canvas.clientHeight;
+const stage = canvas.parentElement;
+
+function menuOpen() {
+  return Boolean(stage?.classList.contains("iris-menu-open"));
+}
 
 export function followFaceAudio(audio, buffer, start) {
   const envelope = speechEnvelope(buffer);
@@ -27,6 +34,31 @@ export function followFaceAudio(audio, buffer, start) {
   audioMouth = sample;
   requestDraw();
   return () => { if (audioMouth === sample) audioMouth = null; };
+}
+
+export function followFaceStream(audio) {
+  const segments = [];
+  const sample = now => {
+    if (audio.state !== "running") return 0;
+    const t = outputTime(audio, now);
+    while (segments.length && segments[0].end < t - 0.1) segments.shift();
+    for (const seg of segments) {
+      if (t >= seg.start && t <= seg.end) return envelopeAt(seg.envelope, t - seg.start);
+    }
+    return 0;
+  };
+  audioMouth = sample;
+  requestDraw();
+  return {
+    push(buffer, start) {
+      segments.push({ start, end: start + buffer.duration, envelope: speechEnvelope(buffer) });
+      requestDraw();
+    },
+    stop() {
+      segments.length = 0;
+      if (audioMouth === sample) audioMouth = null;
+    },
+  };
 }
 
 function localMouthAt(now) {
@@ -111,12 +143,12 @@ export function updateFace(state) {
 }
 
 function requestDraw() {
-  if (frame === null && !document.hidden) frame = requestAnimationFrame(draw);
+  if (frame === null && !document.hidden && !menuOpen()) frame = requestAnimationFrame(draw);
 }
 
 function draw(now) {
   frame = null;
-  if (document.hidden) return;
+  if (document.hidden || menuOpen()) return;
   const still = motionPreference.matches;
   const interval = 1000 / (activity === "idle" ? 12 : 24);
   const elapsed = lastDraw === null ? interval : now - lastDraw;
@@ -126,8 +158,10 @@ function draw(now) {
   }
   lastDraw = now;
   const density = Math.min(window.devicePixelRatio || 1, 1.5);
-  const width = Math.max(1, Math.round(canvas.clientWidth * density));
-  const height = Math.max(1, Math.round(canvas.clientHeight * density));
+  const cssW = cachedWidth || canvas.clientWidth;
+  const cssH = cachedHeight || canvas.clientHeight;
+  const width = Math.max(1, Math.round(cssW * density));
+  const height = Math.max(1, Math.round(cssH * density));
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -160,6 +194,14 @@ function draw(now) {
   if (!still && (visibleFace || snow)) requestDraw();
 }
 
-new ResizeObserver(requestDraw).observe(canvas);
+new ResizeObserver(entries => {
+  const box = entries[0]?.contentRect;
+  cachedWidth = box ? box.width : canvas.clientWidth;
+  cachedHeight = box ? box.height : canvas.clientHeight;
+  requestDraw();
+}).observe(canvas);
+if (stage) {
+  new MutationObserver(requestDraw).observe(stage, { attributes: true, attributeFilter: ["class"] });
+}
 motionPreference.addEventListener("change", requestDraw);
 document.addEventListener("visibilitychange", requestDraw);

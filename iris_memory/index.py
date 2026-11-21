@@ -25,6 +25,16 @@ from iris_memory.records import (
     SummarySnapshot,
 )
 from iris_memory.schema import SEARCH_SCHEMA
+from iris_memory.text import (
+    STOP_WORDS as STOP_WORDS,
+)
+from iris_memory.text import (
+    is_recall_request,
+    topical_terms,
+)
+from iris_memory.text import (
+    query_terms as query_terms,
+)
 
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
@@ -61,26 +71,12 @@ def index_exchange(db: sqlite3.Connection, row: sqlite3.Row) -> None:
             )
 
 
-STOP_WORDS = set(
-    "the and that this with from have what about were your would could should "
-    "there then they them into just know tell please remember discussed talked "
-    "earlier yesterday other some more when where which again next time now".split()
-)
-
-
-def query_terms(text: str) -> list[str]:
-    return list(
-        dict.fromkeys(
-            w.lower() for w in re.findall(r"[^\W_]{3,40}", text) if w.lower() not in STOP_WORDS
-        )
-    )[:16]
-
-
 class MemoryIndex:
     def __init__(self, archive: SQLiteMemory) -> None:
         self.archive = archive
         self.semantic: SemanticMemory | None = None
         self.hierarchy: Hierarchy | None = None
+        self.background_indexing = False
 
     def enqueue(self, owner: str, conversation: str) -> None:
         with self.archive.connect() as db:
@@ -357,7 +353,8 @@ class MemoryIndex:
                         break
         if self.semantic is not None:
             try:
-                self.semantic.index_batch(owner)
+                if not self.background_indexing:
+                    self.semantic.index_batch(owner)
                 for row in self.semantic.search(
                     owner, " ".join(terms), active=active, explicit=explicit
                 ):
@@ -373,7 +370,7 @@ class MemoryIndex:
                     key=lambda item: (
                         len(set(terms) & set(query_terms(item["text"])))
                         + 2 * item.get("semantic_similarity", 0),
-                        item["created_at"],
+                        item["sequence"],
                     ),
                     reverse=True,
                 )
@@ -393,8 +390,6 @@ class MemoryIndex:
         end: datetime | None,
     ) -> list[RecallSource]:
         """Bounded explicit recall: search notes, then verify their original sources."""
-        from iris_memory.recall import is_recall_request, topical_terms
-
         # julianday compares instants even if old/imported timestamps use another
         # UTC offset. Both local-midnight boundaries have already been resolved.
         dates = (start.isoformat() if start else None, end.isoformat() if end else None)
@@ -408,13 +403,30 @@ class MemoryIndex:
         result: dict[str, RecallSource] = {}
         with self.archive.snapshot() as db:
             note_filter = " OR ".join("n.text LIKE ?" for _ in terms) or "1"
+            date_exists = (
+                " AND EXISTS(SELECT 1 FROM exchanges e WHERE e.owner=n.owner "
+                "AND e.conversation=n.conversation AND e.origin='human' "
+                "AND (? IS NULL OR julianday(e.created_at)>=julianday(?)) "
+                "AND (? IS NULL OR julianday(e.created_at)<julianday(?)))"
+                if dates[0] is not None or dates[1] is not None
+                else ""
+            )
+            date_args = (dates[0], dates[0], dates[1], dates[1]) if date_exists else ()
+            note_patterns = [re.compile(rf"\b{re.escape(t)}", re.I) for t in terms]
             notes = db.execute(
                 "SELECT n.* FROM notes n JOIN summaries s ON s.id=n.summary "
-                "WHERE n.owner=? AND n.status!='superseded' AND (" + note_filter + ") "
-                "ORDER BY s.through_sequence DESC LIMIT 12",
-                (owner, *(f"%{t}%" for t in terms)),
+                "WHERE n.owner=? AND n.status!='superseded' AND ("
+                + note_filter
+                + ")"
+                + date_exists
+                + " ORDER BY s.through_sequence DESC LIMIT 24",
+                (owner, *(f"%{t}%" for t in terms), *date_args),
             )
+            matched_notes = 0
             for note in notes:
+                if note_patterns and not any(p.search(note["text"]) for p in note_patterns):
+                    continue
+                matched_notes += 1
                 sources = json.loads(note["sources"])[:6]
                 for row in db.execute(
                     "SELECT e.id,e.id AS exchange,e.owner,e.conversation,"
@@ -429,7 +441,7 @@ class MemoryIndex:
                 ):
                     if not is_recall_request(row["user_text"]) and topical_terms(row["user_text"]):
                         result[row["id"]] = cast(RecallSource, {**dict(row), "topic": note["text"]})
-                if len(result) >= 24:
+                if len(result) >= 24 or matched_notes >= 12:
                     break
             if terms:
                 query = " OR ".join('"' + word + '"' for word in terms[:16])
@@ -459,7 +471,8 @@ class MemoryIndex:
                     break
         if self.semantic is not None and terms:
             try:
-                self.semantic.index_batch(owner)
+                if not self.background_indexing:
+                    self.semantic.index_batch(owner)
                 for row in self.semantic.search(
                     owner, " ".join(terms), explicit=True, start=start, end=end
                 ):
@@ -473,14 +486,24 @@ class MemoryIndex:
                 LOGGER.warning(
                     "Semantic recall unavailable (%s); using keyword matches.", type(error).__name__
                 )
-        candidates = list(result.values())[:42]
+        candidates = list(result.values())
         if self.hierarchy is not None:
             activity = self.hierarchy.activity_scores(owner, " ".join(terms), candidates)
             for row in candidates:
                 # Attention only breaks close ordering ties; it never supplies lexical
                 # confidence or bypasses date/source/ambiguity checks.
                 row["hierarchy_activity"] = min(0.5, activity.get(row["exchange"], 0) / 10)
-        return candidates
+        term_set = set(terms)
+        candidates.sort(
+            key=lambda row: (
+                len(term_set & set(topical_terms(row["user_text"] + " " + row.get("topic", ""))))
+                + 2 * float(row.get("semantic_similarity", 0.0))
+                + float(row.get("hierarchy_activity", 0.0)),
+                row["sequence"],
+            ),
+            reverse=True,
+        )
+        return candidates[:42]
 
     def recall_evidence(
         self, owner: str, conversation: str, sources: tuple[str, ...], terms: tuple[str, ...] = ()

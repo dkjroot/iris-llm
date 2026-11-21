@@ -93,7 +93,8 @@ def _kms_power(pygame: ModuleType) -> Callable[[bool], None]:
     connectors = [
         path
         for path in Path("/sys/class/drm").glob(f"{card}-*")
-        if (path / "enabled").read_text(encoding="ascii").strip() == "enabled"
+        if (path / "enabled").is_file()
+        and (path / "enabled").read_text(encoding="ascii").strip() == "enabled"
     ]
     if len(connectors) != 1:
         raise OSError(f"expected one active connector on {card}, found {len(connectors)}")
@@ -140,5 +141,10 @@ class IdleDisplayPower:
 
     def wake(self) -> None:
         if self.asleep and self._set_power is not None:
-            self._set_power(True)
+            try:
+                self._set_power(True)
+            except OSError as error:
+                # Never crash the display loop; fall back to drawing normally.
+                self._unavailable = True
+                print(f"Iris display: could not wake the panel ({error}).", file=sys.stderr)
             self.asleep = False

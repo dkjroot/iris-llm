@@ -8,6 +8,8 @@ import re
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+from iris_memory.text import topic_terms
+
 if TYPE_CHECKING:
     from iris_memory import SQLiteMemory
 
@@ -54,8 +56,6 @@ class CompanionMemory:
                     continue
                 sources = json.loads(row["sources"])
                 if db.execute("PRAGMA user_version").fetchone()[0] >= 6:
-                    from iris_memory.hierarchy import terms
-
                     closed = db.execute(
                         "SELECT t.label,(SELECT a.status FROM memory_attention a "
                         "JOIN exchanges x ON x.id=a.source WHERE a.topic=t.id "
@@ -66,7 +66,7 @@ class CompanionMemory:
                     )
                     if any(
                         t["status"] in {"closed", "deferred"}
-                        and terms(t["label"]) & terms(row["text"])
+                        and topic_terms(t["label"]) & topic_terms(row["text"])
                         for t in closed
                     ):
                         continue
@@ -115,7 +115,7 @@ class CompanionMemory:
     def last_offered(self, owner: str, conversation: str | None = None) -> str | None:
         with self.archive.connect() as db:
             row = db.execute(
-                "SELECT conversation FROM companion_topics WHERE owner=? "
+                "SELECT conversation, blocked FROM companion_topics WHERE owner=? "
                 "AND (? IS NULL OR conversation=?) "
                 "AND julianday(offered_at)>=julianday(?) ORDER BY offered_at DESC LIMIT 1",
                 (
@@ -125,7 +125,7 @@ class CompanionMemory:
                     (datetime.now(UTC) - timedelta(days=1)).isoformat(),
                 ),
             ).fetchone()
-            return str(row[0]) if row else None
+            return str(row["conversation"]) if row and not row["blocked"] else None
 
     def block(self, owner: str, conversation: str, epoch: int) -> bool:
         with self.archive.connect() as db:

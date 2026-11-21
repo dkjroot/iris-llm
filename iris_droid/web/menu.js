@@ -45,6 +45,8 @@ export function mountMenu({ selectPersonality, loadPersonalities, executeCommand
 
   function dismiss() {
     clearTimeout(timer);
+    actionError = "";
+    confirmation = null;
     panel.hidden = true;
     trigger.setAttribute("aria-expanded", "false");
     stage.classList.remove("iris-menu-open");
@@ -205,7 +207,7 @@ export function mountMenu({ selectPersonality, loadPersonalities, executeCommand
     if (commands || commandRequest) return;
     commandError = "";
     render();
-    commandRequest = fetch("/commands.json")
+    commandRequest = fetch("/commands.json", { signal: AbortSignal.timeout(5000) })
       .then(response => {
         if (!response.ok) throw new Error();
         return response.json();
@@ -255,6 +257,8 @@ export function mountMenu({ selectPersonality, loadPersonalities, executeCommand
   function go(next, item = null) {
     page = next;
     category = item;
+    actionError = "";
+    if (next !== "confirm-command") confirmation = null;
     content.scrollTop = 0;
     if (page === "commands" || page === "home") readCommands();
     if (page === "personalities") {
@@ -300,8 +304,9 @@ export function mountMenu({ selectPersonality, loadPersonalities, executeCommand
       available = Boolean(state);
       names = newNames;
       if (!choosing) active = newActive;
-      if (busyChanged || (changed && page === "personalities" && !choosing) ||
-          (wakePhrase !== newWake && page === "category" && category.title === "Conversation")) {
+      const busyAffectsPage = page === "category" || page === "confirm-command";
+      if ((busyChanged && busyAffectsPage) || (changed && page === "personalities" && !choosing) ||
+          (wakePhrase !== newWake && page === "category" && category?.title === "Conversation")) {
         wakePhrase = newWake;
         render();
       } else {

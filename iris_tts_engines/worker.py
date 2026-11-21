@@ -84,6 +84,7 @@ class Response(BaseModel):
     request_id: int | None = None
     samples: str = ""
     rate: int = 0
+    format: Literal["f32", "i16"] = "f32"
 
 
 def read_responses(stream: BufferedReader, responses: Queue[str | None], stop: Event) -> None:
@@ -148,10 +149,17 @@ class SpeechWorker:
         self._expires = 0.0
         self._restart: Callable[[], None] | None = None
         self._restarts: list[float] = []
+        self._crash_restarts: list[float] = []
+        self._cancelled = False
         self._writes: Queue[bytes | None] = Queue(maxsize=1)
         self._written: Queue[bool] = Queue(maxsize=1)
 
+    def mark_cancelled(self) -> None:
+        self._cancelled = True
+
     def health(self) -> dict[str, object]:
+        now = monotonic()
+        recent = [t for t in self._restarts if now - t < 60]
         return {
             "state": "closed"
             if self.closed
@@ -159,7 +167,7 @@ class SpeechWorker:
             if self.failed or self.process.poll() is not None
             else "ready",
             "busy": self._serial.locked(),
-            "restarts": len(self._restarts),
+            "restarts": len(recent),
         }
 
     def retire(self) -> None:
@@ -169,6 +177,8 @@ class SpeechWorker:
         if self.process.poll() is None:
             with suppress(OSError):
                 self.process.kill()
+            with suppress(OSError, subprocess.TimeoutExpired):
+                self.process.wait(timeout=0.2)
 
     def receive(self, timeout: float) -> Response:
         try:
@@ -238,18 +248,23 @@ class SpeechWorker:
             if self.failed or self.process.poll() is not None:
                 now = monotonic()
                 self._restarts = [t for t in self._restarts if now - t < 60]
-                if self._restart is None or len(self._restarts) >= 2:
+                self._crash_restarts = [t for t in self._crash_restarts if now - t < 60]
+                if self._restart is None or (
+                    not self._cancelled and len(self._crash_restarts) >= 2
+                ):
                     raise RuntimeError(f"{self.name} recovery limit reached. Restart the server.")
+                was_cancelled = self._cancelled
+                self._cancelled = False
                 self._restarts.append(now)
+                if not was_cancelled:
+                    self._crash_restarts.append(now)
                 self._restart()
+            self._cancelled = False
             self._expires = monotonic() + SYNTHESIS_TIMEOUT
             with turn_budget(SYNTHESIS_TIMEOUT):
                 self.send(text)
                 try:
                     yield
-                except BaseException:
-                    self.retire()
-                    raise
                 finally:
                     if not self._terminal:
                         self.retire()
@@ -295,7 +310,7 @@ def open_worker(
                 with suppress(OSError):
                     stream.close()
 
-    def launch() -> None:
+    def launch(*, initial: bool = False) -> None:
         nonlocal process, reader, writer, stop, tts
         if process is not None:
             cleanup()
@@ -337,13 +352,21 @@ def open_worker(
         try:
             tts.receive(timeout=180)
         except RuntimeError as error:
-            raise ValueError(str(error)) from error
+            with suppress(RuntimeError):
+                cleanup()
+            if initial:
+                raise ValueError(str(error)) from error
+            raise
+        except BaseException:
+            with suppress(RuntimeError):
+                cleanup()
+            raise
         tts.failed = False
 
     try:
-        launch()
+        launch(initial=True)
         assert tts is not None
-        tts._restart = launch
+        tts._restart = lambda: launch(initial=False)
         yield tts
     finally:
         if tts is not None:

@@ -32,6 +32,7 @@ class PreparedMemory:
     detail_labels: tuple[str, ...]
     hierarchy: Prepared | None
     recall_found: bool = False
+    selected_topic: str = ""
 
 
 class MemoryOrchestrator:
@@ -96,7 +97,6 @@ class MemoryOrchestrator:
                 chat.pending_forget = None
             return result
         if action in {"forget", "forget_recalled"}:
-            target = self.app.memory.forget_target(self.app.settings.memory_owner)
             recalled = chat.pending_recall
             if action == "forget_recalled":
                 if (
@@ -104,6 +104,7 @@ class MemoryOrchestrator:
                     or recalled.selected is None
                     or recalled.expires_at <= datetime.now(UTC)
                 ):
+                    chat.pending_forget = None
                     return self.app._reply(
                         heard,
                         "Recall and select a saved discussion first.",
@@ -112,10 +113,13 @@ class MemoryOrchestrator:
                     )
                 selected = recalled.candidates[recalled.selected].conversation
                 target = self.app.memory.forget_target(self.app.settings.memory_owner, selected)
+            else:
+                target = self.app.memory.forget_target(self.app.settings.memory_owner)
             if target is None or target[2] == 0:
+                which = "selected" if action == "forget_recalled" else "current"
                 result = self.app._reply(
                     heard,
-                    "There are no saved exchanges in the current conversation to delete.",
+                    f"There are no saved exchanges in the {which} conversation to delete.",
                     text_only=text_only,
                     companion=companion,
                 )
@@ -167,13 +171,14 @@ class MemoryOrchestrator:
             )
             return result
         pending = chat.pending_forget
-        target = self.app.memory.forget_target(self.app.settings.memory_owner)
         if pending is not None and not pending.require_active:
             target = ForgetTarget(
                 pending.conversation,
                 self.app.memory.revision(self.app.settings.memory_owner, pending.conversation),
                 pending.count,
             )
+        else:
+            target = self.app.memory.forget_target(self.app.settings.memory_owner)
         if (
             pending is None
             or pending.expires_at <= datetime.now(UTC)
@@ -335,6 +340,11 @@ class MemoryOrchestrator:
             and self.app.memory_context is not None
             and conversation is not None
         ):
+            if self.app.memory_worker is not None:
+                self.app.memory_worker.enqueue_summary(
+                    self.app.settings.memory_owner, conversation, force=True
+                )
+                return
             try:
                 self.app.memory_context.checkpoint(
                     self.app.settings.memory_owner, conversation, force=True
@@ -446,83 +456,75 @@ class MemoryOrchestrator:
         hierarchy_plan = None
         recall_reply: str | None = None
         recalled = None
+        selected_topic = ""
         if finished:
             self._checkpoint(conversation)
-        elif (
-            self.app.recall is not None
-            and conversation is not None
-            and self.app.settings.history_turns
-            and self.app.settings.memory_retrieval_chars
-        ):
-            try:
-                resolved = self.app.recall.resolve(
-                    self.app.settings.memory_owner,
-                    conversation,
-                    heard,
-                    chat.history,
-                    chat.pending_recall,
-                )
-                chat.pending_recall = resolved.pending
-                if resolved.pending is not None:
-                    chat.memory_sources.update(c.conversation for c in resolved.pending.candidates)
-                recall_reply = resolved.response
-                if resolved.handled:
-                    recalled = resolved.excerpts
-            except sqlite3.Error as error:
-                LOGGER.warning("Spoken recall unavailable (%s).", type(error).__name__)
-                recall_reply = (
-                    "I can't search my saved conversations right now. Please try again in a moment."
-                )
-        core_context = ""
-        if decision is not None:
-            decision.check()
-        if (
-            not finished
-            and conversation is not None
-            and self.app.memory_context is not None
-            and self.app.settings.history_turns
-        ):
-            hierarchy = self.app.memory_context.hierarchy
-            if hierarchy is not None and recall_reply is None:
-                try:
-                    selected_topic = ""
+        elif self.app.memory is not None and conversation is not None:
+            with self.app.memory.snapshot():
+                if (
+                    self.app.recall is not None
+                    and self.app.settings.history_turns
+                    and self.app.settings.memory_retrieval_chars
+                ):
+                    try:
+                        resolved = self.app.recall.resolve(
+                            self.app.settings.memory_owner,
+                            conversation,
+                            heard,
+                            chat.history,
+                            chat.pending_recall,
+                        )
+                        chat.pending_recall = resolved.pending
+                        if resolved.pending is not None:
+                            chat.memory_sources.update(
+                                c.conversation for c in resolved.pending.candidates
+                            )
+                        recall_reply = resolved.response
+                        if resolved.handled:
+                            recalled = resolved.excerpts
+                    except sqlite3.Error as error:
+                        LOGGER.warning("Spoken recall unavailable (%s).", type(error).__name__)
+                        recall_reply = (
+                            "I can't search my saved conversations right now. "
+                            "Please try again in a moment."
+                        )
+                core_context = ""
+                if decision is not None:
+                    decision.check()
+                if self.app.memory_context is not None and self.app.settings.history_turns:
                     pending = chat.pending_recall
                     if pending is not None and pending.selected is not None:
                         selected_topic = pending.candidates[pending.selected].label
-                    hierarchy_plan = hierarchy.prepare(
-                        self.app.settings.memory_owner, conversation, heard, selected_topic
-                    )
-                    core_context, fact_sources = hierarchy.context(
-                        self.app.settings.memory_owner,
-                        hierarchy.query(heard, hierarchy_plan),
-                        hierarchy_plan,
-                        limit=800,
-                    )
-                    chat.memory_sources.update(fact_sources)
-                    if hierarchy_plan is not None:
-                        chat.memory_sources.update(hierarchy_plan.source_conversations)
-                except sqlite3.Error as error:
-                    LOGGER.warning("Memory hierarchy unavailable (%s).", type(error).__name__)
-            excluded = (
-                tuple(
-                    label
-                    for f in (hierarchy_plan.facts if hierarchy_plan else ())
-                    if (label := f.get("detail_label"))
-                    and any(
-                        change.supersedes == f["id"]
-                        for change in hierarchy_plan.interpretation.facts
-                    )
-                )
-                if hierarchy_plan is not None
-                else ()
-            )
-            if self.app.details is not None:
-                detail_context, detail_labels = self.app.details.context(
-                    self.app.settings.memory_owner, heard, limit=800, excluded=excluded
-                )
-                # Prospective overrides still count as use of their explicit labels.
-                detail_labels = tuple(dict.fromkeys((*detail_labels, *excluded)))
-                core_context = detail_context + core_context
+                    hierarchy = self.app.memory_context.hierarchy
+                    if hierarchy is not None and recall_reply is None:
+                        try:
+                            core_context, fact_sources = hierarchy.context(
+                                self.app.settings.memory_owner,
+                                hierarchy.query(heard, None),
+                                None,
+                                limit=800,
+                            )
+                            chat.memory_sources.update(fact_sources)
+                        except sqlite3.Error as error:
+                            LOGGER.warning(
+                                "Memory hierarchy unavailable (%s).", type(error).__name__
+                            )
+                            core_context = ""
+                    if self.app.details is not None:
+                        try:
+                            detail_context, detail_labels = self.app.details.context(
+                                self.app.settings.memory_owner, heard, limit=800
+                            )
+                            core_context = detail_context + core_context
+                        except sqlite3.Error as error:
+                            LOGGER.warning(
+                                "Remembered details unavailable (%s).", type(error).__name__
+                            )
+                            detail_labels = ()
+        else:
+            core_context = ""
+        if decision is not None:
+            decision.check()
         if (
             not finished
             and recall_reply is None
@@ -539,10 +541,12 @@ class MemoryOrchestrator:
                     chat.tool_definitions(),
                     recalled,
                     core_context,
-                    self.app.memory_context.hierarchy.query(heard, hierarchy_plan)
+                    self.app.memory_context.hierarchy.query(heard, None)
                     if self.app.memory_context.hierarchy is not None
                     else None,
                 )
+                if not self.app.memory_context.core_included:
+                    detail_labels = ()
                 if recalled:
                     chat.memory_sources.update(r["conversation"] for r in recalled)
                 # Automatic search can copy a detail from another conversation too.
@@ -555,10 +559,13 @@ class MemoryOrchestrator:
             except sqlite3.Error as error:
                 LOGGER.warning("Derived memory unavailable (%s).", type(error).__name__)
                 chat.memory_context = ""
+                detail_labels = ()
                 if recalled:
                     recall_reply = (
                         "I found a matching discussion, "
                         "but can't load its details right now. "
                         "Please try again in a moment."
                     )
-        return PreparedMemory(recall_reply, detail_labels, hierarchy_plan, bool(recalled))
+        return PreparedMemory(
+            recall_reply, detail_labels, hierarchy_plan, bool(recalled), selected_topic
+        )

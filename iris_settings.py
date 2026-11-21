@@ -6,7 +6,7 @@ import json
 import warnings
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, JsonValue, SecretStr, field_validator, model_validator
@@ -71,6 +71,7 @@ class Settings(ChatterboxSettings, PocketSettings):
     memory_companion_followups: bool = False
     memory_search_tool: bool = True
     memory_hierarchy_enabled: bool = True
+    memory_extraction_model: str | None = None
     memory_semantic_enabled: bool = False
     memory_embedding_model_dir: Path | None = None
     memory_semantic_min_score: float = Field(default=0.45, ge=0, le=1, allow_inf_nan=False)
@@ -152,6 +153,8 @@ class Settings(ChatterboxSettings, PocketSettings):
 
     stt_engine: Literal["whisper", "wav2vec2", "google"] = "whisper"
     whisper_model: str = "base.en"
+    whisper_vad_filter: bool = True
+    whisper_beam_size: int = Field(default=5, ge=1, le=10)
     device: Literal["cpu", "cuda", "auto"] = "cpu"
     compute_type: str = "int8"
     language: str | None = "en"
@@ -172,9 +175,9 @@ class Settings(ChatterboxSettings, PocketSettings):
     def validate_endpoint(cls, value: str) -> str:
         parts = urlsplit(value)
         # Accessing port also validates its syntax and range.
-        _ = parts.port
+        port = parts.port
         if (
-            parts.scheme not in {"http", "https"}
+            parts.scheme.lower() not in {"http", "https"}
             or not parts.hostname
             or parts.username
             or parts.password
@@ -182,7 +185,9 @@ class Settings(ChatterboxSettings, PocketSettings):
             or parts.fragment
         ):
             raise ValueError("Use an http(s) base URL without credentials, query, or fragment")
-        return value.rstrip("/")
+        host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+        netloc = f"{host}:{port}" if port is not None else host
+        return urlunsplit((parts.scheme.lower(), netloc, parts.path.rstrip("/"), "", ""))
 
     @field_validator("home_service_url")
     @classmethod
@@ -191,7 +196,11 @@ class Settings(ChatterboxSettings, PocketSettings):
             return None
         value = cls.validate_endpoint(value)
         endpoint = urlsplit(value)
-        if endpoint.scheme != "https" and endpoint.hostname not in {"127.0.0.1", "localhost"}:
+        if endpoint.scheme != "https" and endpoint.hostname not in {
+            "127.0.0.1",
+            "localhost",
+            "::1",
+        }:
             raise ValueError("Use HTTPS for a home service on another machine")
         return value
 
@@ -201,6 +210,23 @@ class Settings(ChatterboxSettings, PocketSettings):
         if not value.strip():
             raise ValueError("This value must not be blank")
         return value.strip()
+
+    @field_validator("memory_extraction_model")
+    @classmethod
+    def optional_nonblank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError("This value must not be blank")
+        return value.strip()
+
+    def require_home_service_token(self) -> None:
+        if self.tools_enabled and self.home_service_url:
+            token = self.home_service_token.get_secret_value() if self.home_service_token else ""
+            if len(token) < 32 or not token.isascii() or not token.isalnum():
+                raise ValueError(
+                    "Set IRIS_HOME_SERVICE_TOKEN to at least 32 ASCII letters or digits"
+                )
 
     @model_validator(mode="after")
     def check_privacy(self) -> Settings:
@@ -215,8 +241,8 @@ class Settings(ChatterboxSettings, PocketSettings):
             raise ValueError(
                 "model_context_tokens must leave room for prompts, replies and summaries"
             )
-        if self.tools_enabled and self.home_service_url:
-            token = self.home_service_token.get_secret_value() if self.home_service_token else ""
+        if self.home_service_token is not None:
+            token = self.home_service_token.get_secret_value()
             if len(token) < 32 or not token.isascii() or not token.isalnum():
                 raise ValueError(
                     "Set IRIS_HOME_SERVICE_TOKEN to at least 32 ASCII letters or digits"

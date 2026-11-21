@@ -101,8 +101,9 @@ class AlsaVolume:
                 raise ValueError("Saved levels are outside the playback control's range")
             # Bare integers are raw levels in amixer, even with -M. This avoids
             # rounding a second time when restoring the displayed percentages.
-            self._run("sset", self.control, "playback", ",".join(map(str, levels)))
-            if self._raw_levels(self._run("sget", self.control)) != levels:
+            output = self._run("sset", self.control, "playback", ",".join(map(str, levels)))
+            actual = self._raw_levels(output) or self._raw_levels(self._run("sget", self.control))
+            if actual != levels:
                 raise OSError("Mixer read-back differs from the saved levels")
         except FileNotFoundError:
             pass
@@ -151,9 +152,12 @@ class AlsaVolume:
             assert command.value is not None
             value = f"{abs(command.value)}%{'+' if command.value > 0 else '-'}"
         # Playback only, preserving capture gain and mute state on volume changes.
-        self._run("sset", self.control, "playback", value)
-        output = self._run("sget", self.control)
-        state = self._state(output)
+        output = self._run("sset", self.control, "playback", value)
+        try:
+            state = self._state(output)
+        except OSError:
+            output = self._run("sget", self.control)
+            state = self._state(output)
         if command.action in {"set", "change"}:
             self._remember(output)
         return state

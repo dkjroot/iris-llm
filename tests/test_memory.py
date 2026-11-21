@@ -161,7 +161,7 @@ def test_schema_idempotency_order_ownership_and_deletion(settings):
         memory.delete("other", conversation)
     assert memory.conversations("dave")[0]["turns"] == 2
     with memory.connect() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 10
         assert db.execute("PRAGMA foreign_keys").fetchone()[0] == 1
     memory.delete("dave", conversation)
     assert memory.export("dave")["exchanges"] == []
@@ -426,7 +426,13 @@ def test_real_http_text_restart_continuity(settings):
             finally:
                 server.shutdown()
                 thread.join()
-    assert requests[-1]["messages"][1]["content"] == "The project needs a green roof."
+                brain.lifetime.close()
+    chat_requests = [
+        req
+        for req in requests
+        if not req["messages"][0]["content"].startswith("Extract memory metadata")
+    ]
+    assert chat_requests[-1]["messages"][1]["content"] == "The project needs a green roof."
     assert len(exchanges(settings)) == 2
 
 

@@ -32,7 +32,16 @@ BASIC_SETTINGS = (
 )
 
 
-def prompt_setting(action: argparse.Action, data: dict[str, object]) -> None:
+def _reject_constant(name: str) -> object:
+    raise ValueError(f"Expected a finite JSON value, not {name}")
+
+
+def prompt_setting(
+    action: argparse.Action,
+    data: dict[str, object],
+    parser: argparse.ArgumentParser,
+    options: dict[str, argparse.Action],
+) -> None:
     current = data.get(action.dest, action.default)
     description = action.help or action.dest.replace("_", " ").capitalize()
     if isinstance(action.default, bool):
@@ -49,10 +58,16 @@ def prompt_setting(action: argparse.Action, data: dict[str, object]) -> None:
         try:
             value: object = answer
             if answer == "null" or action.type in (int, float):
-                value = json.loads(answer)
+                value = json.loads(answer, parse_constant=_reject_constant)
             elif action.type is audio_selector:
                 value = audio_selector(answer)
             parse_config_value(action, value)
+            candidate = {**data, action.dest: value}
+            values = config_values(candidate, options)
+            args = parser.parse_args([], namespace=argparse.Namespace(**values))
+            validate_client_options(args)
+            WakeConversation(args.conversation_timeout)
+            CompanionTimer(args.companion_idle_min, args.companion_idle_max)
         except (ValueError, argparse.ArgumentTypeError) as error:
             print(f"{error}. Try again.")
         else:
@@ -70,14 +85,18 @@ def main(argv: list[str] | None = None) -> int:
         print("Keep your connection key in IRIS_DROID_TOKEN.")
         parser = settings_parser()
         options = config_options(parser)
-        data = read_config(path) if path.exists() else {}
+        raw = read_config(path) if path.exists() else {}
+        unknown = [name for name in raw if name not in options]
+        if unknown:
+            print(f"Ignoring unknown client setting(s): {', '.join(unknown)}.")
+        data = {name: value for name, value in raw.items() if name in options}
         config_values(data, options)
         for name in BASIC_SETTINGS:
-            prompt_setting(options[name], data)
+            prompt_setting(options[name], data, parser, options)
         if choose("Configure advanced client settings", ["yes", "no"], "no") == "yes":
             for name, action in options.items():
                 if name not in BASIC_SETTINGS:
-                    prompt_setting(action, data)
+                    prompt_setting(action, data, parser, options)
 
         values = config_values(data, options)
         args = parser.parse_args([], namespace=argparse.Namespace(**values))

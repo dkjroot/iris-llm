@@ -83,8 +83,9 @@ def test_failed_speech_preparation_does_not_enable_companion_mode():
 @pytest.mark.parametrize("stream", [False, True])
 def test_negotiated_receipts_are_final_and_old_clients_keep_the_old_shape(stream):
     tts = Mock(synthesize=Mock(return_value=(np.ones(100, dtype=np.float32), 24000)))
-    tts.stream = lambda _: (chunk for chunk in [b"\1\0" * 100])
-    tts.sample_rate = 24000
+    if stream:
+        tts.stream = lambda _: (chunk for chunk in [b"\1\0" * 100])
+        tts.sample_rate = 24000
     with (
         running_brain(lambda _: model_response("Companion mode is on."), tts, stream=stream) as (
             brain,

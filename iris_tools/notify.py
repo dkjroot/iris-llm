@@ -31,7 +31,7 @@ def main() -> int:
             )
         if settings.pushover_user_key is None:
             settings.pushover_user_key = SecretStr(getpass.getpass("Pushover user key: "))
-        with httpx.Client() as client:
+        with httpx.Client(trust_env=False, follow_redirects=False) as client:
             result = NotificationSender(settings, client).send(notification)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if "error" in result else 0

@@ -6,19 +6,36 @@ import html
 import random
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 import httpx
 
-from iris_chat_engines.backends import ChatBackend, capabilities, make_backend
+from iris_chat_engines.backends import (
+    ChatBackend,
+    ChatCompletionsBackend,
+    capabilities,
+    make_backend,
+)
 from iris_chat_engines.budget import estimate, fit, input_budget
 from iris_chat_engines.messages import ChatError as ChatError
 from iris_chat_engines.messages import Message as Message
 from iris_domain.companion import COMPANION_PROMPT, ICE_BREAKERS
-from iris_domain.expression import FACE_PROMPT, ModelReply, read_model_reply
+from iris_domain.expression import (
+    FACE_PROMPT,
+    FaceExpression,
+    ModelReply,
+    read_model_reply,
+)
 from iris_domain.session import SessionState
 from iris_domain.turn import effect_scope
 from iris_settings import Settings
 from iris_tools import TOOL_NAMES, ToolRegistry, ToolServices
+from iris_tts_engines.text import (
+    plain_speech_text,
+    pop_streaming_sentences,
+    split_speech_sentences,
+)
 from iris_turn import check_deadline
 
 _CORRECT_TOOL_MARKER = (
@@ -82,6 +99,120 @@ def _model_messages(
         user = messages[turn_start]
         outgoing[turn_start] = Message(role="user", content=(user.content or "") + correction)
     return outgoing
+
+
+class _SentenceFeeder:
+    """Turn streamed LLM tokens into clean spoken sentences without leaking cues or tool markers."""
+
+    def __init__(
+        self,
+        *,
+        face: bool,
+        known_tools: frozenset[str],
+        on_sentence: Callable[[str, FaceExpression | None], None],
+    ) -> None:
+        self._face = face
+        self._known_tools = known_tools
+        self._on_sentence = on_sentence
+        self._header_done = False
+        self._header_buf = ""
+        self._body_buf = ""
+        self.expression: FaceExpression | None = "neutral" if face else None
+        self.emitted = False
+        self.suppressed = False
+
+    def feed(self, chunk: str) -> None:
+        if self.suppressed or not chunk:
+            return
+        if not self._header_done:
+            self._header_buf += chunk
+            stripped = self._header_buf.lstrip()
+            if not stripped:
+                return
+            if stripped.startswith("[") and len(stripped) < 2:
+                return
+            if stripped.startswith("[["):
+                if "\n" not in stripped and "]]" not in stripped and len(stripped) < 64:
+                    return
+                if "\n" in stripped:
+                    first_line, _, rest = stripped.partition("\n")
+                    marker = first_line.strip()
+                    if self._face and marker.lower().startswith("[[expression:"):
+                        parsed = read_model_reply(first_line + "\n", face=True)
+                        self.expression = parsed.expression
+                        self._header_done = True
+                        self._body_buf = rest.lstrip()
+                    elif (
+                        marker.startswith("[[")
+                        and marker.endswith("]]")
+                        and marker[2:-2].strip() in self._known_tools
+                    ):
+                        self.suppressed = True
+                        return
+                    else:
+                        self._header_done = True
+                        self._body_buf = stripped
+                elif (
+                    "]]" in stripped and self._face and stripped.lower().startswith("[[expression:")
+                ):
+                    # Wait for newline or trailing text after inline [[expression:...]].
+                    after = stripped.partition("]]")[2]
+                    if not after.strip():
+                        return
+                    parsed = read_model_reply(stripped, face=True)
+                    self.expression = parsed.expression
+                    self._header_done = True
+                    self._body_buf = parsed.text
+                else:
+                    return
+            else:
+                self._header_done = True
+                self._body_buf = self._header_buf
+        else:
+            self._body_buf += chunk
+        self._drain(final=False)
+
+    def finish(self) -> None:
+        if self.suppressed:
+            return
+        if not self._header_done:
+            parsed = read_model_reply(self._header_buf, face=self._face)
+            self.expression = parsed.expression
+            self._body_buf = parsed.text
+            self._header_done = True
+        self._drain(final=True)
+
+    def _drain(self, *, final: bool) -> None:
+        # Hold incomplete lines that might be raw tool markers or unclosed code spans.
+        if not final:
+            if self._body_buf.count("`") % 2 == 1:
+                return
+            ready, remainder = pop_streaming_sentences(
+                self._body_buf, min_chars=12 if not self.emitted else 24
+            )
+            if not ready:
+                return
+            for sentence in ready:
+                if _tool_markers(sentence, self._known_tools):
+                    self.suppressed = True
+                    return
+            self._body_buf = remainder
+            for sentence in ready:
+                spoken = plain_speech_text(sentence).strip()
+                if spoken:
+                    self.emitted = True
+                    self._on_sentence(spoken, self.expression)
+            return
+        if self._body_buf.strip():
+            if _tool_markers(self._body_buf, self._known_tools):
+                self.suppressed = True
+                return
+            for sentence in split_speech_sentences(self._body_buf):
+                spoken = plain_speech_text(sentence).strip()
+                if spoken:
+                    self.emitted = True
+                    self._on_sentence(spoken, self.expression)
+            self._body_buf = ""
 
 
 class ChatEngine(SessionState):
@@ -181,7 +312,7 @@ class ChatEngine(SessionState):
         ):
             raise ChatError("The server returned an invalid companion opener")
         result = self._spoken_reply(self._decode(reply.content), face=face)
-        self._remember([*messages[1:], Message(role="assistant", content=result.text)])
+        self._remember([*self.history, event, Message(role="assistant", content=result.text)])
         self.last_tool_names = ()
         self.last_companion_seed = seed
         return result
@@ -210,6 +341,8 @@ class ChatEngine(SessionState):
         personality_prompt: str = "",
         before_tools: Callable[[], None] | None = None,
         check_cancelled: Callable[[], None] | None = None,
+        on_sentence: Callable[[str, FaceExpression | None], None] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> ModelReply:
         if not user_text.strip():
             raise ChatError("There isn't any text to send")
@@ -231,6 +364,12 @@ class ChatEngine(SessionState):
         tool_rounds = 0
         corrected_marker = False
         retrying = False
+        can_stream = (
+            on_sentence is not None
+            and self.settings.reply_encoding == "text"
+            and capabilities(self.backend).streaming
+            and isinstance(self.backend, ChatCompletionsBackend)
+        )
         while True:
             # New tool evidence also consumes context. Drop older whole turns,
             # never an in-flight call/result pair, before the next model request.
@@ -260,7 +399,17 @@ class ChatEngine(SessionState):
             if check_cancelled is not None:
                 check_cancelled()
             check_deadline()
-            reply = self.backend.complete(outgoing, definitions)
+            feeder: _SentenceFeeder | None = None
+            if can_stream and on_sentence is not None:
+                feeder = _SentenceFeeder(
+                    face=face, known_tools=known_tool_names, on_sentence=on_sentence
+                )
+                assert isinstance(self.backend, ChatCompletionsBackend)
+                reply = self.backend.complete_stream(
+                    outgoing, definitions, on_text=feeder.feed, should_stop=should_stop
+                )
+            else:
+                reply = self.backend.complete(outgoing, definitions)
             retrying = False
             check_deadline()
             if check_cancelled is not None:
@@ -273,35 +422,59 @@ class ChatEngine(SessionState):
                     raise ChatError("The server returned an empty assistant reply")
                 decoded = self._decode(text)
                 if _tool_markers(decoded, known_tool_names):
-                    if corrected_marker:
+                    if corrected_marker or (feeder is not None and feeder.emitted):
                         raise ChatError("The model returned a tool marker instead of an answer.")
                     corrected_marker = True
                     retrying = True
                     continue
+                if feeder is not None:
+                    feeder.finish()
                 result = self._spoken_reply(decoded, face=face)
-                messages.append(Message(role="assistant", content=result.text))
-                self._remember(messages[1:])
+                assistant_reply = Message(role="assistant", content=result.text)
+                self._remember([*self.history, *messages[turn_start:], assistant_reply])
                 self.last_tool_names = tuple(sorted(tool_names))
                 return result
             if not definitions:
                 raise ChatError("The model requested a tool, but tools are disabled")
             if tool_rounds == 4 or len(call_ids) + len(reply.tool_calls) > 8:
                 raise ChatError("The model exceeded the tool-call limit; try a simpler question")
+            batch_ids = [call.id for call in reply.tool_calls]
+            if len(set(batch_ids)) != len(batch_ids) or any(cid in call_ids for cid in batch_ids):
+                raise ChatError("The model returned duplicate tool-call IDs")
             tool_rounds += 1
             if before_tools is not None:
                 before_tools()
             # Preserve the complete exchange, including reasoning needed by some
             # model templates, and trim history only at whole user-turn boundaries.
             messages.append(reply)
+            call_ids.update(batch_ids)
             for call in reply.tool_calls:
-                if call.id in call_ids:
-                    raise ChatError("The model returned duplicate tool-call IDs")
-                call_ids.add(call.id)
                 tool_names.add(call.function.name)
-                messages.append(
-                    Message(
-                        role="tool",
-                        tool_call_id=call.id,
-                        content=self.tools.execute(call.function.name, call.function.arguments),
+            all_readonly = len(reply.tool_calls) > 1 and all(
+                (skill := self.tools.skills.get(call.function.name)) is not None
+                and not skill.effect
+                for call in reply.tool_calls
+            )
+            if all_readonly:
+                with ThreadPoolExecutor(max_workers=min(4, len(reply.tool_calls))) as pool:
+                    futures = [
+                        pool.submit(
+                            copy_context().run,
+                            self.tools.execute,
+                            call.function.name,
+                            call.function.arguments,
+                        )
+                        for call in reply.tool_calls
+                    ]
+                    results = [future.result() for future in futures]
+                for call, output in zip(reply.tool_calls, results, strict=True):
+                    messages.append(Message(role="tool", tool_call_id=call.id, content=output))
+            else:
+                for call in reply.tool_calls:
+                    messages.append(
+                        Message(
+                            role="tool",
+                            tool_call_id=call.id,
+                            content=self.tools.execute(call.function.name, call.function.arguments),
+                        )
                     )
-                )

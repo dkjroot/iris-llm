@@ -34,12 +34,17 @@ def search_memory(
         return {"error": "Saved memory is unavailable or has changed."}
     args = SearchArguments.model_validate(arguments)
     window = date_window(args.query, datetime.now(UTC), timezone)
+    terms = topical_terms(args.query)
     try:
-        rows = index.recall_sources(
-            owner,
-            topical_terms(args.query),
-            window.start if window else None,
-            window.end if window else None,
+        rows = (
+            index.recall_sources(
+                owner,
+                terms,
+                window.start if window else None,
+                window.end if window else None,
+            )
+            if terms or window is not None
+            else []
         )
         current_facts = ""
         if index.hierarchy is not None and window is None:
@@ -49,9 +54,10 @@ def search_memory(
             for conversation in fact_sources:
                 record_source(conversation)
         excerpts: list[SourceExcerpt] = []
+        term_tuple = tuple(terms)
         for row in rows[:3]:
             evidence = index.recall_evidence(
-                owner, row["conversation"], (row["exchange"],), tuple(topical_terms(args.query))
+                owner, row["conversation"], (row["exchange"],), term_tuple
             )
             if evidence and len(json.dumps([*excerpts, evidence[0]]).encode()) <= (
                 1700 if current_facts else 2600

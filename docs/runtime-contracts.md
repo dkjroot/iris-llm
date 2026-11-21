@@ -102,12 +102,16 @@ server.
 
 ## Streaming completion and older clients
 
-Ordinary Pocket conversation audio still starts before synthesis finishes.
-Short private-mode, confirmed-detail and confirmed-forgetting acknowledgements
-are different: Iris prepares their complete audio first, applies the change,
-then returns a buffered reply. A synthesis failure leaves the change unapplied;
-a commit failure cannot escape as a spoken success. Clients requesting streaming
-already support a buffered reply for these cases.
+Streaming voices that implement `StreamingSynthesizer` (including Pocket and
+Kokoro) begin returning audio before full synthesis finishes, and clients sending
+`X-Iris-Stream-Text: 1` when the model backend supports token streaming receive
+sentence-by-sentence pipelined speech directly from streamed tokens. Short
+private-mode, companion-toggle, confirmed-detail and confirmed-forgetting
+acknowledgements prepare their complete outcome transactionally; normal
+conversation turns commit their source exchange upon acceptance via
+`BEFORE_STREAM` before streaming audio starts, so a commit failure never escapes
+as a spoken success. Clients requesting streaming already support a buffered
+reply where needed.
 
 Updated clients send `X-Iris-Completion: 1`. An updated server acknowledges that
 header and supplies final metadata as follows:
@@ -138,7 +142,7 @@ when you need the stronger completion guarantee.
 ## Existing conversation archives
 
 Keep a verified backup with the server stopped before upgrading an archive.
-Starting the server upgrades supported older archives to schema 9 transactionally.
+Starting the server upgrades supported older archives to schema 10 transactionally.
 The version 8 migration repairs
 derived chunk visibility where correcting one summary note had hidden unrelated,
 still-current notes from the same original exchange. It does not change the
@@ -146,10 +150,12 @@ original exchange text, remove history, clear recall blocks or restore explicitl
 deleted conversations. Fully superseded notes remain superseded. If the migration
 fails, its changes and version increment roll back together.
 
-Schema 9 adds durable vector failure tracking and fair summary queue ordering.
-An older Iris build that only understands schema 8 will reject schema 9. Keep
-the backup with its matching software version if you need to roll back; do not
-manually change the schema version to bypass that check.
+Schema 9 adds durable vector failure tracking and fair summary queue ordering,
+and schema 10 adds composite query indexes plus the `AFTER UPDATE OF text` FTS5
+trigger on `chunks`. An older Iris build that only understands an earlier schema
+will reject a newer archive version. Keep the backup with its matching software
+version if you need to roll back; do not manually change the schema version to
+bypass that check.
 
 Summary jobs are now durable for every pending conversation. Discovery also finds
 work omitted by the old 64-conversation cap. Each checkpoint still processes a

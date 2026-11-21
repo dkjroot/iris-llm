@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import tempfile
+from collections.abc import Generator
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,8 @@ import numpy as np
 import numpy.typing as npt
 
 from iris_settings import Settings
-from iris_tts_engines.text import plain_speech_text
+from iris_tts_engines.text import plain_speech_text, split_speech_sentences
+from iris_turn import check_deadline
 
 RECOMMENDED_VOICES = {
     "af_heart": "Heart - American female; suggested starting voice",
@@ -163,6 +165,8 @@ def prepare_audio(samples: npt.NDArray[np.float32], rate: int) -> npt.NDArray[np
 
 
 class TTS:
+    sample_rate = 24000
+
     def __init__(self, settings: Settings) -> None:
         directory = model_directory(settings)
         for asset in ASSETS:
@@ -190,4 +194,35 @@ class TTS:
             lang=self.language,
             trim=False,
         )
-        return prepare_audio(samples, rate), rate
+        try:
+            return prepare_audio(samples, rate), rate
+        except ValueError as error:
+            raise RuntimeError(str(error)) from error
+
+    def stream(self, text: str) -> Generator[bytes]:
+        """Yield 16-bit PCM sentence by sentence for low time-to-first-audio."""
+        sentences = split_speech_sentences(plain_speech_text(text))
+        emitted = False
+        for sentence in sentences:
+            check_deadline()
+            if not any(ch.isalnum() for ch in sentence):
+                continue
+            samples, rate = self.backend.create(
+                sentence,
+                voice=self.voice,
+                speed=self.speed,
+                lang=self.language,
+                trim=False,
+            )
+            if rate != self.sample_rate:
+                raise RuntimeError(f"Kokoro returned unexpected sample rate {rate}")
+            try:
+                prepared = prepare_audio(samples, rate)
+            except ValueError as error:
+                raise RuntimeError(str(error)) from error
+            pcm = (np.clip(prepared, -1, 1) * 32767).astype("<i2").tobytes()
+            if pcm:
+                emitted = True
+                yield pcm
+        if not emitted:
+            raise RuntimeError("Kokoro returned no audio.")

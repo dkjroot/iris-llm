@@ -45,6 +45,7 @@ VOICE_CANCEL_PATH = "/v1/voice/cancellable"
 VOICE_DECISION_PATH = "/v1/voice/decision"
 VOICE_TURN_HEADER = "X-Iris-Turn"
 COMPLETION_HEADER = "X-Iris-Completion"
+STREAM_TEXT_HEADER = "X-Iris-Stream-Text"
 
 
 def validate_token(token: str) -> None:

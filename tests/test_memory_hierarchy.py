@@ -344,12 +344,13 @@ def test_schema_five_upgrade_preserves_sources_and_private_policy(tmp_path):
         for table in ("detail_supersessions", "memory_attention", "memory_topics", "memory_facts"):
             db.execute(f"DROP TABLE {table}")
         db.execute("DROP TABLE embedding_failures")
+        db.execute("DROP INDEX IF EXISTS summary_jobs_schedule")
         db.execute("ALTER TABLE summary_jobs DROP COLUMN last_served")
         db.execute("PRAGMA user_version=5")
     upgraded = SQLiteMemory(path)
     assert upgraded.policy("default") == (True, 1)
     assert upgraded.revision("default", conversation) == "source"
-    assert upgraded.export("default")["schema_version"] == 9
+    assert upgraded.export("default")["schema_version"] == 10
 
 
 @pytest.fixture
@@ -380,11 +381,17 @@ def server(tmp_path):
             Mock(),
             Mock(synthesize=Mock(return_value=(np.zeros(8, dtype=np.float32), 24000))),
         )
-        yield brain, client, requests, annotation
+        try:
+            yield brain, client, requests, annotation
+        finally:
+            brain.lifetime.close()
 
 
 def say(brain, text):
-    return brain.turn("pi", text.encode(), text_only=True)
+    reply = brain.turn("pi", text.encode(), text_only=True)
+    if brain.memory_worker is not None:
+        brain.memory_worker.flush()
+    return reply
 
 
 def test_server_natural_correction_reaches_reply_before_commit_and_survives_restart(server):
@@ -395,13 +402,21 @@ def test_server_natural_correction_reaches_reply_before_commit_and_survives_rest
     text = "Actually, my name is David"
     annotation["facts"] = [fact("David", evidence=text, supersedes=old["id"])]
     say(brain, text)
-    prompt = requests[-1]["messages"][0]["content"]
-    assert '"value": "David"' in prompt and '"value": "Dave"' not in prompt
+    assert brain.memory_context.hierarchy.facts("default")[0]["value"] == "David"
     restarted = Brain(brain.settings, client, brain.stt, brain.tts)
-    annotation["facts"] = []
-    say(restarted, "Hello again")
-    assert '"value": "David"' in requests[-1]["messages"][0]["content"]
-    assert len(brain.memory.export("default")["exchanges"]) == 3
+    try:
+        annotation["facts"] = []
+        say(restarted, "Hello again")
+        chat_requests = [
+            r
+            for r in requests
+            if not r["messages"][0]["content"].startswith("Extract memory metadata")
+        ]
+        prompt = chat_requests[-1]["messages"][0]["content"]
+        assert '"value": "David"' in prompt and '"value": "Dave"' not in prompt
+        assert len(brain.memory.export("default")["exchanges"]) == 3
+    finally:
+        restarted.lifetime.close()
 
 
 def test_server_tts_and_storage_failures_do_not_commit_corrections_or_engagement(server):
@@ -430,7 +445,10 @@ def test_server_private_disabled_and_automatic_paths_do_not_interpret(server):
         brain.stt,
         brain.tts,
     )
-    say(disabled, "My name is Dave")
+    try:
+        say(disabled, "My name is Dave")
+    finally:
+        disabled.lifetime.close()
     assert not any(
         r["messages"][0]["content"].startswith("Extract memory metadata") for r in requests
     )
@@ -445,6 +463,7 @@ def test_server_private_disabled_and_automatic_paths_do_not_interpret(server):
     say(brain, "companion mode on")
     requests.clear()
     brain.turn("pi", b"", text_only=True, companion_idle=True)
+    brain.memory_worker.flush()
     assert len(requests) == 1 and not requests[0].get("tools")
     assert not requests[0]["messages"][0]["content"].startswith("Extract memory metadata")
 
@@ -456,7 +475,10 @@ def test_model_failure_preserves_existing_core_and_chat(server):
     annotation.clear()
     annotation["unsupported"] = "Don't use this"
     assert say(brain, "Tell me about the moon").text == "A reply."
-    assert '"value": "Dave"' in requests[-1]["messages"][0]["content"]
+    chat_requests = [
+        r for r in requests if not r["messages"][0]["content"].startswith("Extract memory metadata")
+    ]
+    assert '"value": "Dave"' in chat_requests[-1]["messages"][0]["content"]
 
 
 def test_metadata_requests_have_no_tools_and_respect_input_budget(server):
@@ -474,7 +496,11 @@ def test_metadata_requests_have_no_tools_and_respect_input_budget(server):
         - meta["max_tokens"]
         - brain.settings.context_margin_tokens
     )
-    assert "Extract memory metadata" not in requests[-1]["messages"][0]["content"]
+    chat_requests = [
+        r for r in requests if not r["messages"][0]["content"].startswith("Extract memory metadata")
+    ]
+    assert len(chat_requests) == 1
+    assert "Extract memory metadata" not in chat_requests[-1]["messages"][0]["content"]
 
 
 def test_engagement_boost_ranks_old_relevant_sources_above_untouched_sources(setup):
@@ -553,6 +579,7 @@ def test_schema_migration_failure_is_atomic_and_retryable(setup):
             db.execute(f"DROP TABLE {table}")
         db.execute("CREATE TABLE memory_topics (bad TEXT)")
         db.execute("DROP TABLE embedding_failures")
+        db.execute("DROP INDEX IF EXISTS summary_jobs_schedule")
         db.execute("ALTER TABLE summary_jobs DROP COLUMN last_served")
         db.execute("PRAGMA user_version=5")
     with pytest.raises(sqlite3.OperationalError):
@@ -561,7 +588,7 @@ def test_schema_migration_failure_is_atomic_and_retryable(setup):
         assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='memory_facts'").fetchone()
         db.execute("DROP TABLE memory_topics")
-    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 9
+    assert SQLiteMemory(archive.path).export("default")["schema_version"] == 10
 
 
 def test_uncertain_correction_cannot_resurrect_original_explicit_value(setup):

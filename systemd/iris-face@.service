@@ -2,6 +2,7 @@
 Description=Iris direct display for %i
 After=systemd-user-sessions.service getty@tty1.service
 Conflicts=getty@tty1.service
+StartLimitIntervalSec=0
 
 [Service]
 User=%i

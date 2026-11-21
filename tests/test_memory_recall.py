@@ -257,24 +257,34 @@ def test_server_clarification_selection_is_archived_and_rollback_safe(archive):
     requests = []
     brain, client = make_brain(settings, requests)
     with client:
-        question = brain.turn("pi", b"What did we discuss yesterday?", text_only=True)
-        assert "Which one" in question.text and not requests
-        before = brain.sessions["pi"].pending_recall
-        previous = brain.sessions["pi"].history.copy()
-        brain.tts.synthesize.side_effect = RuntimeError("audio failed")
-        brain.stt.recognize.return_value = "the story"
-        from iris_droid.protocol import write_wav
+        try:
+            question = brain.turn("pi", b"What did we discuss yesterday?", text_only=True)
+            assert "Which one" in question.text and not requests
+            before = brain.sessions["pi"].pending_recall
+            previous = brain.sessions["pi"].history.copy()
+            brain.tts.synthesize.side_effect = RuntimeError("audio failed")
+            brain.stt.recognize.return_value = "the story"
+            from iris_droid.protocol import write_wav
 
-        with pytest.raises(RuntimeError):
-            brain.turn("pi", write_wav(b"\0\0" * 1600, 16000))
-        assert brain.sessions["pi"].pending_recall == before
-        assert brain.sessions["pi"].history == previous
-        selected = brain.turn("pi", b"the story", text_only=True)
-        assert selected.text == "Let's continue from that source."
-        prompt = requests[-1]["messages"][0]["content"]
-        assert "greenhouse" in prompt and "desert planet" not in prompt
-        assert "rainwater tank" not in prompt
-        assert len(memory.export("default")["exchanges"]) == 5
+            with pytest.raises(RuntimeError):
+                brain.turn("pi", write_wav(b"\0\0" * 1600, 16000))
+            assert brain.sessions["pi"].pending_recall == before
+            assert brain.sessions["pi"].history == previous
+            selected = brain.turn("pi", b"the story", text_only=True)
+            assert selected.text == "Let's continue from that source."
+            chat_requests = [
+                req
+                for req in requests
+                if not req["messages"][0]["content"].startswith(
+                    ("Extract memory metadata", "Summarise these original")
+                )
+            ]
+            prompt = chat_requests[-1]["messages"][0]["content"]
+            assert "greenhouse" in prompt and "desert planet" not in prompt
+            assert "rainwater tank" not in prompt
+            assert len(memory.export("default")["exchanges"]) == 5
+        finally:
+            brain.lifetime.close()
 
 
 def test_server_pending_options_rollback_when_archive_commit_fails(archive):

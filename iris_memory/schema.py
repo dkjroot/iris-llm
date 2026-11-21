@@ -134,3 +134,34 @@ HIERARCHY_SCHEMA = (
     ),
     "PRAGMA user_version=6",
 )
+
+INDEX_SCHEMA = (
+    "CREATE INDEX IF NOT EXISTS embedding_vectors_model_chunk ON embedding_vectors(model, chunk)",
+    "CREATE INDEX IF NOT EXISTS chunks_owner_active ON chunks(owner, superseded, id)",
+    "CREATE INDEX IF NOT EXISTS chunks_owner_conversation ON chunks(owner, conversation)",
+    (
+        "CREATE INDEX IF NOT EXISTS exchanges_owner_conversation_sequence "
+        "ON exchanges(owner, conversation, sequence)"
+    ),
+    (
+        "CREATE INDEX IF NOT EXISTS summary_jobs_schedule "
+        "ON summary_jobs(owner, attempts, retry_at, last_served)"
+    ),
+    "CREATE INDEX IF NOT EXISTS notes_summary ON notes(summary)",
+    "CREATE INDEX IF NOT EXISTS notes_owner_status ON notes(owner, status)",
+    "CREATE INDEX IF NOT EXISTS memory_facts_source ON memory_facts(source)",
+    "CREATE INDEX IF NOT EXISTS memory_facts_supersedes ON memory_facts(supersedes)",
+    (
+        "CREATE INDEX IF NOT EXISTS memory_facts_lookup "
+        "ON memory_facts(owner, fact_key, scope, status)"
+    ),
+    "CREATE INDEX IF NOT EXISTS memory_topics_source ON memory_topics(source)",
+    "CREATE INDEX IF NOT EXISTS memory_attention_source ON memory_attention(source)",
+    "CREATE INDEX IF NOT EXISTS detail_uses_owner_conversation ON detail_uses(owner, conversation)",
+    "CREATE INDEX IF NOT EXISTS conversation_uses_owner_target ON conversation_uses(owner, target)",
+    (
+        "CREATE TRIGGER IF NOT EXISTS chunks_update AFTER UPDATE OF text ON chunks BEGIN "
+        "INSERT INTO chunks_fts(chunks_fts,rowid,text) VALUES ('delete',old.id,old.text); "
+        "INSERT INTO chunks_fts(rowid,text) VALUES (new.id,new.text); END"
+    ),
+)

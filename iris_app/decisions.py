@@ -31,10 +31,14 @@ class VoiceDecision:
                 self._accept = accept
                 if not accept:
                     # Wake the client even if the current inference call is blocked.
-                    with suppress(OSError):
+                    with suppress(OSError, ValueError):
                         self._notify("cancelled")
                 self._decided.set()
             return self._accept == accept
+
+    def close(self) -> None:
+        with self._lock:
+            self._failed = True
 
     def fail(self, notify: Callable[[], None]) -> None:
         with self._lock:

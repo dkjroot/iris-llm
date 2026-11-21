@@ -1,10 +1,19 @@
 """Server audio capabilities available to the application."""
 
 from collections.abc import Generator
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt
+
+
+@dataclass(frozen=True)
+class AudioBuffer:
+    pcm: bytes
+    sample_rate: int
+    channels: int = 1
+    sample_width: int = 2
 
 
 class Synthesizer(Protocol):

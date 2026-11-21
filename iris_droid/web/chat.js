@@ -1,6 +1,8 @@
 import { mountCommandFeedback } from "/command-feedback.js";
 import { ChatController } from "/chat-controller.js";
-import { cycleSavedFace, mountFaceCycle, savedFace, updateFace, followFaceAudio } from "/face.js";
+import {
+  cycleSavedFace, mountFaceCycle, savedFace, updateFace, followFaceAudio, followFaceStream,
+} from "/face.js";
 import { mountMenu } from "/menu.js";
 import { SpeechCapture, recordingWav } from "/speech.js";
 
@@ -154,8 +156,15 @@ function disableMic() {
   void active.audio.close().catch(() => {});
 }
 
+function decodeBase64(text) {
+  const binary = atob(text);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 async function playReply(active, wav) {
-  const bytes = Uint8Array.from(atob(wav), value => value.charCodeAt(0));
+  const bytes = decodeBase64(wav);
   const buffer = await active.audio.decodeAudioData(bytes.buffer);
   if (controller.voice !== active) return;
   if (active.audio.state !== "running") throw new Error("Tap Microphone to resume phone audio.");
@@ -181,6 +190,113 @@ async function playReply(active, wav) {
   }
 }
 
+async function consumeVoiceStream(response, active, request) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const sources = [];
+  let buffer = "";
+  let startReply = null;
+  let rate = 24000;
+  let nextStart = 0;
+  let doneFrame = null;
+  let streamMouth = null;
+  let stopped = false;
+  let lastSource = null;
+  let finishWait = null;
+
+  const stopAll = () => {
+    stopped = true;
+    for (const source of sources) {
+      try { source.stop(); } catch { /* Already ended. */ }
+      try { source.disconnect(); } catch { /* Already disconnected. */ }
+    }
+    sources.length = 0;
+    streamMouth?.stop();
+    streamMouth = null;
+    if (finishWait) {
+      const done = finishWait;
+      finishWait = null;
+      done();
+    }
+  };
+  active.finishPlayback = stopAll;
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let newline;
+      while ((newline = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line) continue;
+        const frame = JSON.parse(line);
+        if (frame.event === "start") {
+          startReply = frame.reply;
+          rate = frame.rate || 24000;
+          if (!controller.current(request)) return null;
+          if (controller.voice === active && active.audio.state === "running") {
+            show("Iris is speaking…");
+            showFace("speaking", startReply.expression);
+            streamMouth = followFaceStream(active.audio);
+            nextStart = active.audio.currentTime + 0.035;
+          }
+        } else if (frame.event === "audio") {
+          if (stopped || controller.voice !== active || active.audio.state !== "running") continue;
+          const bytes = decodeBase64(frame.pcm);
+          const count = Math.floor(bytes.byteLength / 2);
+          if (!count) continue;
+          const view = new DataView(bytes.buffer, bytes.byteOffset, count * 2);
+          const audioBuf = active.audio.createBuffer(1, count, rate);
+          const channel = audioBuf.getChannelData(0);
+          for (let i = 0; i < count; i++) channel[i] = view.getInt16(i * 2, true) / 32768;
+          const source = active.audio.createBufferSource();
+          source.buffer = audioBuf;
+          source.connect(active.audio.destination);
+          const when = Math.max(nextStart, active.audio.currentTime + 0.015);
+          nextStart = when + audioBuf.duration;
+          streamMouth?.push(audioBuf, when);
+          sources.push(source);
+          lastSource = source;
+          source.start(when);
+        } else if (frame.event === "done") {
+          doneFrame = frame;
+        } else if (frame.event === "error") {
+          throw new Error("Iris couldn’t finish speaking.");
+        }
+      }
+    }
+    if (!startReply || !doneFrame) throw new Error("Voice stream ended before completion.");
+    if (typeof doneFrame.text === "string") startReply.text = doneFrame.text;
+    const completion = doneFrame.completion || null;
+    if (completion?.command) startReply.command = completion.command;
+    if (!stopped && lastSource && controller.voice === active && active.audio.state === "running") {
+      const remainingMs = Math.max(0, (nextStart - active.audio.currentTime) * 1000);
+      if (remainingMs > 5) {
+        await new Promise(resolve => {
+          finishWait = resolve;
+          lastSource.onended = () => {
+            if (finishWait === resolve) finishWait = null;
+            resolve();
+          };
+        });
+      }
+    }
+    return {
+      reply: startReply,
+      privateMode: completion ? Boolean(completion.private)
+        : response.headers.get("X-Iris-Private") === "1",
+      exchange: completion?.exchange_id || null,
+      deletedExchange: completion?.deleted_exchange_id || null,
+    };
+  } finally {
+    stopAll();
+    active.finishPlayback = null;
+    try { await reader.cancel(); } catch { /* Ignore closed stream. */ }
+  }
+}
+
 async function turn(body, active = null) {
   const spoken = active !== null;
   const token = key.value;
@@ -198,23 +314,29 @@ async function turn(body, active = null) {
   let feedback = "";
   let writtenExpression = null;
   try {
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": spoken ? "audio/wav" : "text/plain",
+      "X-Iris-Session": controller.session,
+      "X-Iris-Face": "1",
+      "X-Iris-Command-Feedback": "1",
+      "X-Iris-Web-Personality": encodeURIComponent(controller.personality || ""),
+    };
+    if (spoken && active) {
+      headers.Accept = "application/x-iris-voice+ndjson";
+      headers["X-Iris-Completion"] = "1";
+      headers["X-Iris-Stream-Text"] = "1";
+    }
     const response = await fetch(spoken ? "/v1/voice" : "/v1/text", {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": spoken ? "audio/wav" : "text/plain",
-        "X-Iris-Session": controller.session,
-        "X-Iris-Face": "1",
-        "X-Iris-Command-Feedback": "1",
-        "X-Iris-Web-Personality": encodeURIComponent(controller.personality || ""),
-      },
+      headers,
       body,
       redirect: "error",
       signal: AbortSignal.any([request.abort.signal, AbortSignal.timeout(turnTimeout * 1000)]),
     });
-    const reply = await response.json();
     if (!controller.current(request)) return;
     if (!response.ok) {
+      const errorPayload = await response.json().catch(() => null);
       if (response.status === 401) {
         connection.open = true;
         if (token === savedToken) forgetSavedKey();
@@ -224,9 +346,29 @@ async function turn(body, active = null) {
         commandFeedback.show({title:"No speech recognised", message:feedback, status:"error"});
         return;
       }
-      throw new Error(reply.error || "Iris couldn’t answer.");
+      throw new Error(errorPayload?.error || "Iris couldn’t answer.");
     }
-    controller.acknowledge(request, reply, response.headers.get("X-Iris-Private") === "1");
+    const isVoiceStream = spoken && active && response.body
+      && (response.headers.get("Content-Type") || "").startsWith("application/x-iris-voice+ndjson");
+    let reply;
+    let privateMode;
+    let exchange;
+    let deletedExchange;
+    let streamedAudio = false;
+    if (isVoiceStream) {
+      const outcome = await consumeVoiceStream(response, active, request);
+      if (!outcome || !controller.current(request)) return;
+      ({ reply, privateMode, exchange, deletedExchange } = outcome);
+      streamedAudio = true;
+    } else {
+      reply = await response.json().catch(() => null);
+      if (!controller.current(request)) return;
+      if (!reply) throw new Error("Iris returned an unreadable reply.");
+      privateMode = response.headers.get("X-Iris-Private") === "1";
+      deletedExchange = response.headers.get("X-Iris-Deleted-Exchange");
+      exchange = response.headers.get("X-Iris-Exchange");
+    }
+    controller.acknowledge(request, reply, privateMode);
     commandFeedback.companion(reply.companion_mode);
     if (reply.selected_personality && controller.personality !== reply.selected_personality) {
       commandFeedback.show({title:"Personality unchanged", status:"info",
@@ -245,8 +387,6 @@ async function turn(body, active = null) {
         showRememberStatus("Couldn’t save the key. You can still chat in this tab.");
       }
     }
-    const deletedExchange = response.headers.get("X-Iris-Deleted-Exchange");
-    const exchange = response.headers.get("X-Iris-Exchange");
     if (deletedExchange) {
       for (const entry of messages.querySelectorAll("[data-exchange]")) {
         if (entry.dataset.exchange === deletedExchange) entry.remove();
@@ -256,7 +396,7 @@ async function turn(body, active = null) {
     }
     addMessage("Iris", reply.text, exchange);
     if (!spoken && message.value.trim() === body) message.value = "";
-    if (spoken && reply.audio && controller.voice === active) {
+    if (!streamedAudio && spoken && reply.audio && controller.voice === active) {
       show("Iris is speaking…");
       showFace("speaking", reply.expression);
       await playReply(active, reply.audio);
@@ -369,6 +509,7 @@ window.addEventListener("pageshow", () => {
   show("Ready");
   showFace("idle");
   send.disabled = false;
+  menu.setBusy(false);
   key.readOnly = false;
 });
 document.addEventListener("visibilitychange", () => {

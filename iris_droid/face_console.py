@@ -57,7 +57,6 @@ class DisplayState:
 
 
 def read_state(port: int) -> DisplayState | None:
-    received = monotonic()
     link = http.client.HTTPConnection("127.0.0.1", port, timeout=0.35)
     try:
         link.request("GET", "/state")
@@ -65,6 +64,7 @@ def read_state(port: int) -> DisplayState | None:
         if response.status != 200:
             return None
         value: object = json.loads(response.read(16384))
+        received = monotonic()
     except (OSError, http.client.HTTPException, ValueError):
         return None
     finally:
@@ -263,7 +263,7 @@ def load_sprites(
     position = round(x * sx), round(y * sy)
     feature_size = round(tile_w * sx), round(tile_h * sy)
 
-    @lru_cache(maxsize=16)
+    @lru_cache(maxsize=64)
     def frame(expression: FaceExpression, name: str) -> Surface:
         eyes, _, mouth = name.partition("|")
         col = manifest["frames"].index(eyes)

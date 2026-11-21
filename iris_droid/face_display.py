@@ -7,11 +7,12 @@ import logging
 import os
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
+from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from threading import Lock, Thread
+from threading import Condition, Event, Lock, Thread
 from time import monotonic
 from typing import Literal, cast, get_args
 
@@ -52,6 +53,11 @@ ASSETS = {
 }
 
 
+@lru_cache(maxsize=len(ASSETS))
+def _asset_bytes(name: str) -> bytes:
+    return files("iris_droid").joinpath("web", name).read_bytes()
+
+
 class FaceDisplay:
     def __init__(
         self, head: FaceHead | None, screensaver: FaceIdle = "snow", *, remember: bool = False
@@ -79,19 +85,27 @@ class FaceDisplay:
         self.select_personality: Callable[[str], bool] = lambda _: False
         self.wake_phrase: str | None = None
         self._lock = Lock()
+        self._changed = Condition(self._lock)
+        self._stopping = Event()
+        self._version = 0
         self._activity: FaceActivity = "idle"
         self._expression: FaceExpression = "neutral"
         self._deadline: float | None = None
         self._idle_since: float | None = None
         self._preview_until = 0.0
-        self.speech = SpeechEnvelope()
+        self.speech = SpeechEnvelope(on_change=self._notify_change)
         self.companion_mode: bool | None = None
         self._notice: dict[str, object] | None = None
         self._notice_until = 0.0
         self._notice_id = 0
 
+    def _notify_change(self) -> None:
+        with self._changed:
+            self._version += 1
+            self._changed.notify_all()
+
     def notify(self, title: str, message: str, status: str = "info", *, seconds: float = 6) -> None:
-        with self._lock:
+        with self._changed:
             self._notice_id += 1
             self._notice = {
                 "id": self._notice_id,
@@ -100,19 +114,26 @@ class FaceDisplay:
                 "status": status,
             }
             self._notice_until = monotonic() + seconds
+            self._version += 1
+            self._changed.notify_all()
 
     def clear_notice(self) -> None:
-        with self._lock:
+        with self._changed:
             self._notice = None
+            self._version += 1
+            self._changed.notify_all()
 
     def cycle_face(self) -> bool:
-        with self._lock:
+        with self._changed:
             if self.head is None:
                 return False
             self.head = next_face(self.head)
             self._preview_until = monotonic() + FACE_PREVIEW_SECONDS
-            self._save_face(self.head)
-            return True
+            head = self.head
+            self._version += 1
+            self._changed.notify_all()
+        self._save_face(head)
+        return True
 
     def _save_face(self, head: FaceHead) -> None:
         path = self._state_path
@@ -145,13 +166,15 @@ class FaceDisplay:
     ) -> None:
         if self.head is None:
             return
-        with self._lock:
+        with self._changed:
             if activity == "idle" and self._activity != "idle":
                 now = monotonic()
                 self._idle_since = min(self._deadline, now) if self._deadline is not None else now
             self._activity = activity
             self._expression = expression or "neutral"
             self._deadline = None if seconds is None else monotonic() + seconds
+            self._version += 1
+            self._changed.notify_all()
 
     @contextmanager
     def speaking(self, expression: FaceExpression | None) -> Iterator[None]:
@@ -164,10 +187,14 @@ class FaceDisplay:
             self.speech.clear()
 
     def state(self) -> bytes:
+        payload, _ = self._snapshot()
+        return payload
+
+    def _snapshot(self) -> tuple[bytes, FaceActivity]:
         with self._lock:
             now = monotonic()
             expired = self._deadline is not None and now >= self._deadline
-            activity = "idle" if expired else self._activity
+            activity: FaceActivity = "idle" if expired else self._activity
             idle_since = self._deadline if expired else self._idle_since
             state: dict[str, object] = {
                 "head": self.head,
@@ -195,19 +222,24 @@ class FaceDisplay:
             state.update(personalities=self.personalities, personality=self.active_personality())
         if self.wake_phrase:
             state["wake_phrase"] = self.wake_phrase
-        return json.dumps(state, ensure_ascii=False).encode()
+        return json.dumps(state, ensure_ascii=False).encode(), activity
 
     @contextmanager
     def serve(self, port: int = DEFAULT_FACE_PORT) -> Iterator[int | None]:
         if self.head is None:
             yield None
             return
+        self._stopping.clear()
         with ThreadingHTTPServer(("127.0.0.1", port), self._handler()) as server:
+            server.daemon_threads = True
+            server.block_on_close = False
             worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
             worker.start()
             try:
                 yield server.server_port
             finally:
+                self._stopping.set()
+                self._notify_change()
                 server.shutdown()
                 worker.join()
 
@@ -230,12 +262,15 @@ class FaceDisplay:
                 if not self.valid_host():
                     self.send_error(400)
                     return
+                if self.path == "/events":
+                    self._stream_events()
+                    return
                 if self.path == "/state":
                     body = display.state()
                     content_type = "application/json"
                 elif self.path in ASSETS:
                     name, content_type = ASSETS[self.path]
-                    body = files("iris_droid").joinpath("web", name).read_bytes()
+                    body = _asset_bytes(name)
                 else:
                     self.send_error(404)
                     return
@@ -251,6 +286,36 @@ class FaceDisplay:
                 self.end_headers()
                 with suppress(BrokenPipeError, ConnectionResetError):
                     self.wfile.write(body)
+
+            def _stream_events(self) -> None:
+                self.close_connection = True
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                last_version = -1
+                while not display._stopping.is_set():
+                    with display._changed:
+                        version = display._version
+                    payload, activity = display._snapshot()
+                    try:
+                        if version != last_version or activity == "speaking":
+                            self.wfile.write(b"data: " + payload + b"\n\n")
+                            self.wfile.flush()
+                            last_version = version
+                        else:
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
+                    except OSError:
+                        return
+                    interval = 0.05 if activity == "speaking" else 1.0
+                    with display._changed:
+                        if display._stopping.is_set():
+                            return
+                        if display._version == last_version:
+                            display._changed.wait(timeout=interval)
 
             def do_POST(self) -> None:
                 if not self.valid_host():

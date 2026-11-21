@@ -151,7 +151,7 @@ that opaque identifier only in its authenticated health result. The probe requir
 the matching identifier, a live launcher and three continuous seconds of ready
 responses, so an unrelated old server on that port cannot satisfy the new start.
 Your launcher must keep the server in the foreground and preserve its environment.
-Allow enough time for model loading with `--readiness-timeout SECONDS` (3–600,
+Allow enough time for model loading with `--readiness-timeout SECONDS` (8–600,
 default 180). Each health request uses a short I/O timeout, bounded response size,
 no proxy and no redirects; response bodies and tokens are not printed.
 
@@ -165,14 +165,20 @@ to the updater's service environment. Use your actual configured URL and token
 variable. The home probe requires the scheduler to report ready. Finish with the
 [device acceptance checklist](releasing.md), whichever probes you use.
 
-## Recovering an interrupted update
+## Recovering an interrupted or failed update
 
-Leave pending state in place after an install, startup or readiness failure. Fix
-the reported problem and rerun the same updater with the same configuration. If
-HEAD still matches the recorded previous or target commit, it resumes the work;
-a recorded successful install is not repeated. A process may remain stopped after
-a failure, particularly if stopping, installation or a local-file collision failed.
-The updater deliberately does not guess at a rollback of dependencies or databases.
+When the updater runs in managed `--service` or `--launcher` mode and installation,
+startup, or readiness verification fails after advancing `HEAD`, it automatically rolls
+back to the previous commit, re-runs dependency installation if needed, restarts the
+services, and records the failed commit so the next timer tick skips it rather than
+looping on a broken release. As soon as upstream advances past that commit, the updater
+will try again normally.
+
+If a run is interrupted mid-flight (for example by a power cut) or rollback itself fails,
+leave the pending state file in place, fix the reported problem, and rerun the updater
+with the same configuration. If `HEAD` still matches the recorded previous or target
+commit, it resumes cleanly without repeating an already-completed install. Note that
+rolling back code does not reverse database migrations that may already have run.
 
 If you see **HEAD moved during a pending update**, stop the watcher or Pi update
 timer before investigating. This can happen when a manual `git pull` advances the

@@ -12,11 +12,13 @@ corresponding production registration in your composition code when creating
 
 ## A conversation backend
 
-A backend implements `complete(messages, tools)` and returns a `Message`.
-`Brain` accepts a `backend_factory(settings, client)` when it is constructed.
+A backend implements `complete(messages, tools)` and returns a `Message`; adapters
+can also implement `stream(messages, tools)` when declaring `streaming=True` in
+`BackendCapabilities` so Iris pipelines completed sentences straight into streaming TTS.
+`Brain` accepts a `backend_factory(settings, client)` when it is constructed
+(called both for sessions and for optional `memory_extraction_model` background work).
 Use the supplied HTTP client's lifetime rather than creating a new client for
-every request. Declare optional `BackendCapabilities` if the provider has tool
-support or completion reasons. Keep provider-only metadata out of messages sent
+every request. Keep provider-only metadata out of messages sent
 back to the model.
 
 This test starts at the application boundary and deliberately fails if Iris makes
@@ -90,9 +92,10 @@ stateful controls, so do not turn them into unconditional router commands.
 
 ## A model-selected tool
 
-A `Skill` combines a name, description, argument model and callable. Strict
-arguments reject accidental extra fields before the callable runs. Register it
-on the session's `ToolRegistry.skills` dictionary:
+A `Skill` combines a name, description, argument model, callable and optional
+per-skill `instructions` text (included automatically in the system instructions
+only while that skill is registered). Strict arguments reject accidental extra
+fields before the callable runs. Register skills with `ToolRegistry.register()`:
 
 ```python
 import json
@@ -102,12 +105,16 @@ from iris_tools import NoArguments, Skill, ToolRegistry
 
 with httpx.Client() as client:
     registry = ToolRegistry(Settings(), client)
-    registry.skills["get_example_status"] = Skill(
-        "get_example_status",
-        "Read the example's current status.",
-        NoArguments,
-        lambda arguments: {"status": "ready"},
+    registry.register(
+        Skill(
+            "get_example_status",
+            "Read the example's current status.",
+            NoArguments,
+            lambda arguments: {"status": "ready"},
+            instructions="Quote the example status concisely.",
+        )
     )
+    assert "Quote the example status concisely." in registry.instructions()
     result = json.loads(registry.execute("get_example_status", "{}"))
     assert result == {"status": "ready"}
 ```
@@ -128,11 +135,13 @@ and [architecture](architecture.md) for shutdown ownership and memory boundaries
 
 ## A speech backend
 
-A recogniser implements `ISTT.recognize(AudioData)` and `is_offline()`. A
-synthesiser implements `synthesize(text)`, returning a mono float32 NumPy array
-and its sample rate. Streaming adds `sample_rate` and a generator of little-endian
-16-bit mono PCM bytes. That generator is a separate capability: returning a
-generator from `synthesize` is not the same interface.
+A recogniser implements `ISTT.recognize(AudioData)` and `is_offline()`; the shared
+`open_stt(settings)` context manager handles setup and optional `.close()` teardown
+on exit (and `iris_domain.audio.AudioBuffer` provides a transport-neutral audio
+container alongside it). A synthesiser implements `synthesize(text)`, returning a
+mono float32 NumPy array and its sample rate. Streaming adds `sample_rate` and a
+generator of little-endian 16-bit mono PCM bytes. That generator is a separate
+capability: returning a generator from `synthesize` is not the same interface.
 
 This small adapter deliberately says one fixed sentence and emits a quiet tone.
 It checks the application boundary, recogniser input and actual WAV output
@@ -194,11 +203,15 @@ engine is a deliberate interface change, not something this example does.
 
 ## A device adapter
 
-`Device` holds a `Switch` and any supported `Meter` implementations. A switch
-reads `on`/`off` with `state()` and accepts `set_state(state)`. Raise `DeviceError`
-when an outcome cannot be confirmed; do not invent success after a timeout.
-The scheduler owns command ordering and schedule revisions. Here the genuine
-service API and scheduler use a fake physical switch and a temporary database:
+`Device` holds a `Switch`, any supported `Meter` implementations, and optional
+named `Sensor` readers (`sensors: dict[str, Sensor]`). A switch reads `on`/`off`
+with `state()` and accepts `set_state(state)`; a sensor implements `read()`. Raise
+`DeviceError` when an outcome cannot be confirmed; do not invent success after a
+timeout. New derived memory views or vector backends can similarly follow
+`DerivedView` and `VectorStore` in `iris_memory.protocols` and register background
+passes with `MemoryMaintenanceWorker`. The scheduler owns command ordering and
+schedule revisions. Here the genuine service API and scheduler use a fake physical
+switch and a temporary database:
 
 ```python
 from pathlib import Path
@@ -221,8 +234,9 @@ with TemporaryDirectory() as directory:
         assert lamp.commands == ["on"]
 ```
 
-For another protocol, implement its transport, validate configuration in the
-home service, and construct the device in `Config.make_devices`. Don't teach
+For another home protocol, implement a `DeviceDriver` (`build_devices`), register
+it in `iris_home.devices.DRIVER_REGISTRY`, validate its configuration in the home
+service, and let `Config.make_devices` dispatch by `protocol`. Don't teach
 the conversation loop about sockets or vendor command lines. Extend the shared
 protocol only when a new capability needs it. Add offline/timeout, meter units,
 ambiguous action, concurrent schedule edit and restart tests; use a harmless

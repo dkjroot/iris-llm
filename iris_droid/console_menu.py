@@ -67,6 +67,8 @@ class ConsoleMenu:
         self.execute = execute
         self.command_request: Future[bool] | None = None
         self.command_ready = False
+        self._awaiting_busy = False
+        self._awaiting_busy_until = 0.0
         self.confirm_command: tuple[str, str] | None = None
         pygame.font.init()
         self.fonts: dict[tuple[int, bool], Font] = {}
@@ -115,8 +117,21 @@ class ConsoleMenu:
         if self.command_request is not None and self.command_request.done():
             if not self.command_request.result():
                 self.error = "Command not accepted. Wait for Iris, then try again."
+                self._awaiting_busy = False
+                self._awaiting_busy_until = 0.0
+            else:
+                self._awaiting_busy = True
+                self._awaiting_busy_until = now + 2.0
             self.command_request = None
-        self.command_ready = bool(state and state.commands_ready and self.execute is not None)
+        if self._awaiting_busy and (
+            (state is not None and not state.commands_ready)
+            or (self._awaiting_busy_until > 0.0 and now >= self._awaiting_busy_until)
+        ):
+            self._awaiting_busy = False
+            self._awaiting_busy_until = 0.0
+        self.command_ready = bool(
+            state and state.commands_ready and self.execute is not None and not self._awaiting_busy
+        )
         if self.page is None:
             return False
         if now >= self.deadline:
@@ -255,6 +270,9 @@ class ConsoleMenu:
         line_h = self.font(18, False).get_linesize()
         height = self.px(54) + line_h * len(lines)
         x, y = (self.width - width) // 2, self.height - self.margin - height
+        if self.page is not None:
+            # Keep the receipt clear of the pager bar when a menu page is open.
+            y -= self.px(64)
         self.pygame.draw.rect(self.screen, PANEL, (x, y, width, height), border_radius=self.px(14))
         self.pygame.draw.rect(
             self.screen, color, (x, y, width, height), width=2, border_radius=self.px(14)
@@ -283,6 +301,9 @@ class ConsoleMenu:
     def run_command(self, phrase: str) -> None:
         if self.execute is None or not self.command_ready or self.command_request is not None:
             return
+        self.command_ready = False
+        self._awaiting_busy = True
+        self._awaiting_busy_until = 0.0
         self.command_request = self.execute(phrase)
         self.confirm_command = None
         self.go("category")

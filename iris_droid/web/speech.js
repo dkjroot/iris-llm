@@ -12,11 +12,18 @@ export class SpeechCapture {
     this.loud = 0;
     this.quiet = 0;
     this.started = false;
+    this.noiseFloor = 0;
   }
 
   accept(samples) {
-    const power = samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length;
-    const audible = power >= 0.0001;
+    const power = samples.length
+      ? samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length
+      : 0;
+    const threshold = Math.max(0.0001, this.noiseFloor * 3.5);
+    const audible = power >= threshold;
+    if (!this.started && !audible) {
+      this.noiseFloor = this.noiseFloor === 0 ? power : this.noiseFloor * 0.9 + power * 0.1;
+    }
     if (!this.started && this.length + samples.length > this.maxSamples) {
       this.frames = [];
       this.length = 0;
@@ -51,8 +58,8 @@ export function recordingWav(frames, inputRate) {
   }
 
   const rate = 16000;
-  const ratio = inputRate / rate;
-  const count = Math.floor(length / ratio);
+  const count = inputRate > 0 && length > 0 ? Math.floor((length * rate) / inputRate) : 0;
+  const ratio = count > 0 ? inputRate / rate : 1;
   const wav = new DataView(new ArrayBuffer(44 + count * 2));
   wav.setUint32(0, 0x52494646); // RIFF
   wav.setUint32(4, wav.byteLength - 8, true);

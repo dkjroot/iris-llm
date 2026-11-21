@@ -89,6 +89,8 @@ class NotificationSender:
                     "error": "Could not confirm whether Pushover accepted the notification. "
                     "It may already have been sent. Do not retry this turn."
                 }
+            finally:
+                self._next_attempt = time.monotonic() + 5
         return {
             "status": "accepted",
             "service": "Pushover",

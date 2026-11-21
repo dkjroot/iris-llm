@@ -14,12 +14,13 @@ from dataclasses import dataclass
 from iris_memory.schema import (
     DETAIL_SCHEMA,
     HIERARCHY_SCHEMA,
+    INDEX_SCHEMA,
     SEARCH_SCHEMA,
     SOURCE_SCHEMA,
     VECTOR_SCHEMA,
 )
 
-CURRENT_VERSION = 9
+CURRENT_VERSION = 10
 SUPPORTED_VERSIONS = frozenset(range(1, CURRENT_VERSION + 1))
 
 
@@ -107,6 +108,13 @@ def supersession(db: sqlite3.Connection) -> None:
     db.execute("ALTER TABLE memory_facts ADD COLUMN status_before_supersession TEXT")
 
 
+def indexes_and_supersession_source(db: sqlite3.Connection) -> None:
+    statements(db, INDEX_SCHEMA)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(detail_supersessions)")}
+    if "source" not in columns:
+        db.execute("ALTER TABLE detail_supersessions ADD COLUMN source TEXT")
+
+
 MIGRATIONS = (
     Migration(1, "source archive", lambda db: statements(db, SOURCE_SCHEMA)),
     Migration(2, "source search and summaries", migrate_search),
@@ -117,6 +125,11 @@ MIGRATIONS = (
     Migration(7, "reversible supersession", supersession),
     Migration(8, "independent source visibility", repair_source_visibility),
     Migration(9, "fair summary work and recoverable vector failures", maintenance),
+    Migration(
+        10,
+        "query indexes, FTS update trigger and detail supersession source",
+        indexes_and_supersession_source,
+    ),
 )
 
 

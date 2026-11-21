@@ -18,41 +18,20 @@ from iris_domain.memory import (
 from iris_domain.memory import (
     PendingRecall as PendingRecall,
 )
-from iris_memory.index import MemoryIndex, query_terms
+from iris_memory.index import MemoryIndex
 from iris_memory.records import RecallSource, SourceExcerpt
-
-# Strip conversational scaffolding before lexical retrieval. These words do not
-# identify a topic; in particular, "that thing" must not match an arbitrary archive.
-RECALL_WORDS = set(
-    "can could you me our we did does was said say discuss discussion conversation "
-    "conversations talking talk remember recall resume continue pick left off thing "
-    "something yesterday today night last week month days ago other day before "
-    "first second third one ones yes no actually mean meant discussed decide decided "
-    "decision decisions about had its it two three four five six seven "
-    "hello hi iris discussing leave".split()
+from iris_memory.text import (
+    RECALL_WORDS as RECALL_WORDS,
 )
-
-
-def topical_terms(text: str) -> list[str]:
-    return [word for word in query_terms(text) if word not in RECALL_WORDS and not word.isdigit()]
-
-
-def is_recall_request(text: str) -> bool:
-    if re.search(r"\bremember to\b", text, re.I):
-        return False
-    return bool(
-        re.search(
-            r"^(?:(?:please|can you|could you|do you|let'?s)\s+)*(?:remember|recall|resume)\b"
-            r"|^(?:what|where|how|which|when)\b.{0,50}\b(?:we (?:discussed|talked|decided)"
-            r"|did we (?:discuss|talk|decide|say|leave)|were we (?:talking|discussing)"
-            r"|our (?:discussion|conversation))\b"
-            r"|^pick up where we left off\b"
-            r"|\bcontinue (?:our|the|that) (?:discussion|conversation|story)\b"
-            r".{0,40}\b(?:yesterday|last|earlier|previous|other day)\b",
-            text.strip(),
-            re.I,
-        )
-    )
+from iris_memory.text import (
+    is_recall_request as is_recall_request,
+)
+from iris_memory.text import (
+    query_terms as query_terms,
+)
+from iris_memory.text import (
+    topical_terms as topical_terms,
+)
 
 
 def date_window(text: str, now: datetime, timezone: str) -> DateWindow | None:

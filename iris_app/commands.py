@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from iris_app.decisions import VoiceDecision
 from iris_app.runtime_audio import command_audio
 from iris_domain.memory import MemoryPolicyError
 from iris_domain.personality import PersonalityContext
-from iris_domain.replies import TurnReply
+from iris_domain.replies import CommandFeedback, TurnReply
 
 if TYPE_CHECKING:
     from iris_app.runtime import Brain
+    from iris_chat_engines.compatible import ChatEngine
 
 from iris_domain.commands import (
     companion_command,
@@ -96,6 +97,9 @@ class CommandRequest:
     personality: PersonalityContext | None
 
 
+CommandHandler = Callable[[CommandRequest], TurnReply]
+
+
 class CommandRouter:
     """Dispatch controls before model generation. Built-ins retain precedence.
 
@@ -105,13 +109,13 @@ class CommandRouter:
 
     def __init__(self, app: Brain) -> None:
         self.app = app
-        self._exact: dict[str, Callable[[CommandRequest], TurnReply]] = {}
+        self._exact: dict[str, CommandHandler] = {}
 
     @staticmethod
     def _phrase(heard: str) -> str:
         return " ".join(heard.casefold().split()).strip(" .!?,")
 
-    def register(self, phrase: str, handler: Callable[[CommandRequest], TurnReply]) -> None:
+    def register(self, phrase: str, handler: CommandHandler) -> None:
         normalized = self._phrase(phrase)
         if (
             not normalized
@@ -121,7 +125,114 @@ class CommandRouter:
             raise ValueError("Choose a unique, non-empty exact command")
         self._exact[normalized] = handler
 
+    @staticmethod
+    def _stamp_feedback(parsed: ParsedCommands, control: TurnReply) -> TurnReply:
+        # Stamp only deterministic command outcomes. Streamed replies carry
+        # this receipt in their final completion frame, after execution.
+        if control.volume is None and control.command is None:
+            kind = parsed.first or "command"
+            title = {
+                "companion": "Companion mode status",
+                "clear": "Context cleared",
+                "stop": "Stopped listening",
+                "personality": "Personality",
+                "volume": "Speaker volume",
+                "delete": "Delete previous",
+            }.get(kind, "Command response")
+            status: Literal["success", "error", "info"] = (
+                "success" if kind in {"clear", "stop"} else "info"
+            )
+            if kind == "volume":
+                status = "error"
+            if kind == "personality" and parsed.personality:
+                status = "success" if control.selected_personality is not None else "error"
+            if kind == "memory":
+                title = {
+                    "private_on": "Private mode on",
+                    "private_off": "Private mode off",
+                    "status": "Memory status",
+                    "forget": "Forgetting request",
+                    "forget_recalled": "Forgetting request",
+                    "confirm_forget": "Forgetting response",
+                    "cancel_forget": "Forgetting cancelled",
+                }.get(parsed.action or "", "Memory command")
+                if parsed.action in {"private_on", "private_off", "cancel_forget"}:
+                    status = "success"
+            elif kind == "detail":
+                title = "Remembered details"
+            elif kind == "block_followup":
+                title = "Companion follow-up"
+            receipt_text = control.text
+            if len(receipt_text) > 320:
+                receipt_text = receipt_text[:319] + "…"
+            control.command = CommandFeedback(
+                title=title, message=receipt_text[:320] or "Command handled.", status=status
+            )
+        return control
+
+    def handle_companion(
+        self,
+        heard: str,
+        chat: ChatEngine,
+        enable: bool,
+        *,
+        text_only: bool,
+        on_disable: Callable[[], None] | None = None,
+        audio_sink: Callable[..., None] | None = None,
+    ) -> TurnReply:
+        if not enable and on_disable is not None:
+            on_disable()
+        chat.companion_mode = enable
+        text = "Companion mode on. Let's hang out." if enable else "Companion mode off."
+        result = self.app._reply(
+            heard,
+            text,
+            text_only=text_only,
+            companion=chat.companion_mode,
+            transactional=True,
+            audio_sink=audio_sink,
+        )
+        result.command = CommandFeedback(
+            title="Companion mode on" if enable else "Companion mode off",
+            message=(
+                "Enabled for this conversation." if enable else "Automatic conversation is off."
+            ),
+            status="success",
+        )
+        return result
+
+    def handle_exit(
+        self,
+        heard: str,
+        chat: ChatEngine,
+        *,
+        text_only: bool,
+        audio_sink: Callable[..., None] | None = None,
+    ) -> TurnReply:
+        result = self.app._reply(
+            heard,
+            "Shutting down",
+            text_only=text_only,
+            companion=chat.companion_mode,
+            finished=True,
+            audio_sink=audio_sink,
+        )
+        result.command = CommandFeedback(
+            title="Conversation ended",
+            message="Iris is stopping this conversation.",
+            status="success",
+        )
+        return result
+
     def dispatch(
+        self, request: CommandRequest, parsed: ParsedCommands, decision: VoiceDecision | None
+    ) -> TurnReply | None:
+        control = self._dispatch(request, parsed, decision)
+        if control is None:
+            return None
+        return self._stamp_feedback(parsed, control)
+
+    def _dispatch(
         self, request: CommandRequest, parsed: ParsedCommands, decision: VoiceDecision | None
     ) -> TurnReply | None:
         session, heard, text_only = request.session, request.heard, request.text_only
@@ -153,7 +264,11 @@ class CommandRouter:
                 else "I won't use that saved conversation for companion follow-ups again."
             )
             result = self.app._reply(
-                heard, text, text_only=text_only, companion=chat.companion_mode
+                heard,
+                text,
+                text_only=text_only,
+                companion=chat.companion_mode,
+                transactional=target is not None,
             )
             if (
                 target is not None
@@ -187,7 +302,7 @@ class CommandRouter:
                     (
                         name
                         for name in personality.names
-                        if name.casefold() == requested_personality
+                        if name.casefold().replace("’", "'") == requested_personality
                     ),
                     None,
                 )

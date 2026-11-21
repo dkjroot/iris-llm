@@ -75,7 +75,8 @@ def check_setup(settings: Settings, client: httpx.Client) -> int:
     except httpx.HTTPError:
         print(
             "Couldn't list models. Check the address/API key and the server console. "
-            "Some servers only implement chat; try --text if /models isn't supported."
+            "Some servers only implement chat; try python iris.py client --text "
+            "if /models isn't supported."
         )
         return 1
     try:
@@ -83,7 +84,7 @@ def check_setup(settings: Settings, client: httpx.Client) -> int:
     except ValidationError:
         print(
             "The server answered, but didn't return a standard model list. "
-            "Check its console/model name and try --text."
+            "Check its console/model name and try python iris.py client --text."
         )
         return 1
     if not models.data:
@@ -139,13 +140,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     try:
-        settings = load_settings(server_config(args.config))
         if args.list_voices:
             from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
 
             for name, description in RECOMMENDED_VOICES.items():
                 print(f"{name}: {description}")
-        elif args.download_voices:
+            return 0
+        settings = load_settings(server_config(args.config))
+        if args.download_voices:
             from iris_tts_engines.kokoro_offline import download_voices
 
             download_voices(settings)

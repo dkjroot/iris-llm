@@ -139,10 +139,22 @@ class Scheduler:
             if not self.clock_ready():
                 raise DeviceError("The home service is waiting for its clock to synchronise.")
             row = self.db.execute(
-                "SELECT revision FROM schedules WHERE device=?", (device,)
+                "SELECT revision, rules, cursor FROM schedules WHERE device=?", (device,)
             ).fetchone()
-            if (row[0] if row else 0) != request.revision:
+            corrupt = False
+            if row is not None:
+                try:
+                    RULES.validate_json(row[1])
+                    parsed_cursor = datetime.fromisoformat(row[2])
+                    if parsed_cursor.tzinfo is None:
+                        raise ValueError("Schedule cursor needs a timezone")
+                except (ValueError, TypeError, ValidationError):
+                    corrupt = True
+            current_rev = int(row[0]) if row else 0
+            if current_rev != request.revision and not (corrupt and request.revision == 0):
                 raise ScheduleConflict("The schedule changed. Read it again before editing.")
+            next_revision = current_rev + 1
+            now_utc = self.clock().astimezone(UTC).isoformat()
             with self.db:
                 self.db.execute(
                     """
@@ -153,8 +165,8 @@ class Scheduler:
                     (
                         device,
                         RULES.dump_json(request.rules).decode(),
-                        request.revision + 1,
-                        self.clock().isoformat(),
+                        next_revision,
+                        now_utc,
                     ),
                 )
             self._generation += 1
@@ -169,16 +181,26 @@ class Scheduler:
         if not lock.acquire(timeout=10):
             raise DeviceError("The device is busy. Check its state before retrying.")
         try:
-            now = self.clock()
+            now = self.clock().astimezone(UTC)
             self.devices[device].switch.set_state(state)
             with self.condition:
                 if not self.clock_ready():
                     return
-                with self.db:
-                    self.db.execute(
-                        "UPDATE schedules SET cursor = ? WHERE device = ? AND cursor < ?",
-                        (now.isoformat(), device, now.isoformat()),
-                    )
+                row = self.db.execute(
+                    "SELECT cursor FROM schedules WHERE device = ?", (device,)
+                ).fetchone()
+                if row is not None:
+                    try:
+                        existing = datetime.fromisoformat(row[0])
+                        should_advance = existing.tzinfo is not None and existing < now
+                    except (ValueError, TypeError):
+                        should_advance = False
+                    if should_advance:
+                        with self.db:
+                            self.db.execute(
+                                "UPDATE schedules SET cursor = ? WHERE device = ? AND cursor = ?",
+                                (now.isoformat(), device, row[0]),
+                            )
                 self._generation += 1
                 self.condition.notify()
         finally:
@@ -236,7 +258,7 @@ class Scheduler:
                 with self.condition, self.db:
                     self.db.execute(
                         "UPDATE schedules SET cursor=? WHERE device=? AND revision=? AND cursor=?",
-                        (instant.isoformat(), device, revision, raw_cursor),
+                        (instant.astimezone(UTC).isoformat(), device, revision, raw_cursor),
                     )
                     self._errors.pop(device, None)
             finally:

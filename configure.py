@@ -7,7 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 from iris_paths import atomic_json, server_config
 from iris_settings import (
@@ -15,8 +16,25 @@ from iris_settings import (
     DEFAULT_CHAT_MODEL,
     OPENROUTER_BASE_URL,
     Settings,
-    load_settings,
+    migrate_config,
+    read_config,
 )
+
+
+class _FileSettings(Settings):
+    """Validate saved server configuration without merging transient IRIS_* env overrides."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)
+
 
 # Everything else in Settings is offered in the advanced section automatically.
 # New server settings must not silently become JSON-only knobs.
@@ -68,6 +86,8 @@ ADVANCED_HELP = {
     "context_margin_tokens": "Context space reserved for the host's formatting",
     "memory_hierarchy_enabled": "Interpret facts, corrections and topic attention "
     "with a bounded metadata model pass",
+    "memory_extraction_model": "Optional model name for background memory summaries and "
+    "hierarchy extraction; null uses model",
     "memory_summary_tokens": "Maximum tokens in a memory summary",
     "memory_summary_interval": "Unsummarised exchanges before a checkpoint",
     "memory_summary_chars": "Maximum summary characters in chat context",
@@ -77,11 +97,17 @@ ADVANCED_HELP = {
     "memory_semantic_min_score": "Minimum semantic similarity, from 0 to 1",
     "memory_context_chars": "Maximum restored conversation characters",
     "timeout": "Model request timeout in seconds",
+    "turn_timeout": "Overall server turn deadline in seconds",
+    "upload_timeout": "Request body upload timeout in seconds",
+    "queue_timeout": "Maximum wait in the server turn queue in seconds",
+    "max_pending_turns": "Maximum concurrent uploaded/queued turns on the server",
     "trace": "Print model/tool diagnostics, including conversation text",
     "reply_encoding": "Reply text encoding: text, html or double-html",
     "chat_template_kwargs": "Host template options as a JSON object",
     "chat_request_options": "Additional model request options as a JSON object",
     "whisper_model": "Whisper model name or local path",
+    "whisper_vad_filter": "Filter silence in Whisper STT; disable if client VAD is already active",
+    "whisper_beam_size": "Whisper beam search width (1 is fastest greedy decoding, 5 is default)",
     "device": "Speech recognition device: cpu, cuda or auto",
     "compute_type": "Whisper compute type, such as int8 or float16",
     "language": "Recognition language code; null enables automatic detection",
@@ -121,10 +147,12 @@ def configure_advanced(data: dict[str, Any]) -> None:
                 if text_value and answer.startswith('"'):
                     value = json.loads(answer)
                 parsed = adapter.validate_python(value)
-            except ValueError:
+                candidate = {**data, name: parsed}
+                validated = _FileSettings.model_validate(candidate)
+            except (ValueError, ValidationError):
                 print("That value doesn't match the setting's type or limits. Please try again.")
             else:
-                data[name] = parsed
+                data[name] = validated.model_dump(mode="json")[name]
                 break
 
 
@@ -154,33 +182,35 @@ def choose_kokoro_speed(default: float) -> float:
 
 
 def configure_tts(previous: Settings, data: dict[str, Any]) -> None:
-    engine = choose(
-        "Speech synthesis on the PC", ["kokoro", "chatterbox", "pocket"], previous.tts_engine
-    )
-    data["tts_engine"] = engine
-    if engine in {"chatterbox", "pocket"}:
-        from iris_tts_engines.chatterbox import VOICE_DIRECTORY
-        from iris_tts_engines.voice_cli import VOICE_NAME
-
-        is_pocket = engine == "pocket"
-        suffix = "*.safetensors" if is_pocket else "*.pt"
-        choices = sorted(
-            f"file:{path.stem}"
-            for path in VOICE_DIRECTORY.glob(suffix)
-            if path.is_file() and VOICE_NAME.fullmatch(path.stem)
+    while True:
+        engine = choose(
+            "Speech synthesis on the PC", ["kokoro", "chatterbox", "pocket"], previous.tts_engine
         )
-        if is_pocket:
-            if not choices:
-                raise ValueError(
-                    "Prepare a Pocket voice first. "
-                    "Run python iris.py voice --engine pocket prepare WAV NAME."
-                )
-            default = f"file:{previous.pocket_voice}"
-            voice = choose(
-                "Pocket TTS voice", choices, default if default in choices else choices[0]
+        data["tts_engine"] = engine
+        if engine in {"chatterbox", "pocket"}:
+            from iris_tts_engines.chatterbox import VOICE_DIRECTORY
+            from iris_tts_engines.voice_cli import VOICE_NAME
+
+            is_pocket = engine == "pocket"
+            suffix = "*.safetensors" if is_pocket else "*.pt"
+            choices = sorted(
+                f"file:{path.stem}"
+                for path in VOICE_DIRECTORY.glob(suffix)
+                if path.is_file() and VOICE_NAME.fullmatch(path.stem)
             )
-            data["pocket_voice"] = voice.removeprefix("file:")
-        else:
+            if is_pocket:
+                if not choices:
+                    print(
+                        "Prepare a Pocket voice first. "
+                        "Run python iris.py voice --engine pocket prepare WAV NAME."
+                    )
+                    continue
+                default = f"file:{previous.pocket_voice}"
+                voice = choose(
+                    "Pocket TTS voice", choices, default if default in choices else choices[0]
+                )
+                data["pocket_voice"] = voice.removeprefix("file:")
+                return
             data["chatterbox_device"] = choose(
                 "Chatterbox Turbo device", ["cuda", "cpu"], previous.chatterbox_device
             )
@@ -194,7 +224,7 @@ def configure_tts(previous: Settings, data: dict[str, Any]) -> None:
             data["chatterbox_voice"] = (
                 selected.removeprefix("file:") if selected != "bundled" else None
             )
-    else:
+            return
         from iris_tts_engines.kokoro_offline import RECOMMENDED_VOICES
 
         for name, description in RECOMMENDED_VOICES.items():
@@ -202,6 +232,7 @@ def configure_tts(previous: Settings, data: dict[str, Any]) -> None:
         choices = list(dict.fromkeys([*RECOMMENDED_VOICES, previous.kokoro_voice]))
         data["kokoro_voice"] = choose("Kokoro voice", choices, previous.kokoro_voice)
         data["kokoro_speed"] = choose_kokoro_speed(previous.kokoro_speed)
+        return
 
 
 def configure_chat(data: dict[str, Any], previous: Settings) -> None:
@@ -244,16 +275,32 @@ def main(argv: list[str] | None = None) -> int:
             "Whisper recognises your speech on the PC; "
             "The speech synthesizer makes the voice sent back to the client."
         )
-        previous = load_settings(path if path.exists() else None)
+        if path.exists():
+            try:
+                previous: Settings = _FileSettings.model_validate(migrate_config(read_config(path)))
+            except (ValueError, ValidationError) as error:
+                print(f"Couldn't load existing {path} ({error}); starting from defaults.")
+                previous = _FileSettings()
+        else:
+            previous = _FileSettings()
         data = previous.model_dump(mode="json")
         configure_chat(data, previous)
-        data["model_context_tokens"] = int(
-            input(
+        while True:
+            raw_context = input(
                 "Model context window in tokens (match your host) "
                 f"[{previous.model_context_tokens}]: "
             ).strip()
-            or previous.model_context_tokens
-        )
+            if not raw_context:
+                data["model_context_tokens"] = previous.model_context_tokens
+                break
+            try:
+                context_tokens = int(raw_context)
+                if 2048 <= context_tokens <= 2000000:
+                    data["model_context_tokens"] = context_tokens
+                    break
+            except ValueError:
+                pass
+            print("Enter a whole number of tokens between 2048 and 2000000.")
         data["stt_engine"] = choose(
             "Speech recognition on the PC (whisper is the usual local choice)",
             ["whisper", "wav2vec2", "google"],
@@ -389,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
             data["memory_companion_followups"] = False
         if choose("Configure advanced server settings", ["yes", "no"], "no") == "yes":
             configure_advanced(data)
-        settings = Settings.model_validate(data)
+        settings = _FileSettings.model_validate(data)
         atomic_json(path, settings.model_dump(mode="json"))
         print("Saved", path)
         for explanation in ENVIRONMENT_SETTINGS.values():

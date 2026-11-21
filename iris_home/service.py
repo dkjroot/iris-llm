@@ -12,15 +12,18 @@ import signal
 import socket
 import sqlite3
 import ssl
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import time
+from contextlib import suppress
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import BoundedSemaphore, Thread
 from types import FrameType
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from iris_home.devices import ChipTool, Device, DeviceError, MatterDeviceConfig, MatterPlug
+from iris_home.devices import DRIVER_REGISTRY, Device, DeviceError, MatterDeviceConfig
 from iris_home.protocol import (
     OPERATIONS,
     DeviceName,
@@ -50,19 +53,20 @@ class Config(BaseModel):
     database: Path
     clock_sync_file: Path | None = None
     chip_tool: str = "chip-tool"
+    chip_tool_interactive: bool = False
     matter_storage: Path
     devices: dict[DeviceName, MatterConfig] = Field(min_length=1)
 
     @field_validator("listen")
     @classmethod
-    def ipv4_address(cls, value: str) -> str:
-        return str(ipaddress.IPv4Address(value))
+    def ip_address(cls, value: str) -> str:
+        return str(ipaddress.ip_address(value))
 
     @model_validator(mode="after")
     def check_configuration(self) -> Config:
         if bool(self.tls_cert) != bool(self.tls_key):
             raise ValueError("Configure both tls_cert and tls_key.")
-        if not ipaddress.IPv4Address(self.listen).is_loopback and not self.tls_cert:
+        if not ipaddress.ip_address(self.listen).is_loopback and not self.tls_cert:
             raise ValueError("A LAN listener requires a TLS certificate and key.")
         names = [name.strip().casefold() for name in self.devices]
         if not all(names) or len(names) != len(set(names)):
@@ -73,10 +77,16 @@ class Config(BaseModel):
         return self
 
     def make_devices(self) -> dict[str, Device]:
-        controller = ChipTool(self.chip_tool, self.matter_storage)
-        return {
-            name: MatterPlug(controller, device).device() for name, device in self.devices.items()
-        }
+        grouped: dict[str, dict[str, MatterConfig]] = {}
+        for name, config in self.devices.items():
+            grouped.setdefault(config.protocol, {})[name] = config
+        devices: dict[str, Device] = {}
+        for protocol, configs in grouped.items():
+            driver = DRIVER_REGISTRY.get(protocol)
+            if driver is None:
+                raise ValueError(f"Unsupported home device protocol: {protocol!r}")
+            devices.update(driver.build_devices(self, configs))
+        return devices
 
 
 class HomeAPI:
@@ -113,66 +123,127 @@ class HomeAPI:
         return {"device": name, "state": device.switch.state()}
 
 
-class HomeServer(HTTPServer):
+class HomeServer(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+    allow_reuse_address = True
+
     def __init__(
         self,
         address: tuple[str, int],
         api: HomeAPI,
         token: str,
         tls: ssl.SSLContext | None,
+        *,
+        max_connections: int = 16,
     ) -> None:
         self.api = api
         self.token = f"Bearer {token}".encode("ascii")
         self.tls = tls
+        self._connections = BoundedSemaphore(max(1, max_connections))
+        if isinstance(ipaddress.ip_address(address[0]), ipaddress.IPv6Address):
+            self.address_family = socket.AF_INET6
         super().__init__(address, HomeHandler)
 
-    def get_request(self) -> tuple[socket.socket, tuple[str, int]]:
-        conn, address = super().get_request()
-        conn.settimeout(3)
-        if self.tls is not None:
-            try:
-                conn = self.tls.wrap_socket(conn, server_side=True)
-            except OSError:
-                conn.close()
-                raise
-        return conn, address
+    def process_request(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> None:
+        if not self._connections.acquire(blocking=False):
+            if isinstance(request, socket.socket):
+                with suppress(OSError):
+                    request.sendall(
+                        b"HTTP/1.1 503 Service Unavailable\r\n"
+                        b"Content-Type: application/json\r\n"
+                        b"Content-Length: 36\r\n"
+                        b"Connection: close\r\n\r\n"
+                        b'{"error":"Home service is busy."}\n'
+                    )
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._connections.release()
+            raise
+
+    def process_request_thread(
+        self, request: socket.socket | tuple[bytes, socket.socket], client_address: object
+    ) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connections.release()
 
 
 class HomeHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     server: HomeServer
+
+    def setup(self) -> None:
+        if isinstance(self.request, socket.socket):
+            self.request.settimeout(3)
+            if self.server.tls is not None:
+                self.request = self.server.tls.wrap_socket(self.request, server_side=True)
+        super().setup()
+
+    def handle(self) -> None:
+        try:
+            super().handle()
+        except (OSError, ssl.SSLError):
+            self.close_connection = True
 
     def log_message(self, *_: object) -> None:
         # Keep untrusted request paths and headers out of the journal.
         pass
 
-    def _reply(self, status: int, result: dict[str, object]) -> None:
+    def _reply(self, status: int, result: dict[str, object], *, close: bool = False) -> None:
         body = json.dumps(result, allow_nan=False).encode()
+        if close:
+            self.close_connection = True
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
+        if close:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+    def _read_body(self, size: int, timeout: float = 3.0) -> bytes:
+        deadline = time.monotonic() + timeout
+        buf = bytearray()
+        while len(buf) < size:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Request body timed out")
+            self.connection.settimeout(remaining)
+            chunk = self.rfile.read(min(4096, size - len(buf)))
+            if not chunk:
+                raise ValueError("Truncated request body")
+            buf.extend(chunk)
+        return bytes(buf)
 
     def do_POST(self) -> None:
         auth = self.headers.get("Authorization", "").encode("latin-1")
         if not hmac.compare_digest(auth, self.server.token):
-            self._reply(401, {"error": "Home service authentication failed."})
+            self._reply(401, {"error": "Home service authentication failed."}, close=True)
             return
         operation = self.path.removeprefix("/v1/")
         schema = OPERATIONS.get(operation) if self.path.startswith("/v1/") else None
         if schema is None:
-            self._reply(404, {"error": "Unknown home operation."})
+            self._reply(404, {"error": "Unknown home operation."}, close=True)
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             if not 0 < size <= 16384 or self.headers.get("Transfer-Encoding"):
                 raise ValueError("Invalid body size")
-            request = schema.model_validate_json(self.rfile.read(size))
+            raw = self._read_body(size)
+            request = schema.model_validate_json(raw)
         except (ValueError, TimeoutError):
-            self._reply(400, {"error": "Invalid home request."})
+            self._reply(400, {"error": "Invalid home request."}, close=True)
             return
         try:
+            self.connection.settimeout(15)
             result = self.server.api.execute(request, operation)
         except KeyError as error:
             self._reply(404, {"error": error.args[0]})
@@ -185,6 +256,7 @@ class HomeHandler(BaseHTTPRequestHandler):
             self._reply(503, {"error": "The schedule database is unavailable."})
         else:
             self._reply(200, result)
+            self.connection.settimeout(5)
 
 
 def main() -> int:
@@ -210,10 +282,6 @@ def main() -> int:
         LOG.error("Could not configure home service: %s", error)
         return 1
 
-    def stop(_signal: int, _frame: FrameType | None) -> None:
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, stop)
     ready = config.clock_sync_file
     try:
         with (
@@ -227,6 +295,11 @@ def main() -> int:
                 (config.listen, config.port), HomeAPI(devices, scheduler), token, tls
             ) as server,
         ):
+
+            def stop(_signal: int, _frame: FrameType | None) -> None:
+                Thread(target=server.shutdown, daemon=True).start()
+
+            signal.signal(signal.SIGTERM, stop)
             LOG.info("Home service listening on %s:%s", config.listen, config.port)
             server.serve_forever()
     except KeyboardInterrupt:
@@ -234,6 +307,11 @@ def main() -> int:
     except (OSError, sqlite3.Error) as error:
         LOG.error("Could not start home service: %s", error)
         return 1
+    finally:
+        for device in devices.values():
+            close = getattr(device.switch, "close", None)
+            if callable(close):
+                close()
     return 0
 
 

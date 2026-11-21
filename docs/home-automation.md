@@ -107,7 +107,11 @@ Keep that token private and use the same value for `IRIS_HOME_SERVICE_TOKEN`
 on the Iris server. Every request needs it. There's no need to forward the
 service port at the router or use an SSH tunnel with this setup. If the home
 service and Iris server are on the same machine, you can listen on
-`127.0.0.1` and omit the certificate and key.
+`127.0.0.1` or `::1` and omit the certificate and key. If you're running many
+repeated Matter calls and want lower per-call overhead, you can also set
+`"chip_tool_interactive": true` so `ChipTool` reuses a persistent
+`chip-tool interactive start` process instead of launching a fresh subprocess on
+each attribute read or switch (falling back to one-shot automatically if needed).
 
 From the checkout, install the user service and enable it at boot:
 

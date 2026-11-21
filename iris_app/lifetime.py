@@ -27,9 +27,9 @@ class ApplicationLifetime:
 
                 def close_all() -> None:
                     try:
-                        previous()
-                    finally:
                         cleanup()
+                    finally:
+                        previous()
 
                 self._cleanup = close_all
 

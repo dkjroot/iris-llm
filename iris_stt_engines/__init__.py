@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import cast
 
 from iris_settings import Settings
@@ -17,3 +19,14 @@ def make_stt(settings: Settings) -> ISTT:
     }[settings.stt_engine]
     provider = importlib.import_module(f"iris_stt_engines.{module}")
     return cast(ISTT, provider.STT(settings))
+
+
+@contextmanager
+def open_stt(settings: Settings) -> Iterator[ISTT]:
+    stt = make_stt(settings)
+    try:
+        yield stt
+    finally:
+        close = getattr(stt, "close", None)
+        if callable(close):
+            close()

@@ -52,6 +52,7 @@ class SQLiteMemory:
             "archive_snapshot", default=None
         )
         self.path = path.expanduser().resolve()
+        self.user_version = 0
         if create:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         elif not self.path.is_file():
@@ -59,6 +60,7 @@ class SQLiteMemory:
         with self.connect(create=create) as db:
             db.execute("BEGIN IMMEDIATE" if create else "BEGIN")
             initialize(db, upgrade=create)
+            self.user_version = int(db.execute("PRAGMA user_version").fetchone()[0])
 
     @contextmanager
     def connect(self, *, create: bool = False) -> Iterator[sqlite3.Connection]:
@@ -78,6 +80,7 @@ class SQLiteMemory:
         try:
             db.execute("PRAGMA foreign_keys=ON")
             db.execute("PRAGMA secure_delete=ON")
+            db.execute("PRAGMA synchronous=NORMAL")
             with db:
                 yield db
                 check_deadline()  # Expired writes roll back before committing.
@@ -257,11 +260,13 @@ class SQLiteMemory:
             if hierarchy is not None:
                 from iris_memory.hierarchy import Hierarchy
 
-                Hierarchy.commit(db, owner, exchange.id, hierarchy)
+                extra_sources = Hierarchy.commit(db, owner, exchange.id, hierarchy)
                 source_conversations = tuple(
-                    dict.fromkeys((*source_conversations, *hierarchy.source_conversations))
+                    dict.fromkeys(
+                        (*source_conversations, *hierarchy.source_conversations, *extra_sources)
+                    )
                 )
-            if db.execute("PRAGMA user_version").fetchone()[0] >= 5:
+            if self.user_version >= 5:
                 for label in detail_labels:
                     db.execute(
                         "INSERT OR IGNORE INTO detail_uses VALUES (?,?,?)",
@@ -286,7 +291,7 @@ class SQLiteMemory:
                         "offered_at=excluded.offered_at",
                         (owner, followup_conversation, datetime.now(UTC).isoformat()),
                     )
-            if db.execute("PRAGMA user_version").fetchone()[0] >= 2:
+            if self.user_version >= 2:
                 from iris_memory.index import index_exchange
 
                 row = db.execute("SELECT * FROM exchanges WHERE id=?", (exchange.id,)).fetchone()
@@ -551,33 +556,39 @@ class SQLiteMemory:
                 return None
             exchange, sequence, conversation = previous
 
-            from iris_memory.hierarchy import Hierarchy
+            version = self.user_version
+            if version >= 6:
+                from iris_memory.hierarchy import Hierarchy
 
-            Hierarchy.undo_supersession(db, owner, exchange)
+                Hierarchy.undo_supersession(db, owner, exchange)
             db.execute("DELETE FROM exchanges WHERE owner=? AND id=?", (owner, exchange))
-            if db.execute(
-                "SELECT 1 FROM summaries WHERE owner=? AND conversation=? AND through_sequence>=?",
-                (owner, conversation, sequence),
-            ).fetchone():
-                # Notes can suppress chunks from earlier summary passes. Rebuild
-                # this conversation's summaries from its remaining source exchanges.
+            if version >= 2:
+                if db.execute(
+                    "SELECT 1 FROM summaries WHERE owner=? AND conversation=? "
+                    "AND through_sequence>=?",
+                    (owner, conversation, sequence),
+                ).fetchone():
+                    # Notes can suppress chunks from earlier summary passes. Rebuild
+                    # this conversation's summaries from its remaining source exchanges.
+                    db.execute(
+                        "DELETE FROM summaries WHERE owner=? AND conversation=?",
+                        (owner, conversation),
+                    )
+                    db.execute(
+                        "UPDATE chunks SET superseded=0 WHERE owner=? AND conversation=?",
+                        (owner, conversation),
+                    )
                 db.execute(
-                    "DELETE FROM summaries WHERE owner=? AND conversation=?", (owner, conversation)
-                )
-                db.execute(
-                    "UPDATE chunks SET superseded=0 WHERE owner=? AND conversation=?",
+                    "DELETE FROM summary_jobs WHERE owner=? AND conversation=?",
                     (owner, conversation),
                 )
-            db.execute(
-                "DELETE FROM summary_jobs WHERE owner=? AND conversation=?", (owner, conversation)
-            )
-            if db.execute(
-                "SELECT 1 FROM exchanges WHERE owner=? AND conversation=? AND sequence>"
-                "COALESCE((SELECT MAX(through_sequence) FROM summaries WHERE conversation=?),0) "
-                "LIMIT 1",
-                (owner, conversation, conversation),
-            ).fetchone():
-                enqueue_summary(db, owner, conversation)
+                if db.execute(
+                    "SELECT 1 FROM exchanges WHERE owner=? AND conversation=? AND sequence>"
+                    "COALESCE((SELECT MAX(through_sequence) FROM summaries "
+                    "WHERE conversation=?),0) LIMIT 1",
+                    (owner, conversation, conversation),
+                ).fetchone():
+                    enqueue_summary(db, owner, conversation)
             self._bump_policy(db, owner)
             return str(exchange)
 
@@ -586,7 +597,7 @@ class SQLiteMemory:
             db.execute("BEGIN IMMEDIATE")
             if conversation is None:
                 db.execute("DELETE FROM conversations WHERE owner=?", (owner,))
-                if db.execute("PRAGMA user_version").fetchone()[0] >= 5:
+                if self.user_version >= 5:
                     db.execute("DELETE FROM memory_details WHERE owner=?", (owner,))
             else:
                 scope = self._deletion_scope(db, owner, conversation)

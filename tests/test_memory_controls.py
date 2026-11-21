@@ -55,6 +55,7 @@ def setup(tmp_path):
         Mock(synthesize=Mock(return_value=(np.zeros(10, dtype=np.float32), 24000))),
     )
     yield brain, transport, requests
+    brain.lifetime.close()
     transport.close()
 
 
@@ -163,6 +164,8 @@ def test_private_commands_do_not_create_saved_conversations(setup):
 def test_forgetting_requires_exact_confirmation_and_does_not_archive_controls(setup):
     brain, transport, requests = setup
     turn(brain, "a whole saved discussion")
+    if brain.memory_worker is not None:
+        brain.memory_worker.flush()
     requests.clear()
     prompt = turn(brain, "forget this conversation")
     assert "1 exchange" in prompt.text

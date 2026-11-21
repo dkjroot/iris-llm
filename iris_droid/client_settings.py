@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, fields
+import math
 from pathlib import Path
+from typing import Literal
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
 
 from iris_droid.capture import DEFAULT_MICROPHONE_BUFFER, validate_capture_options
 from iris_droid.face_display import (
@@ -196,22 +200,32 @@ def client_parser(settings: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return parser
 
 
-def validate_client_options(args: argparse.Namespace | ClientOptions) -> None:
-    if not 0 < args.phrase_time_limit <= 300 or not 0 < args.listen_timeout <= 300:
-        raise ValueError("Recording limit and listen timeout must be in (0, 300]")
-    if not 0 <= args.speech_lead_in <= 2:
-        raise ValueError("Speech lead-in must be between 0 and 2 seconds")
-    if not 0 < args.vad_threshold < 1:
-        raise ValueError("--vad-threshold must be between 0 and 1, exclusive")
-    if args.face and not 1 <= args.face_port <= 65535:
-        raise ValueError("--face-port must be between 1 and 65535")
-    validate_capture_options(
-        buffer_frames=args.microphone_buffer,
-        pause_threshold=args.pause_threshold,
-        sample_rate=args.microphone_rate,
-        energy_threshold=args.energy_threshold,
-        calibration_duration=args.calibration_duration,
-    )
+def validate_server_origin(url: str) -> None:
+    parts = urlsplit(url)
+    _ = parts.port
+    if (
+        parts.scheme not in {"http", "https"}
+        or not parts.hostname
+        or parts.username
+        or parts.password
+        or parts.query
+        or parts.fragment
+        or parts.path not in {"", "/"}
+    ):
+        raise ValueError(
+            "Use the Iris droid server's http(s) origin, e.g. http://192.168.1.10:8765"
+        )
+
+
+def validate_client_options(args: argparse.Namespace | ClientSettings) -> None:
+    if isinstance(args, ClientSettings):
+        ClientSettings.model_validate(args.model_dump())
+        return
+    try:
+        ClientSettings.model_validate(vars(args))
+    except ValidationError as error:
+        first = error.errors()[0]
+        raise ValueError(first["msg"]) from error
 
 
 def config_options(parser: argparse.ArgumentParser) -> dict[str, argparse.Action]:
@@ -240,10 +254,15 @@ def parse_config_value(action: argparse.Action, value: object) -> object:
         choices = ", ".join(map(str, action.choices))
         raise ValueError(f"{action.dest} must be one of {choices}")
     if callable(action.type):
+        if action.type is Path and not str(value).strip():
+            raise ValueError(f"{action.dest} must not be blank (use null to clear)")
         try:
-            return action.type(str(value))
+            parsed = action.type(str(value))
         except (argparse.ArgumentTypeError, ValueError) as error:
             raise ValueError(f"{action.dest}: {error}") from error
+        if isinstance(parsed, float) and not math.isfinite(parsed):
+            raise ValueError(f"{action.dest} must be a finite number")
+        return parsed
     return value
 
 
@@ -281,21 +300,22 @@ def parse_client_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv, namespace=argparse.Namespace(**values))
 
 
-@dataclass
-class ClientOptions:
-    """Validated startup options; argparse stays at the command-line boundary."""
+class ClientSettings(BaseModel):
+    """Unified Pydantic client settings; argparse stays at the command-line boundary."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     server: str
     personalities_file: Path | None
     face: FaceHead | None
     face_idle: FaceIdle
     face_port: int
-    volume_backend: str
+    volume_backend: Literal["none", "alsa"]
     alsa_card: str | None
     alsa_control: str
     no_sounds: bool
     echo_recording: bool
-    activation: str
+    activation: Literal["enter", "continuous", "wake"]
     wake_model: Path | None
     wake_phrase: str
     voice_cancel: bool
@@ -317,16 +337,52 @@ class ClientOptions:
     companion_idle_min: float
     companion_idle_max: float
     pause_threshold: float
-    config: Path | None
-    list_microphones: bool
-    text: bool
-    download_vad_model: Path | None
-    test_microphone: bool
-    save_reply: Path | None
-    play_wav: Path | None
-    show_private_text: bool
+    config: Path | None = None
+    list_microphones: bool = False
+    text: bool = False
+    download_vad_model: Path | None = None
+    test_microphone: bool = False
+    save_reply: Path | None = None
+    play_wav: Path | None = None
+    show_private_text: bool = False
+
+    @field_validator("server")
+    @classmethod
+    def check_server(cls, value: str) -> str:
+        validate_server_origin(value)
+        return value
+
+    @model_validator(mode="after")
+    def validate_bounds(self) -> ClientSettings:
+        if (
+            not math.isfinite(self.phrase_time_limit)
+            or not 0 < self.phrase_time_limit <= 300
+            or not math.isfinite(self.listen_timeout)
+            or not 0 < self.listen_timeout <= 300
+        ):
+            raise ValueError("Recording limit and listen timeout must be in (0, 300]")
+        if not math.isfinite(self.speech_lead_in) or not 0 <= self.speech_lead_in <= 2:
+            raise ValueError("Speech lead-in must be between 0 and 2 seconds")
+        if not math.isfinite(self.vad_threshold) or not 0 < self.vad_threshold < 1:
+            raise ValueError("--vad-threshold must be between 0 and 1, exclusive")
+        if self.face and not 1 <= self.face_port <= 65535:
+            raise ValueError("--face-port must be between 1 and 65535")
+        validate_capture_options(
+            buffer_frames=self.microphone_buffer,
+            pause_threshold=self.pause_threshold,
+            sample_rate=self.microphone_rate,
+            energy_threshold=self.energy_threshold,
+            calibration_duration=self.calibration_duration,
+        )
+        return self
 
     @classmethod
-    def from_namespace(cls, args: argparse.Namespace) -> ClientOptions:
-        validate_client_options(args)
-        return cls(**{field.name: getattr(args, field.name) for field in fields(cls)})
+    def from_namespace(cls, args: argparse.Namespace) -> ClientSettings:
+        try:
+            return cls.model_validate(vars(args))
+        except ValidationError as error:
+            first = error.errors()[0]
+            raise ValueError(first["msg"]) from error
+
+
+ClientOptions = ClientSettings

@@ -64,6 +64,7 @@ class SileroVAD:
         self.session = ort.InferenceSession(
             str(path), sess_options=options, providers=["CPUExecutionProvider"]
         )
+        self._sr = np.array(RATE, dtype=np.int64)
         self.reset()
 
     def reset(self) -> None:
@@ -76,7 +77,7 @@ class SileroVAD:
         samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)[None, :] / 32768.0
         audio = np.concatenate((self.context, samples), axis=1)
         output, self.state = self.session.run(
-            None, {"input": audio, "state": self.state, "sr": np.array(RATE, dtype=np.int64)}
+            None, {"input": audio, "state": self.state, "sr": self._sr}
         )
         self.context = samples[:, -64:].copy()
         probability = float(output[0][0])
@@ -95,6 +96,7 @@ def listen_for_speech(
     threshold: float = 0.5,
     clock: Callable[[], float] = monotonic,
     on_speech: Callable[[], None] | None = None,
+    trim_silence: bool = False,
 ) -> bytes:
     """Return bounded 16 kHz PCM; rejected noises don't restart the waiting timeout.
 
@@ -107,7 +109,7 @@ def listen_for_speech(
     detector.reset()
     deadline = clock() + timeout
     converter_state = None
-    pending = b""
+    pending = bytearray()
     history: deque[bytes] = deque(maxlen=10)
     frames: list[bytes] = []
     consecutive = 0
@@ -115,18 +117,25 @@ def listen_for_speech(
     elapsed = 0.0
     max_samples = int(limit * RATE)
     silence_frames = math.ceil(pause / FRAME_SECONDS)
+    needs_resample = source.SAMPLE_RATE != RATE
     while True:
         if not frames and clock() >= deadline:
             raise sr.WaitTimeoutError("No speech detected before the listening deadline")
         raw = source.stream.read(source.CHUNK)
         if not raw:
             raise OSError("Microphone stopped during speech detection")
-        converted, converter_state = sr.audioop.ratecv(
-            raw, 2, 1, source.SAMPLE_RATE, RATE, converter_state
-        )
-        pending += converted
-        while len(pending) >= FRAME_BYTES:
-            frame, pending = pending[:FRAME_BYTES], pending[FRAME_BYTES:]
+        if needs_resample:
+            converted, converter_state = sr.audioop.ratecv(
+                raw, 2, 1, source.SAMPLE_RATE, RATE, converter_state
+            )
+            pending.extend(converted)
+        else:
+            pending.extend(raw)
+        cursor = 0
+        available = len(pending)
+        while available - cursor >= FRAME_BYTES:
+            frame = bytes(pending[cursor : cursor + FRAME_BYTES])
+            cursor += FRAME_BYTES
             elapsed += FRAME_SECONDS
             if not frames and (elapsed > timeout or clock() >= deadline):
                 raise sr.WaitTimeoutError("No speech detected before the listening deadline")
@@ -144,4 +153,10 @@ def listen_for_speech(
                 # Hysteresis avoids fragmenting a quiet word around the start threshold.
                 silence = silence + 1 if probability < threshold * 0.7 else 0
             if silence >= silence_frames or len(frames) * FRAME_SAMPLES >= max_samples:
+                if trim_silence and silence > 6:
+                    # Keep ~192 ms of trailing silence for clean word endings without
+                    # shipping the entire end-of-turn pause to STT.
+                    del frames[-(silence - 6) :]
                 return b"".join(frames)[: max_samples * 2]
+        if cursor:
+            del pending[:cursor]
