@@ -461,3 +461,171 @@ def test_documented_home_probe_reaches_real_service(tmp_path, monkeypatch):
                 service.shutdown()
                 thread.join(2)
                 assert not thread.is_alive()
+
+
+def test_windows_server_clears_state_on_stop_and_failed_start(monkeypatch, tmp_path):
+    monkeypatch.setattr(updater.subprocess, "CREATE_NEW_PROCESS_GROUP", 512, raising=False)
+    failed_proc = Mock(pid=101)
+    monkeypatch.setattr(updater.subprocess, "Popen", Mock(return_value=failed_proc))
+    server = updater.WindowsServer(tmp_path, tmp_path / "run.ps1", "powershell.exe")
+    monkeypatch.setattr(server, "wait", lambda timeout: 1)
+    with pytest.raises(updater.UpdateError, match="exit code 1"):
+        server.start()
+    assert server.process is None and server.instance is None
+
+    live_proc = Mock(pid=202)
+    live_proc.poll.return_value = None
+    monkeypatch.setattr(updater.subprocess, "Popen", Mock(return_value=live_proc))
+    monkeypatch.setattr(
+        updater.subprocess, "run", Mock(return_value=subprocess.CompletedProcess([], 0))
+    )
+    monkeypatch.setattr(server, "wait", lambda timeout: None)
+    server.start()
+    assert server.process is live_proc and server.instance is not None
+    server.stop()
+    assert server.process is None and server.instance is None
+
+
+def test_health_probe_timeout_reports_safe_reason_without_logging_body(probe, clock, capsys):
+    import urllib.error
+
+    def http_401(*args, **kwargs):
+        raise urllib.error.HTTPError(probe.url, 401, "Unauthorized", {}, None)
+
+    probe.opener.open = http_401
+    with pytest.raises(updater.UpdateError, match=r"timed out \(HTTP 401\)"):
+        probe.wait()
+    assert capsys.readouterr().out == ""
+
+    probe.opener.open = lambda *a, **kw: response({"status": "ready", "instance": "old"})
+    with pytest.raises(updater.UpdateError, match=r"timed out \(instance ID mismatch\)"):
+        probe.wait(instance=lambda: "new")
+
+    probe.opener.open = lambda *a, **kw: response({"status": "degraded"})
+    with pytest.raises(updater.UpdateError, match=r"timed out \(server status 'degraded'\)"):
+        probe.wait()
+
+    probe.opener.open = lambda *a, **kw: response({"status": "secret-token-leak"})
+    with pytest.raises(updater.UpdateError, match=r"timed out \(server not ready\)"):
+        probe.wait()
+    assert capsys.readouterr().out == ""
+
+
+def _wire_windows_main(monkeypatch, repo, server, probe):
+    import os
+    import sys
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    sleeps = []
+    monkeypatch.setattr(updater, "os", SimpleNamespace(name="nt", environ=os.environ))
+    monkeypatch.setattr(updater, "updater_lock", lambda path: nullcontext())
+    monkeypatch.setattr(updater, "WindowsServer", Mock(return_value=server))
+    monkeypatch.setattr(updater, "HealthProbe", Mock(return_value=probe))
+    monkeypatch.setattr(updater, "_sleep_interruptible", lambda seconds: sleeps.append(seconds))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["updater", "--repo", str(repo.path), "--launcher", "code.txt"],
+    )
+    return sleeps
+
+
+def test_windows_main_keeps_live_server_on_initial_readiness_timeout(repos, monkeypatch, capsys):
+    _, repo = repos
+    server = Mock(process=None, instance=None)
+
+    def start():
+        server.process = Mock()
+        server.process.poll.return_value = None
+        server.instance = "inst-1"
+
+    server.start.side_effect = start
+    server.wait.side_effect = [None, KeyboardInterrupt]
+    probe = Mock()
+    probe.wait.side_effect = updater.UpdateError("Application readiness timed out (HTTP 401).")
+    _wire_windows_main(monkeypatch, repo, server, probe)
+    assert updater.main() == 0
+    assert server.start.call_count == 1
+    assert server.stop.call_count == 1
+    assert "leaving it running" in capsys.readouterr().out
+
+
+def test_windows_main_keeps_rolled_back_server_on_rollback_readiness_timeout(repos, monkeypatch):
+    upstream, repo = repos
+    before = git(repo.path, "rev-parse", "HEAD")
+    (upstream / "code.txt").write_text("broken", encoding="utf-8")
+    commit(upstream, "Broken release")
+    server = Mock(process=None, instance=None)
+    events = []
+
+    def stop():
+        events.append("stop")
+        server.process = None
+        server.instance = None
+
+    def restart():
+        events.append("restart:" + (repo.path / "code.txt").read_text(encoding="utf-8"))
+        server.process = Mock()
+        server.process.poll.return_value = None
+        server.instance = f"inst-{len(events)}"
+
+    server.stop.side_effect = stop
+    server.restart.side_effect = restart
+    server.wait.side_effect = [KeyboardInterrupt]
+    probe = Mock()
+    probe.wait.side_effect = updater.UpdateError("Application readiness timed out (HTTP 503).")
+    _wire_windows_main(monkeypatch, repo, server, probe)
+    assert updater.main() == 0
+    assert git(repo.path, "rev-parse", "HEAD") == before
+    assert events == [
+        "stop",
+        "restart:broken",
+        "stop",
+        "stop",
+        "restart:original",
+        "stop",
+    ]
+    assert server.start.call_count == 0
+
+
+def test_windows_main_retries_when_initial_start_fails(repos, monkeypatch):
+    _, repo = repos
+    server = Mock(process=None, instance=None)
+    attempts = 0
+
+    def start():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise updater.UpdateError("launcher exited")
+        server.process = Mock()
+        server.process.poll.return_value = None
+        server.instance = "inst-2"
+
+    server.start.side_effect = start
+    server.wait.side_effect = [KeyboardInterrupt]
+    probe = Mock()
+    sleeps = _wire_windows_main(monkeypatch, repo, server, probe)
+    assert updater.main() == 0
+    assert server.start.call_count == 2
+    assert sleeps == [5.0]
+
+
+def test_windows_main_restarts_server_on_unexpected_nonzero_exit(repos, monkeypatch, capsys):
+    _, repo = repos
+    server = Mock(process=None, instance=None)
+
+    def start():
+        server.process = Mock()
+        server.process.poll.return_value = None
+        server.instance = "inst-live"
+
+    server.start.side_effect = start
+    server.wait.side_effect = [1, KeyboardInterrupt]
+    probe = Mock()
+    sleeps = _wire_windows_main(monkeypatch, repo, server, probe)
+    assert updater.main() == 0
+    assert server.start.call_count == 2
+    assert sleeps == [5.0]
+    assert "restarting in 5s" in capsys.readouterr().out

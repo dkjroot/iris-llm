@@ -25,7 +25,11 @@ from iris_domain.expression import (
     FACE_PROMPT,
     FaceExpression,
     ModelReply,
+    could_be_leading_cue,
+    extract_expression_cue,
     read_model_reply,
+    split_inline_leading_cue,
+    strip_expression_cues,
 )
 from iris_domain.session import SessionState
 from iris_domain.turn import effect_scope
@@ -95,6 +99,10 @@ def _model_messages(
                 outgoing[index] = Message(role="assistant", content=summary)
                 if index == turn_start - 1 and turn_start == len(messages) - 1:
                     needs_correction = True
+            else:
+                cleaned = strip_expression_cues(message.content).strip()
+                if cleaned and cleaned != message.content:
+                    outgoing[index] = Message(role="assistant", content=cleaned)
     if needs_correction:
         user = messages[turn_start]
         outgoing[turn_start] = Message(role="user", content=(user.content or "") + correction)
@@ -129,42 +137,37 @@ class _SentenceFeeder:
             stripped = self._header_buf.lstrip()
             if not stripped:
                 return
-            if stripped.startswith("[") and len(stripped) < 2:
-                return
-            if stripped.startswith("[["):
-                if "\n" not in stripped and "]]" not in stripped and len(stripped) < 64:
-                    return
-                if "\n" in stripped:
-                    first_line, _, rest = stripped.partition("\n")
-                    marker = first_line.strip()
-                    if self._face and marker.lower().startswith("[[expression:"):
-                        parsed = read_model_reply(first_line + "\n", face=True)
-                        self.expression = parsed.expression
-                        self._header_done = True
-                        self._body_buf = rest.lstrip()
-                    elif (
-                        marker.startswith("[[")
-                        and marker.endswith("]]")
-                        and marker[2:-2].strip() in self._known_tools
-                    ):
-                        self.suppressed = True
-                        return
-                    else:
-                        self._header_done = True
-                        self._body_buf = stripped
-                elif (
-                    "]]" in stripped and self._face and stripped.lower().startswith("[[expression:")
+            if "\n" in stripped:
+                first_line, _, rest = stripped.partition("\n")
+                marker = first_line.strip()
+                if (
+                    marker.startswith("[[")
+                    and marker.endswith("]]")
+                    and marker[2:-2].strip() in self._known_tools
                 ):
-                    # Wait for newline or trailing text after inline [[expression:...]].
-                    after = stripped.partition("]]")[2]
-                    if not after.strip():
-                        return
-                    parsed = read_model_reply(stripped, face=True)
-                    self.expression = parsed.expression
-                    self._header_done = True
-                    self._body_buf = parsed.text
-                else:
+                    self.suppressed = True
                     return
+                if self._face:
+                    first_body, expr = extract_expression_cue(first_line + "\n")
+                    if expr is not None:
+                        self.expression = expr
+                    self._header_done = True
+                    self._body_buf = f"{first_body}\n{rest}" if first_body else rest.lstrip()
+                else:
+                    self._header_done = True
+                    self._body_buf = self._header_buf
+            elif (
+                self._face
+                and "]" in stripped
+                and (split := split_inline_leading_cue(stripped)) is not None
+            ):
+                body, expr = split
+                if expr is not None:
+                    self.expression = expr
+                self._header_done = True
+                self._body_buf = body
+            elif could_be_leading_cue(stripped, face=self._face):
+                return
             else:
                 self._header_done = True
                 self._body_buf = self._header_buf
@@ -182,6 +185,14 @@ class _SentenceFeeder:
             self._header_done = True
         self._drain(final=True)
 
+    def _clean_sentence(self, sentence: str) -> str:
+        if self._face:
+            cleaned, cue_expr = extract_expression_cue(sentence)
+            if cue_expr is not None and not self.emitted and self.expression == "neutral":
+                self.expression = cue_expr
+            return cleaned
+        return strip_expression_cues(sentence)
+
     def _drain(self, *, final: bool) -> None:
         # Hold incomplete lines that might be raw tool markers or unclosed code spans.
         if not final:
@@ -192,13 +203,21 @@ class _SentenceFeeder:
             )
             if not ready:
                 return
+            if (
+                any(
+                    sentence.count("[") > sentence.count("]") and "\n" not in sentence
+                    for sentence in ready
+                )
+                and len(self._body_buf) - self._body_buf.rfind("[") < 64
+            ):
+                return
             for sentence in ready:
                 if _tool_markers(sentence, self._known_tools):
                     self.suppressed = True
                     return
             self._body_buf = remainder
             for sentence in ready:
-                spoken = plain_speech_text(sentence).strip()
+                spoken = plain_speech_text(self._clean_sentence(sentence)).strip()
                 if spoken:
                     self.emitted = True
                     self._on_sentence(spoken, self.expression)
@@ -208,7 +227,7 @@ class _SentenceFeeder:
                 self.suppressed = True
                 return
             for sentence in split_speech_sentences(self._body_buf):
-                spoken = plain_speech_text(sentence).strip()
+                spoken = plain_speech_text(self._clean_sentence(sentence)).strip()
                 if spoken:
                     self.emitted = True
                     self._on_sentence(spoken, self.expression)

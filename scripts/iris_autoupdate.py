@@ -181,6 +181,7 @@ class Checkout:
         *,
         prepare: Callable[[PendingUpdate], None] | None = None,
         verify: Callable[[], None] | None = None,
+        verify_rollback: Callable[[], None] | None = None,
         rollback_on_failure: bool = False,
     ) -> None:
         current = self.git("rev-parse", "HEAD")
@@ -226,6 +227,11 @@ class Checkout:
         if prepare is not None:
             prepare(pending)
         if self.git("rev-parse", "HEAD") != current:
+            if prepare is not None:
+                try:
+                    restart()
+                except (UpdateError, OSError, subprocess.SubprocessError) as restart_err:
+                    log(f"Could not restart services after HEAD change: {restart_err}")
             raise UpdateError("HEAD changed while stopping services; review the pending update.")
         if current == pending.previous:
             try:
@@ -247,6 +253,7 @@ class Checkout:
             restart,
             prepare=prepare,
             verify=verify,
+            verify_rollback=verify_rollback,
             rollback_on_failure=rollback_on_failure,
         )
 
@@ -258,6 +265,7 @@ class Checkout:
         *,
         prepare: Callable[[PendingUpdate], None] | None = None,
         verify: Callable[[], None] | None = None,
+        verify_rollback: Callable[[], None] | None = None,
         reinstall: bool = False,
     ) -> None:
         log(f"Rolling back Iris from {pending.target[:12]} to {pending.previous[:12]}.")
@@ -270,9 +278,10 @@ class Checkout:
         if reinstall:
             install()
         restart()
-        if verify is not None:
+        check = verify_rollback if verify_rollback is not None else verify
+        if check is not None:
             try:
-                verify()
+                check()
             except (UpdateError, OSError, subprocess.SubprocessError) as verify_err:
                 log(f"Warning: rollback readiness check failed: {verify_err}")
         self.pending_path.unlink(missing_ok=True)
@@ -285,6 +294,7 @@ class Checkout:
         *,
         prepare: Callable[[PendingUpdate], None] | None = None,
         verify: Callable[[], None] | None = None,
+        verify_rollback: Callable[[], None] | None = None,
         rollback_on_failure: bool = False,
     ) -> None:
         install_started = pending.installed
@@ -314,6 +324,7 @@ class Checkout:
                     restart,
                     prepare=prepare,
                     verify=verify,
+                    verify_rollback=verify_rollback,
                     reinstall=install_started,
                 )
             except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as rb_exc:
@@ -383,12 +394,14 @@ class HealthProbe:
     ) -> None:
         deadline = time.monotonic() + self.timeout
         healthy_since: float | None = None
+        last_reason = "no response yet"
         while True:
             if not running():
                 raise UpdateError("The managed process exited before becoming ready.")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise UpdateError("Application readiness timed out; the update remains pending.")
+                raise UpdateError(f"Application readiness timed out ({last_reason}).")
+            ready = False
             try:
                 request = urllib.request.Request(
                     self.url, data=b"{}" if self.kind == "home" else None, headers=self.headers
@@ -396,16 +409,40 @@ class HealthProbe:
                 with self.opener.open(request, timeout=min(2, remaining)) as response:
                     body = response.read(65537)
                     payload = json.loads(body) if len(body) <= 65536 else None
-                ready = isinstance(payload, dict) and (
-                    payload.get("status") == "ready"
-                    if self.kind == "iris"
-                    else isinstance(payload.get("scheduler"), dict)
-                    and payload["scheduler"].get("state") == "ready"
-                )
-                expected = instance()
-                ready = ready and (expected is None or payload.get("instance") == expected)
-            except (OSError, ValueError, urllib.error.URLError):
-                ready = False
+                if not isinstance(payload, dict):
+                    last_reason = "unexpected response"
+                elif self.kind == "iris":
+                    raw_status = payload.get("status")
+                    if raw_status != "ready":
+                        last_reason = (
+                            f"server status '{raw_status}'"
+                            if raw_status in {"starting", "busy", "degraded", "stopping"}
+                            else "server not ready"
+                        )
+                    else:
+                        expected = instance()
+                        if expected is not None and payload.get("instance") != expected:
+                            last_reason = "instance ID mismatch"
+                        else:
+                            ready = True
+                else:
+                    scheduler = payload.get("scheduler")
+                    if not (isinstance(scheduler, dict) and scheduler.get("state") == "ready"):
+                        last_reason = "scheduler not ready"
+                    else:
+                        expected = instance()
+                        if expected is not None and payload.get("instance") != expected:
+                            last_reason = "instance ID mismatch"
+                        else:
+                            ready = True
+            except urllib.error.HTTPError as exc:
+                last_reason = f"HTTP {exc.code}"
+            except urllib.error.URLError:
+                last_reason = "endpoint unreachable"
+            except ValueError:
+                last_reason = "invalid JSON response"
+            except OSError:
+                last_reason = "connection error"
             if ready:
                 healthy_since = healthy_since if healthy_since is not None else time.monotonic()
                 if time.monotonic() - healthy_since >= self.stable and running():
@@ -521,17 +558,24 @@ class WindowsServer:
 
     def start(self) -> None:
         self.instance = uuid4().hex
-        self.process = subprocess.Popen(
-            [self.powershell, "-NoProfile", "-File", str(self.launcher)],
-            cwd=self.repo,
-            stdin=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-            env={**os.environ, "IRIS_INSTANCE_ID": self.instance},
-        )
+        try:
+            self.process = subprocess.Popen(
+                [self.powershell, "-NoProfile", "-File", str(self.launcher)],
+                cwd=self.repo,
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                env={**os.environ, "IRIS_INSTANCE_ID": self.instance},
+            )
+        except BaseException:
+            self.process = None
+            self.instance = None
+            raise
         code = self.wait(timeout=2)
         if code is None:
             log("Started the Iris server.")
             return
+        self.process = None
+        self.instance = None
         raise UpdateError(f"The Iris launcher exited during startup (exit code {code}).")
 
     def wait(self, timeout: float) -> int | None:
@@ -548,7 +592,12 @@ class WindowsServer:
             time.sleep(min(0.25, remaining))
 
     def stop(self) -> None:
-        if self.process is None or self.process.poll() is not None:
+        if self.process is None:
+            self.instance = None
+            return
+        if self.process.poll() is not None:
+            self.process = None
+            self.instance = None
             return
         result = subprocess.run(
             ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
@@ -558,11 +607,28 @@ class WindowsServer:
         )
         if result.returncode and self.process.poll() is None:
             raise UpdateError("Could not stop the Iris launcher and its child processes.")
-        self.process.wait(timeout=10)
+        try:
+            self.process.wait(timeout=10)
+        finally:
+            self.process = None
+            self.instance = None
 
     def restart(self) -> None:
         self.stop()
         self.start()
+
+
+def _server_running(server: WindowsServer) -> bool:
+    return server.process is not None and server.process.poll() is None
+
+
+def _sleep_interruptible(seconds: float) -> None:
+    deadline = time.monotonic() + seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.25, remaining))
 
 
 def main() -> int:
@@ -597,7 +663,6 @@ def main() -> int:
     if args.install_command == []:
         parser.error("--install-command needs a command")
 
-    server = None
     try:
         repo = Checkout(args.repo.resolve())
         with updater_lock(repo.lock_path):
@@ -656,47 +721,88 @@ def main() -> int:
                 return 0
 
             launcher = (repo.path / args.launcher).resolve(strict=True)
-            server = WindowsServer(repo.path, launcher, args.powershell)
+            win_server = WindowsServer(repo.path, launcher, args.powershell)
             assert probe is not None
 
-            def verify_server() -> None:
+            def verify_update() -> None:
                 try:
                     probe.wait(
-                        lambda: server.process is not None and server.process.poll() is None,
-                        lambda: server.instance,
+                        lambda: _server_running(win_server),
+                        lambda: win_server.instance,
                     )
                 except BaseException:
-                    server.stop()
+                    win_server.stop()
                     raise
 
+            def verify_running_server() -> None:
+                probe.wait(
+                    lambda: _server_running(win_server),
+                    lambda: win_server.instance,
+                )
+
+            def ensure_server_running() -> bool:
+                if _server_running(win_server):
+                    return True
+                try:
+                    win_server.start()
+                except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                    log(f"Could not start the Iris server: {exc}")
+                    return False
+                try:
+                    verify_running_server()
+                except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:
+                    if _server_running(win_server):
+                        log(
+                            f"Warning: {exc} The Iris server process is still running; "
+                            "leaving it running."
+                        )
+                        return True
+                    win_server.process = None
+                    win_server.instance = None
+                    log(f"The Iris server did not stay ready: {exc}")
+                    return False
+                log("Iris server is ready.")
+                return True
+
+            restart_backoff = 5.0
             try:
                 while True:
                     try:
                         repo.update(
                             install,
-                            server.restart,
-                            prepare=lambda _: server.stop(),
-                            verify=verify_server,
+                            win_server.restart,
+                            prepare=lambda _: win_server.stop(),
+                            verify=verify_update,
+                            verify_rollback=verify_running_server,
                             rollback_on_failure=True,
                         )
                     except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:
                         log(f"Iris update skipped or incomplete: {exc}")
-                    if not repo.pending_path.exists() and server.process is None:
-                        server.start()
-                        verify_server()
-                    code = server.wait(timeout=300)
+                    if not ensure_server_running():
+                        log(f"Retrying Iris server startup in {restart_backoff:.0f}s.")
+                        _sleep_interruptible(restart_backoff)
+                        restart_backoff = min(60.0, restart_backoff * 2)
+                        continue
+                    code = win_server.wait(timeout=300)
                     if code is None:
+                        restart_backoff = 5.0
                         continue
-                    if repo.pending_path.exists():
-                        time.sleep(300)
-                        continue
-                    log(f"The Iris server exited (exit code {code}).")
-                    return code
+                    win_server.process = None
+                    win_server.instance = None
+                    if code == 0 and not repo.pending_path.exists():
+                        log("The Iris server exited (exit code 0).")
+                        return 0
+                    log(
+                        f"The Iris server exited unexpectedly (exit code {code}); "
+                        f"restarting in {restart_backoff:.0f}s."
+                    )
+                    _sleep_interruptible(restart_backoff)
+                    restart_backoff = min(60.0, restart_backoff * 2)
             except KeyboardInterrupt:
                 log("Stopping the Iris updater and server.")
                 return 0
             finally:
-                server.stop()
+                win_server.stop()
     except KeyboardInterrupt:
         return 0
     except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:

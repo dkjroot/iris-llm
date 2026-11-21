@@ -174,6 +174,11 @@ services, and records the failed commit so the next timer tick skips it rather t
 looping on a broken release. As soon as upstream advances past that commit, the updater
 will try again normally.
 
+On Windows, if initial startup or post-rollback readiness times out while the server
+process is still alive, the watcher logs a warning and leaves the server running
+instead of stopping it and quitting. If the server exits with a non-zero exit code,
+the watcher automatically restarts it after a short backoff.
+
 If a run is interrupted mid-flight (for example by a power cut) or rollback itself fails,
 leave the pending state file in place, fix the reported problem, and rerun the updater
 with the same configuration. If `HEAD` still matches the recorded previous or target

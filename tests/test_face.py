@@ -31,7 +31,31 @@ REPLY = "I thought you might say that."
         (" [[expression:angry]] Hello.", ModelReply("Hello.", "neutral")),
         ("[[expression:curious\nHello.", ModelReply("Hello.", "neutral")),
         ("Hello.", ModelReply("Hello.", "neutral")),
-        ("What is [[expression:amused]]?", ModelReply("What is [[expression:amused]]?", "neutral")),
+        (
+            "What is `[[expression:amused]]`?",
+            ModelReply("What is `[[expression:amused]]`?", "neutral"),
+        ),
+        ("Hello! [[expression:amused]] How are you?", ModelReply("Hello! How are you?", "amused")),
+        ("[expression:amused]\nHello.", ModelReply("Hello.", "amused")),
+        ("[[ expression : amused ]]\nHello.", ModelReply("Hello.", "amused")),
+        ("[[expression=amused]]\nHello.", ModelReply("Hello.", "amused")),
+        ("**[[expression:amused]]**\nHello.", ModelReply("Hello.", "amused")),
+        ("[[amused]]\nHello.", ModelReply("Hello.", "amused")),
+        ("Expression: amused\nHello.", ModelReply("Hello.", "amused")),
+        ("[[expression:amused] Hello.", ModelReply("Hello.", "amused")),
+        ("[[face:delighted]]\nHello.", ModelReply("Hello.", "delighted")),
+        ("[[expression:curious]]\n[[expression:amused]]\nHello.", ModelReply("Hello.", "curious")),
+        (
+            "[[expression:amused]]\nHaha!\n[[expression:curious]]\nReally?",
+            ModelReply("Haha!\nReally?", "amused"),
+        ),
+        ("That's awesome! [[expression:delighted]]", ModelReply("That's awesome!", "delighted")),
+        (
+            "Don't [face the music] or visit [curious](https://example.test).",
+            ModelReply(
+                "Don't [face the music] or visit [curious](https://example.test).", "neutral"
+            ),
+        ),
     ],
 )
 def test_read_expression_only_from_the_reply_prefix(text, expected):
@@ -291,3 +315,92 @@ def test_web_chat_starts_with_assistant_and_lists_default_personalities():
         assert droid.turn(b"Hello", text_only=True).text == REPLY
         reply = droid.turn(b"list personalities", text_only=True)
         assert reply.text.endswith("I'm using Assistant.")
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected_sentences", "expected_expression"),
+    [
+        (
+            ["[[expression:amused]] Hello there!\nHow are you?"],
+            ["Hello there!", "How are you?"],
+            "amused",
+        ),
+        (
+            ["[expression:amused]\n", "Hello there!"],
+            ["Hello there!"],
+            "amused",
+        ),
+        (
+            ["**", "[[expression:amused]]", "**\n", "Hello there!"],
+            ["Hello there!"],
+            "amused",
+        ),
+        (
+            ["Expression", ": amused", "\nHello there!"],
+            ["Hello there!"],
+            "amused",
+        ),
+        (
+            ["That's funny! [[", "expression:curious]] ", "How did you do it?"],
+            ["That's funny!", "How did you do it?"],
+            "neutral",
+        ),
+        (
+            ["Hi! [[", "expression:curious]] ", "How did you do it?"],
+            ["Hi! How did you do it?"],
+            "curious",
+        ),
+        (
+            ["[[expression:curious]]\n", "[[expression:amused]]\n", "Hello there!"],
+            ["Hello there!"],
+            "curious",
+        ),
+        (
+            ["[[expression:angry]]\n", "[[expression:amused]]\n", "Hello there!"],
+            ["Hello there!"],
+            "amused",
+        ),
+        (
+            ["[[expression:amused]]\n[[expression:cur", "ious]]\nHello there!"],
+            ["Hello there!"],
+            "amused",
+        ),
+    ],
+)
+def test_sentence_feeder_strips_cues_and_preserves_inline_text(
+    chunks, expected_sentences, expected_expression
+):
+    from iris_chat_engines.compatible import _SentenceFeeder
+
+    emitted: list[tuple[str, str | None]] = []
+    feeder = _SentenceFeeder(
+        face=True,
+        known_tools=frozenset(),
+        on_sentence=lambda sentence, expr: emitted.append((sentence, expr)),
+    )
+    for chunk in chunks:
+        feeder.feed(chunk)
+    feeder.finish()
+    assert [sentence for sentence, _ in emitted] == expected_sentences
+    assert feeder.expression == expected_expression
+
+
+def test_model_messages_scrubs_stray_expression_cues_from_history():
+    from iris_chat_engines.compatible import _model_messages
+    from iris_chat_engines.messages import Message
+
+    messages = [
+        Message(role="system", content="You are Iris."),
+        Message(role="user", content="Hi"),
+        Message(role="assistant", content="Hello! [[expression:amused]] Good to see you."),
+        Message(role="user", content="How are you?"),
+    ]
+    outgoing = _model_messages(
+        messages,
+        turn_start=3,
+        tool_names=frozenset(),
+        correction="",
+        retrying=False,
+    )
+    assert outgoing[2].content == "Hello! Good to see you."
+    assert messages[2].content == "Hello! [[expression:amused]] Good to see you."

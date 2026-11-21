@@ -70,3 +70,18 @@ def test_reply_uses_cleaned_text_only_for_speech(brain_factory, streaming, origi
     assert bool(streamed) == (bool(spoken) and streaming)
     assert harness.tts.calls == ([spoken] if spoken else [])
     assert harness.brain.sessions["pi"].history[-1].content == original
+
+
+@pytest.mark.parametrize(
+    ("raw", "spoken"),
+    [
+        ("[[expression:amused]] Hello!", "Hello!"),
+        ("Hello! [expression:curious] How are you?", "Hello! How are you?"),
+        ("[[amused]] Nice to see you.", "Nice to see you."),
+        ("**[[expression:amused]] world**", "world"),
+        ("Use `[[expression:amused]]` in code.", "Use `[[expression:amused]]` in code."),
+        ("[[expression:amused]]", ""),
+    ],
+)
+def test_plain_speech_text_strips_stray_expression_cues(raw, spoken):
+    assert plain_speech_text(raw) == spoken
