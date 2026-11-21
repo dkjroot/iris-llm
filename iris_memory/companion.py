@@ -105,6 +105,7 @@ class CompanionMemory:
                             "human_excerpt": evidence[0]["user_text"][:350],
                         },
                         ensure_ascii=False,
+                        separators=(",", ":"),
                     )
                     + "\nOffer one gentle invitation to revisit this unfinished topic instead of "
                     "the random seed. Do not assume progress or ask about sensitive matters. "

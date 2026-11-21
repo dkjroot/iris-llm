@@ -72,12 +72,17 @@ class SummaryBackend:
 
 def test_summaries_keep_sources_restart_and_originals(setup):
     settings, archive, index, conversation = setup
-    append(archive, conversation, 1, "Our fictional robot is blue.")
+    original = 'Our fictional robot said: "Bonjour, été."'
+    append(archive, conversation, 1, original)
     backend = SummaryBackend()
     memory = MemoryContext(settings, index, backend)
     assert not memory.checkpoint("default", conversation)
     append(archive, conversation, 2)
     assert memory.checkpoint("default", conversation)
+    sent = backend.requests[-1][-1].content
+    payload = json.loads(sent)
+    assert sent == json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    assert payload["original_exchanges"][0]["user_text"] == original
     assert index.pending("default", conversation) is None
     saved = index.notes("default", conversation)
     assert saved[0]["scope"] == "fictional" and json.loads(saved[0]["sources"]) == ["1"]
@@ -492,7 +497,11 @@ def test_server_summaries_survive_restart_and_ground_a_fresh_prompt(setup):
         try:
             brain.turn("new-client", b"Let's carry on with the robot.", text_only=True)
             chat_requests = [p for p in requests if p["max_tokens"] == settings.max_tokens]
-            assert "The robot is blue." in chat_requests[-1]["messages"][0]["content"]
+            system = chat_requests[-1]["messages"][0]["content"]
+            sent = system[system.index('{"active_conversation_notes"') :]
+            payload = json.loads(sent)
+            assert sent == json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            assert payload["active_conversation_notes"][0]["text"] == "The robot is blue."
             brain.turn("new-client", b"clear context", text_only=True)
             brain.turn("new-client", b"unrelated greeting", text_only=True)
             chat_requests = [p for p in requests if p["max_tokens"] == settings.max_tokens]

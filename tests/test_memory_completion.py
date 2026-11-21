@@ -100,7 +100,11 @@ def test_details_require_confirmation_and_survive_restart_without_archiving_cont
     restarted = Brain(brain.settings, client, brain.stt, brain.tts)
     assert "Fictional Captain Violet" in turn(restarted, "list remembered details").text
     turn(restarted, "Continue our story")
-    assert "Fictional Captain Violet" in requests[-1]["messages"][0]["content"]
+    prompt = requests[-1]["messages"][0]["content"]
+    sent = prompt.split("do not infer personal facts or permissions.\n", 1)[1]
+    details, end = json.JSONDecoder().raw_decode(sent)
+    assert sent[:end] == json.dumps(details, ensure_ascii=False, separators=(",", ":"))
+    assert details[0]["text"] == "Fictional Captain Violet"
     assert restarted.details.items("other") == []
 
 
@@ -338,7 +342,11 @@ def test_companion_recent_safe_topic_persistent_cooldown_and_block(setup):
     companion = CompanionMemory(archive)
     with patch("iris_memory.companion.random.random", return_value=0):
         selected = companion.choose("default")
-        assert selected[0] == conversation and "fictional" in selected[1]
+        assert selected[0] == conversation
+        sent = selected[1].split("optional companion follow-up: ", 1)[1]
+        payload, end = json.JSONDecoder().raw_decode(sent)
+        assert sent[:end] == json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        assert payload["scope"] == "fictional"
         add(archive, conversation, followup_conversation=conversation)
         assert companion.choose("default") is None
         assert companion.choose("other") is None

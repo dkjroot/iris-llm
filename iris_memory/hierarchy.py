@@ -374,6 +374,11 @@ class Hierarchy:
                 recent_context.pop(0)
             else:
                 return None
+        # Compact the request after fitting candidates and their active topic IDs.
+        messages[-1] = Message(
+            role="user",
+            content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        )
         finish_reason = None
         try:
             check_deadline()
@@ -893,7 +898,7 @@ class Hierarchy:
         if not selected:
             return "", sources
         return "\nCurrent source-backed facts (historical reference): " + json.dumps(
-            selected, ensure_ascii=False
+            selected, ensure_ascii=False, separators=(",", ":")
         ), sources
 
     def inspect(self, owner: str, query: str = "") -> dict[str, Any]:

@@ -98,7 +98,6 @@ class MemoryContext:
         # Bound each request against the same configured model window, with its
         # separate summary output allowance. Never summarise only a prior summary.
         selected: list[Source] = []
-        messages = []
         for row in rows:
             candidate = [*selected, row]
             payload = json.dumps(
@@ -133,11 +132,9 @@ class MemoryContext:
                     ]
                     if estimate(trial, []) <= budget:
                         selected = [clipped]
-                        messages = trial
                         break
                 break
             selected = candidate
-            messages = trial
         if not selected:
             LOGGER.warning(
                 "Memory summary source exceeds the configured context budget; "
@@ -145,6 +142,18 @@ class MemoryContext:
             )
             self.index.failed(owner, conversation)
             return False
+        # Compact the prompt after selecting the sources.
+        messages = [
+            Message(role="system", content=SUMMARY_INSTRUCTIONS),
+            Message(
+                role="user",
+                content=json.dumps(
+                    {"original_exchanges": selected, "earlier_notes": earlier},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        ]
         revision = snapshot.revision
         started = time.monotonic()
         finish_reason = None
@@ -319,20 +328,15 @@ class MemoryContext:
             ),
         )
         while compact or excerpts or core_context:
-            memory = (
-                REFERENCE_RULES
-                + core_context
-                + json.dumps(
-                    {"active_conversation_notes": compact, "source_excerpts": excerpts},
-                    ensure_ascii=False,
-                )
-            )
+            prefix = REFERENCE_RULES + core_context
+            payload = {"active_conversation_notes": compact, "source_excerpts": excerpts}
+            memory = prefix + json.dumps(payload, ensure_ascii=False)
             if estimate_bytes(len(memory.encode("utf-8"))) <= allowance:
                 self.source_conversations = {e["conversation"] for e in excerpts}
                 self.core_included = bool(core_context)
                 if compact:
                     self.source_conversations.add(conversation)
-                return memory
+                return prefix + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             if excerpts:
                 excerpts.pop()
             elif compact:

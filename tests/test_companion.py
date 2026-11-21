@@ -96,6 +96,14 @@ def test_idle_is_not_recognized_or_stored_as_human_speech_and_has_no_tools():
             assert reply.companion_mode and reply.heard == "" and reply.audio
             assert read_wav(base64.b64decode(reply.audio))[1] == 24000
         assert "tools" not in requests[-1]
+        guidance = brain.sessions["pi"].tools.instructions()
+        assert guidance and guidance in requests[0]["messages"][0]["content"]
+        idle_prompt = requests[-1]["messages"][0]["content"]
+        assert "tool_choice" not in requests[-1]
+        assert guidance not in idle_prompt
+        assert "Don't call tools." in idle_prompt
+        assert "Past tool results are historical data." in idle_prompt
+        assert "claim a fresh check" in idle_prompt
         history = brain.sessions["pi"].history
         assert [m.role for m in history] == ["user", "assistant"] * 3
         assert all("not human speech" in m.content for m in history if m.role == "user")

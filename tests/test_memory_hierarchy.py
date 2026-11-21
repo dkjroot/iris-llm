@@ -42,6 +42,13 @@ def fact(value="Dave", **changes):
     }
 
 
+def prompt_fact_values(prompt):
+    payload = prompt.split("\nCurrent source-backed facts (historical reference): ", 1)[1]
+    facts, end = json.JSONDecoder().raw_decode(payload)
+    assert payload[:end] == json.dumps(facts, ensure_ascii=False, separators=(",", ":"))
+    return {fact["value"] for fact in facts}
+
+
 def topic(label="Sapphire story", **changes):
     return {
         "label": label,
@@ -111,7 +118,7 @@ def test_natural_correction_supersedes_before_reply_preserves_originals_and_rest
     text = "Actually, my name is David, not Dave"
     plan = prepare(setup, text, {"facts": [fact("David", supersedes=old["id"], evidence=text)]})
     context, _ = hierarchy.context("default", "Hello", plan)
-    assert '"value": "David"' in context and '"value": "Dave"' not in context
+    assert prompt_fact_values(context) == {"David"}
     assert hierarchy.facts("default")[0]["value"] == "Dave"  # No premature mutation.
     archive.append(
         "default", setup[2], Exchange(str(uuid4()), "human", text, "Hi David"), hierarchy=plan
@@ -413,7 +420,7 @@ def test_server_natural_correction_reaches_reply_before_commit_and_survives_rest
             if not r["messages"][0]["content"].startswith("Extract memory metadata")
         ]
         prompt = chat_requests[-1]["messages"][0]["content"]
-        assert '"value": "David"' in prompt and '"value": "Dave"' not in prompt
+        assert prompt_fact_values(prompt) == {"David"}
         assert len(brain.memory.export("default")["exchanges"]) == 3
     finally:
         restarted.lifetime.close()
@@ -478,7 +485,7 @@ def test_model_failure_preserves_existing_core_and_chat(server):
     chat_requests = [
         r for r in requests if not r["messages"][0]["content"].startswith("Extract memory metadata")
     ]
-    assert '"value": "Dave"' in chat_requests[-1]["messages"][0]["content"]
+    assert "Dave" in prompt_fact_values(chat_requests[-1]["messages"][0]["content"])
 
 
 def test_metadata_requests_have_no_tools_and_respect_input_budget(server):
@@ -490,6 +497,8 @@ def test_metadata_requests_have_no_tools_and_respect_input_budget(server):
         r for r in requests if r["messages"][0]["content"].startswith("Extract memory metadata")
     )
     assert not meta.get("tools")
+    sent = meta["messages"][-1]["content"]
+    assert sent == json.dumps(json.loads(sent), ensure_ascii=False, separators=(",", ":"))
     assert meta["max_tokens"] == brain.settings.memory_summary_tokens
     assert estimate([Message.model_validate(m) for m in meta["messages"]], []) <= (
         brain.settings.model_context_tokens
@@ -531,7 +540,7 @@ def test_historical_fact_does_not_replace_current_name(setup):
         {"facts": [fact("David", status="historical", evidence="I used to be called David")]},
     )
     context, _ = setup[3].context("default", "name", None)
-    assert '"value": "Dave"' in context and '"value": "David"' not in context
+    assert prompt_fact_values(context) == {"Dave"}
     assert len(setup[1].export("default")["memory_facts"]) == 2
 
 

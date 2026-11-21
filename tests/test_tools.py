@@ -2,12 +2,15 @@
 
 import json
 from datetime import UTC, datetime
-from unittest.mock import call, patch
+from typing import Literal
+from unittest.mock import Mock, call, patch
 
 import httpx
 import pytest
+from pydantic import ConfigDict, Field
 
 from iris_chat_engines.compatible import ChatEngine, ChatError, Message
+from iris_domain.turn import effect_scope
 from iris_droid.protocol import write_wav
 from iris_settings import Settings
 from iris_tools import NoArguments, Skill, ToolRegistry
@@ -34,6 +37,45 @@ def calling(*calls):
             }
         ]
     }
+
+
+def test_model_tool_schema_omits_only_generated_titles():
+    class Options(NoArguments):
+        model_config = ConfigDict(title="Options")
+        mode: Literal["quick", "full"] = "quick"
+        count: int = Field(ge=1, le=5, description="Number of items.")
+
+    class Arguments(NoArguments):
+        title: str = Field(title="Title", min_length=3)
+        options: Options
+
+    skill = Skill("example", "An example skill.", Arguments, lambda _: {})
+    with httpx.Client() as client:
+        registry = ToolRegistry(Settings(tools_enabled=False), client)
+        registry.register(skill)
+        parameters = registry.definitions()[0]["function"]["parameters"]
+
+    expected = Arguments.model_json_schema()
+    del expected["title"]
+    options = expected["$defs"]["Options"]["properties"]
+    del options["mode"]["title"]
+    del options["count"]["title"]
+    assert parameters == expected
+
+
+def test_compact_tool_results_keep_unicode_and_duplicate_effect_guard():
+    with httpx.Client() as client, effect_scope() as effects:
+        registry = ToolRegistry(Settings(), client)
+        run = Mock(return_value={"status": "café", "details": [1, 2]})
+        registry.register(Skill("example", "An example effect.", NoArguments, run, effect=True))
+
+        assert registry.execute("example", "{}") == '{"status":"café","details":[1,2]}'
+        assert registry.execute("example", "{}") == (
+            '{"error":"This action was already attempted in this turn. '
+            'Check its result before retrying."}'
+        )
+        run.assert_called_once()
+        assert [receipt.outcome for receipt in effects.receipts] == ["returned"]
 
 
 @pytest.mark.parametrize(

@@ -9,10 +9,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
 from threading import Lock
+from typing import cast
 from zoneinfo import ZoneInfo
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 from iris_domain.turn import CURRENT_EFFECTS, EffectReceipt
 from iris_home.protocol import OPERATIONS
@@ -37,6 +40,28 @@ class WeatherArguments(NoArguments):
     )
 
 
+class _ToolArgumentSchema(GenerateJsonSchema):
+    def field_title_should_be_set(self, schema: object) -> bool:
+        # Pydantic calls this for fallback titles after applying explicit field metadata.
+        return False
+
+    def model_schema(self, schema: core_schema.ModelSchema) -> JsonSchemaValue:
+        result = super().model_schema(schema)
+        model = cast("type[BaseModel]", schema["cls"])
+        config = model.model_config
+        extra = config.get("json_schema_extra")
+        # Keep authored titles, including those a custom schema hook may supply.
+        if (
+            not model.__pydantic_root_model__
+            and config.get("title") is None
+            and config.get("model_title_generator") is None
+            and (extra is None or (isinstance(extra, dict) and "title" not in extra))
+            and result.get("title") == model.__name__
+        ):
+            result.pop("title")
+        return result
+
+
 @dataclass(frozen=True)
 class Skill:
     name: str
@@ -54,7 +79,9 @@ class Skill:
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.arguments.model_json_schema(),
+                "parameters": self.arguments.model_json_schema(
+                    schema_generator=_ToolArgumentSchema
+                ),
             },
         }
 
@@ -271,7 +298,8 @@ class ToolRegistry:
                         {
                             "error": "This action was already attempted in this turn. "
                             "Check its result before retrying."
-                        }
+                        },
+                        separators=(",", ":"),
                     )
                 receipt = EffectReceipt(name) if skill.effect else None
                 if receipt is not None and effects is not None:
@@ -303,7 +331,7 @@ class ToolRegistry:
                 f"Skill {name}: {'error' if 'error' in result else 'ok'} "
                 f"({time.monotonic() - started:.2f}s)"
             )
-        return json.dumps(result, ensure_ascii=False, allow_nan=False)
+        return json.dumps(result, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
     def local_time(self) -> dict[str, object]:
         now = datetime.now(ZoneInfo(self.settings.local_timezone))
