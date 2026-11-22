@@ -37,12 +37,13 @@ iris-configure-client = "configure_client:main"
 iris-droid-server = "iris_droid.server:main"
 iris-droid = "iris_droid.client:main"
 iris-home = "iris_home.service:main"
+iris-bench = "iris_bench.cli:main"
 
 [tool.setuptools]
 py-modules = ["iris", "configure", "configure_client", "iris_settings", "iris_audio", "iris_paths", "iris_turn", "iris_frames"]
 
 [tool.setuptools.packages.find]
-include = ["iris_domain*", "iris_app*", "iris_chat_engines*", "iris_stt_engines*", "iris_tts_engines*", "iris_sounds*", "iris_droid*", "iris_tools*", "iris_memory*", "iris_home*"]
+include = ["iris_domain*", "iris_app*", "iris_chat_engines*", "iris_stt_engines*", "iris_tts_engines*", "iris_sounds*", "iris_droid*", "iris_tools*", "iris_memory*", "iris_home*", "iris_bench*"]
 
 [tool.setuptools.package-data]
 iris_sounds = ["*.wav", "README.md"]
@@ -59,7 +60,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["iris.py", "configure.py", "configure_client.py", "iris_settings.py", "iris_audio.py", "iris_paths.py", "iris_turn.py", "iris_frames.py", "iris_domain", "iris_app", "iris_chat_engines", "iris_stt_engines", "iris_tts_engines", "iris_sounds", "iris_droid", "iris_tools", "iris_memory", "iris_home"]
+files = ["iris.py", "configure.py", "configure_client.py", "iris_settings.py", "iris_audio.py", "iris_paths.py", "iris_turn.py", "iris_frames.py", "iris_domain", "iris_app", "iris_chat_engines", "iris_stt_engines", "iris_tts_engines", "iris_sounds", "iris_droid", "iris_tools", "iris_memory", "iris_home", "iris_bench"]
 explicit_package_bases = true
 
 [[tool.mypy.overrides]]

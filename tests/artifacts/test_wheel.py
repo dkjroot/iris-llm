@@ -8,6 +8,7 @@ pytestmark = pytest.mark.artifact
 def test_installed_entrypoints_and_resources_work_without_the_checkout(installed_artifact):
     assert set(installed_artifact["entrypoints"]) == {
         "iris",
+        "iris-bench",
         "iris-configure",
         "iris-configure-client",
         "iris-droid",

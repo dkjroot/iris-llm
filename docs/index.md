@@ -24,6 +24,7 @@ reported hardware from combinations that still need validation.
 | Set up automatic updates or recover a pending update | [Updates](updates.md) |
 | Find a startup or audio problem | [Troubleshooting](troubleshooting.md) |
 | Read health information and safe timing logs | [Performance and recovery](performance-and-recovery.md) |
+| Benchmark local models and compare results | [Benchmarking local models](benchmarking.md) |
 | Understand or extend the code | [Contributing](../CONTRIBUTING.md), [architecture](architecture.md), [extension recipes](extensions.md) |
 | Check a change or prepare a release | [Testing](testing.md), [release checklist](releasing.md) |
 

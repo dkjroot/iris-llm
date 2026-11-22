@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iris Bench — Model &amp; Engine Comparison</title>
+<style>
+  :root {
+    --bg: #0f131a;
+    --panel: #171d27;
+    --panel-alt: #1e2633;
+    --border: #2a3444;
+    --text: #e7edf5;
+    --muted: #9aa7b8;
+    --accent: #4fb3ff;
+    --green: #42d392;
+    --amber: #f6b73c;
+    --coral: #ff6b6b;
+    --violet: #a78bfa;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.45;
+  }
+  .wrap { max-width: 1280px; margin: 0 auto; }
+  h1 { margin: 0 0 6px; font-size: 1.75rem; }
+  h2 { margin: 0 0 12px; font-size: 1.15rem; color: var(--text); }
+  .subtitle { color: var(--muted); margin: 0 0 22px; font-size: 0.95rem; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    margin-bottom: 18px;
+  }
+  .table-scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+  th {
+    color: var(--muted);
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  th:hover { color: var(--accent); }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:hover td { background: var(--panel-alt); }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-weight: 600;
+    font-size: 0.82rem;
+  }
+  .pill-hi { background: rgba(66, 211, 146, 0.16); color: var(--green); }
+  .pill-mid { background: rgba(246, 183, 60, 0.16); color: var(--amber); }
+  .pill-lo { background: rgba(255, 107, 107, 0.16); color: var(--coral); }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    font-size: 0.82rem;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .heat-cell {
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    border-radius: 4px;
+  }
+  .comment-cell { max-width: 280px; color: var(--muted); font-size: 0.84rem; }
+  svg { width: 100%; height: auto; display: block; }
+  .empty { color: var(--muted); padding: 18px 0; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Iris Bench Comparison Report</h1>
+  <p class="subtitle" id="meta-line"></p>
+
+  <div class="card">
+    <h2>Leaderboard (click any column header to sort)</h2>
+    <div class="table-scroll">
+      <table id="leaderboard">
+        <thead>
+          <tr>
+            <th data-key="engine">Engine</th>
+            <th data-key="model">Model</th>
+            <th class="num" data-key="overall">Overall</th>
+            <th class="num" data-key="cap">Capability %</th>
+            <th class="num" data-key="judge">Judge %</th>
+            <th class="num" data-key="voice">Voice Resp.</th>
+            <th class="num" data-key="ttft">TTFT (ms)</th>
+            <th class="num" data-key="ttfs">TTFS (ms)</th>
+            <th class="num" data-key="tps">tok/s</th>
+            <th data-key="hw">Hardware</th>
+            <th data-key="comments">Comments</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Composite &amp; Sub-Scores</h2>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--accent)"></i>Overall</span>
+        <span><i class="dot" style="background:var(--green)"></i>Capability %</span>
+        <span><i class="dot" style="background:var(--violet)"></i>Judge %</span>
+        <span><i class="dot" style="background:var(--amber)"></i>Voice Resp.</span>
+      </div>
+      <div id="chart-scores"></div>
+    </div>
+
+    <div class="card">
+      <h2>Voice Latency (TTFS) vs. Capability Frontier</h2>
+      <div id="chart-scatter"></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Speed &amp; Throughput (TTFT / TTFS / tok/s)</h2>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--accent)"></i>Median TTFT (ms)</span>
+        <span><i class="dot" style="background:var(--amber)"></i>Median TTFS (ms)</span>
+        <span><i class="dot" style="background:var(--green)"></i>Tokens/sec</span>
+      </div>
+      <div id="chart-speed"></div>
+    </div>
+
+    <div class="card">
+      <h2>Long-Conversation Context Growth (TTFS across turns 1–6)</h2>
+      <div id="chart-context"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Capability Category Heatmap</h2>
+    <div class="table-scroll" id="heatmap-wrap"></div>
+  </div>
+</div>
+
+<script>
+const RESULTS = [{"schema_version": "1.0", "suite_version": "1.0", "run_id": "20261122T110610Z_polystrata-0.1.45-3e164216_flint-ud-q6_k_xl_b96b7d", "timestamp_utc": "2026-11-22T11:06:10+00:00", "iris_version": "0.2.0", "iris_git_commit": "59fd0c6", "engine": "PolyStrata 0.1.45 (commit 3e164216)", "model": "Flint Preview (UD-Q6_K_XL / GGUF v3 qv2)", "model_file": "flint-UD-Q6_K_XL.gguf", "benchmark_label": "polystrata-0.1.45-3e164216_flint-ud-q6_k_xl", "comments": "", "hardware": {"os": "Windows 11", "arch": "AMD64", "python": "3.12.14", "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor", "ram_gb": 127.9, "gpu_name": "NVIDIA GeForce RTX 3090", "gpu_vram_gb": 24.0}, "config": {"temperature": 0.7, "max_tokens": 512, "model_context_tokens": 32768, "tools_enabled": true, "mock_tools": false, "warmup_turns": 2, "runs": 1, "memory_mode": "snapshot", "memory_probe_count": 5, "has_semantic_memory": true, "has_home_service": true, "has_weather": true}, "scores": {"overall_iris_score": 65.0, "capability_score": 74.1, "voice_responsiveness_score": 30.0, "judge_quality_score": 82.0, "weights": {"capability": 0.5, "judge_quality": 0.25, "voice_responsiveness": 0.25}}, "speed": {"metered_turns": 23, "median_ttft_ms": 2389.56, "p95_ttft_ms": 2557.0, "median_ttfs_ms": 6429.88, "p95_ttfs_ms": 8864.69, "median_model_ms": 6339.3, "median_turn_ms": 6720.86, "median_tok_per_sec": 86.5, "median_est_tok_per_sec": 10.85, "median_prompt_tok_per_sec": 1119.7, "long_conversation_ttfs_ms": [6695.12, 5469.15, 3894.7, 5293.16], "long_conversation_model_ms": [6666.72, 5640.53, 3873.85, 5415.62]}, "categories": {"conversation": {"skipped": false, "passed": 10, "total": 10, "score": 100.0, "checks": [{"id": "conv_01_reply", "category": "conversation", "name": "Turn 1 produced clean spoken reply", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_01_brevity", "category": "conversation", "name": "Turn 1 stayed within spoken brevity budget (<= 90 words)", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_01_no_tools", "category": "conversation", "name": "Turn 1 answered ordinary chat without tool calls", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_02_reply", "category": "conversation", "name": "Turn 2 produced clean spoken reply", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_02_brevity", "category": "conversation", "name": "Turn 2 stayed within spoken brevity budget (<= 65 words)", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_02_no_tools", "category": "conversation", "name": "Turn 2 answered ordinary chat without tool calls", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_reply", "category": "conversation", "name": "Turn 3 produced clean spoken reply", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_brevity", "category": "conversation", "name": "Turn 3 stayed within spoken brevity budget (<= 45 words)", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_no_tools", "category": "conversation", "name": "Turn 3 answered ordinary chat without tool calls", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_no_unneeded_question", "category": "conversation", "name": "Closing turn avoided unnecessary follow-up question", "passed": true, "weight": 0.8, "reason": "ok"}]}, "long_conversation": {"skipped": false, "passed": 5, "total": 8, "score": 54.1, "checks": [{"id": "long_01_ok", "category": "long_conversation", "name": "Long turn 1 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}, {"id": "long_02_ok", "category": "long_conversation", "name": "Long turn 2 completed cleanly", "passed": false, "weight": 0.7, "reason": "ChatError: The server returned an empty assistant reply"}, {"id": "long_03_ok", "category": "long_conversation", "name": "Long turn 3 completed cleanly", "passed": false, "weight": 0.7, "reason": "ChatError: The server returned an empty assistant reply"}, {"id": "long_04_ok", "category": "long_conversation", "name": "Long turn 4 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}, {"id": "long_04_clock_tool", "category": "long_conversation", "name": "Mid-conversation live time request used get_local_time", "passed": true, "weight": 1.2, "reason": "ok"}, {"id": "long_05_ok", "category": "long_conversation", "name": "Long turn 5 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}, {"id": "long_05_updated_constraints", "category": "long_conversation", "name": "Retained updated wood (pine) and width (80 cm) across 5 turns", "passed": false, "weight": 2.0, "reason": "missed_or_stale_constraint"}, {"id": "long_06_ok", "category": "long_conversation", "name": "Long turn 6 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}]}, "expressions": {"skipped": false, "passed": 13, "total": 13, "score": 100.0, "checks": [{"id": "expr_01_cue_format", "category": "expressions", "name": "Case 1 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_01_tone_match", "category": "expressions", "name": "Case 1 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_01_no_cue_leak", "category": "expressions", "name": "Case 1 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_02_cue_format", "category": "expressions", "name": "Case 2 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_02_tone_match", "category": "expressions", "name": "Case 2 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_02_no_cue_leak", "category": "expressions", "name": "Case 2 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_03_cue_format", "category": "expressions", "name": "Case 3 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_03_tone_match", "category": "expressions", "name": "Case 3 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_03_no_cue_leak", "category": "expressions", "name": "Case 3 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_04_cue_format", "category": "expressions", "name": "Case 4 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_04_tone_match", "category": "expressions", "name": "Case 4 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_04_no_cue_leak", "category": "expressions", "name": "Case 4 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_variety", "category": "expressions", "name": "Used at least 3 distinct facial expressions across 4 emotional prompts", "passed": true, "weight": 1.2, "reason": "ok"}]}, "tools_weather_time": {"skipped": false, "passed": 5, "total": 5, "score": 100.0, "checks": [{"id": "wt_01_tool_called", "category": "tools_weather_time", "name": "Local time query called get_local_time", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "wt_01_reply_grounded", "category": "tools_weather_time", "name": "Time reply reflected tool clock output without raw tool markers", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "wt_02_tool_called", "category": "tools_weather_time", "name": "Weather query called get_local_weather", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "wt_02_reply_grounded", "category": "tools_weather_time", "name": "Weather reply reflected live tool figures/conditions", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "wt_02_open_meteo_credit", "category": "tools_weather_time", "name": "Weather reply briefly credited Open-Meteo", "passed": true, "weight": 0.7, "reason": "ok"}]}, "tools_home": {"skipped": false, "passed": 7, "total": 7, "score": 100.0, "checks": [{"id": "home_01_tool", "category": "tools_home", "name": "Status check called get_home_state", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_01_truthful", "category": "tools_home", "name": "Status reply matched real device state", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_02_tool", "category": "tools_home", "name": "Switch on called set_home_power", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_02_independent_state", "category": "tools_home", "name": "Independent device status verified as on", "passed": true, "weight": 1.5, "reason": "ok"}, {"id": "home_03_tool", "category": "tools_home", "name": "Switch off called set_home_power", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_03_independent_state", "category": "tools_home", "name": "Independent device status verified as off", "passed": true, "weight": 1.5, "reason": "ok"}, {"id": "home_04_no_unwanted_switch", "category": "tools_home", "name": "Negative control prompt did not call set_home_power or change state", "passed": true, "weight": 1.2, "reason": "ok"}]}, "personality": {"skipped": false, "passed": 3, "total": 3, "score": 100.0, "checks": [{"id": "pers_01_clean_reply", "category": "personality", "name": "Personality turn 1 replied cleanly with valid expression cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "pers_01_register", "category": "personality", "name": "Adopted polite formal Victorian butler tone", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "pers_02_accuracy", "category": "personality", "name": "Maintained factual accuracy (17 * 4 = 68) while in persona", "passed": true, "weight": 1.0, "reason": "ok"}]}, "memory_recall": {"skipped": false, "passed": 7, "total": 12, "score": 54.8, "checks": [{"id": "memory_probe_01_recall", "category": "memory_recall", "name": "Memory probe 1 (fact) incorporated expected memory", "passed": false, "weight": 1.0, "reason": "missed_expected_memory"}, {"id": "memory_probe_01_source", "category": "memory_recall", "name": "Memory probe 1 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_02_recall", "category": "memory_recall", "name": "Memory probe 2 (fact) incorporated expected memory", "passed": true, "weight": 1.0, "reason": "matched_expected_memory"}, {"id": "memory_probe_02_source", "category": "memory_recall", "name": "Memory probe 2 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_03_recall", "category": "memory_recall", "name": "Memory probe 3 (fact) incorporated expected memory", "passed": false, "weight": 1.0, "reason": "missed_expected_memory"}, {"id": "memory_probe_03_source", "category": "memory_recall", "name": "Memory probe 3 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_04_recall", "category": "memory_recall", "name": "Memory probe 4 (search) incorporated expected memory", "passed": true, "weight": 1.5, "reason": "matched_expected_memory"}, {"id": "memory_probe_04_search_tool", "category": "memory_recall", "name": "Memory probe 4 invoked search_memory tool", "passed": true, "weight": 1.0, "reason": "called_search_memory"}, {"id": "memory_probe_04_source", "category": "memory_recall", "name": "Memory probe 4 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_05_recall", "category": "memory_recall", "name": "Memory probe 5 (search) incorporated expected memory", "passed": false, "weight": 1.5, "reason": "missed_expected_memory"}, {"id": "memory_probe_05_search_tool", "category": "memory_recall", "name": "Memory probe 5 invoked search_memory tool", "passed": false, "weight": 1.0, "reason": "missing_search_memory_call"}, {"id": "memory_probe_05_source", "category": "memory_recall", "name": "Memory probe 5 grounded against expected source conversation", "passed": false, "weight": 0.7, "reason": "missed_source_conv"}]}, "memory_extraction": {"skipped": false, "passed": 0, "total": 3, "score": 0.0, "checks": [{"id": "extract_01_real_fact", "category": "memory_extraction", "name": "Extracted valid JSON and captured real-scope fact", "passed": false, "weight": 1.3, "reason": "no_real_fact_extracted"}, {"id": "extract_02_fiction_guard", "category": "memory_extraction", "name": "Fictional statement did not promote to confirmed real fact", "passed": false, "weight": 1.2, "reason": "promoted_fiction_to_real_fact"}, {"id": "extract_03_summary_json", "category": "memory_extraction", "name": "Generated valid JSON summary checkpoint", "passed": false, "weight": 1.0, "reason": "summary_checkpoint_failed"}]}}, "judge": {"judge_model": "google/gemini-3.8-flash", "evaluated_at_utc": "2026-11-22T12:18:21+00:00", "sample_count": 21, "excluded_private_count": 5, "overall_score": 82.0, "dimensions": {"conversational_naturalness": 83.8, "expression_fit": 83.8, "tool_honesty": 98.6, "memory_incorporation": 20.0, "personality_adherence": 60.0}, "case_scores": {"conv_01": 90.0, "conv_02": 95.0, "conv_03": 65.0, "long_01": 90.0, "long_02": 0.0, "long_03": 0.0, "long_04": 100.0, "long_05": 63.3, "long_06": 100.0, "expr_01": 100.0, "expr_02": 100.0, "expr_03": 75.0, "expr_04": 100.0, "wt_01_time": 96.7, "wt_02_weather": 86.7, "home_01_inspect": 100.0, "home_02_switch_first": 100.0, "home_03_switch_second": 100.0, "home_04_no_touch": 100.0, "pers_01_tea": 76.7, "pers_02_math": 83.3}}, "warnings": []}, {"schema_version": "1.0", "suite_version": "1.0", "run_id": "20261122T113425Z_polystrata-0.1.45-3e164216_flint-ud-q6_k_xl_b26759", "timestamp_utc": "2026-11-22T11:34:25+00:00", "iris_version": "0.2.0", "iris_git_commit": "59fd0c6", "engine": "PolyStrata 0.1.45 (commit 3e164216)", "model": "Flint Preview (UD-Q6_K_XL / GGUF v3 qv2)", "model_file": "flint-UD-Q6_K_XL.gguf", "benchmark_label": "polystrata-0.1.45-3e164216_flint-ud-q6_k_xl", "comments": "", "hardware": {"os": "Windows 11", "arch": "AMD64", "python": "3.12.14", "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor", "ram_gb": 127.9, "gpu_name": "NVIDIA GeForce RTX 3090", "gpu_vram_gb": 24.0}, "config": {"temperature": 0.7, "max_tokens": 512, "model_context_tokens": 32768, "tools_enabled": true, "mock_tools": false, "warmup_turns": 2, "runs": 1, "memory_mode": "snapshot", "memory_probe_count": 5, "has_semantic_memory": true, "has_home_service": true, "has_weather": true}, "scores": {"overall_iris_score": 56.5, "capability_score": 61.1, "voice_responsiveness_score": 30.0, "judge_quality_score": 74.0, "weights": {"capability": 0.5, "judge_quality": 0.25, "voice_responsiveness": 0.25}}, "speed": {"metered_turns": 21, "median_ttft_ms": 2383.74, "p95_ttft_ms": 2801.82, "median_ttfs_ms": 6113.02, "p95_ttfs_ms": 8842.45, "median_model_ms": 5907.99, "median_turn_ms": 6343.22, "median_tok_per_sec": 87.3, "median_est_tok_per_sec": 11.01, "median_prompt_tok_per_sec": 1112.3, "long_conversation_ttfs_ms": [6231.83, 5671.77, 4917.35, 7178.44], "long_conversation_model_ms": [6211.63, 5653.53, 4993.4, 7400.59]}, "categories": {"conversation": {"skipped": false, "passed": 10, "total": 10, "score": 100.0, "checks": [{"id": "conv_01_reply", "category": "conversation", "name": "Turn 1 produced clean spoken reply", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_01_brevity", "category": "conversation", "name": "Turn 1 stayed within spoken brevity budget (<= 90 words)", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_01_no_tools", "category": "conversation", "name": "Turn 1 answered ordinary chat without tool calls", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_02_reply", "category": "conversation", "name": "Turn 2 produced clean spoken reply", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_02_brevity", "category": "conversation", "name": "Turn 2 stayed within spoken brevity budget (<= 65 words)", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_02_no_tools", "category": "conversation", "name": "Turn 2 answered ordinary chat without tool calls", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_reply", "category": "conversation", "name": "Turn 3 produced clean spoken reply", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_brevity", "category": "conversation", "name": "Turn 3 stayed within spoken brevity budget (<= 45 words)", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_no_tools", "category": "conversation", "name": "Turn 3 answered ordinary chat without tool calls", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "conv_03_no_unneeded_question", "category": "conversation", "name": "Closing turn avoided unnecessary follow-up question", "passed": true, "weight": 0.8, "reason": "ok"}]}, "long_conversation": {"skipped": false, "passed": 5, "total": 8, "score": 54.1, "checks": [{"id": "long_01_ok", "category": "long_conversation", "name": "Long turn 1 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}, {"id": "long_02_ok", "category": "long_conversation", "name": "Long turn 2 completed cleanly", "passed": false, "weight": 0.7, "reason": "ChatError: The server returned an empty assistant reply"}, {"id": "long_03_ok", "category": "long_conversation", "name": "Long turn 3 completed cleanly", "passed": false, "weight": 0.7, "reason": "ChatError: The server returned an empty assistant reply"}, {"id": "long_04_ok", "category": "long_conversation", "name": "Long turn 4 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}, {"id": "long_04_clock_tool", "category": "long_conversation", "name": "Mid-conversation live time request used get_local_time", "passed": true, "weight": 1.2, "reason": "ok"}, {"id": "long_05_ok", "category": "long_conversation", "name": "Long turn 5 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}, {"id": "long_05_updated_constraints", "category": "long_conversation", "name": "Retained updated wood (pine) and width (80 cm) across 5 turns", "passed": false, "weight": 2.0, "reason": "missed_or_stale_constraint"}, {"id": "long_06_ok", "category": "long_conversation", "name": "Long turn 6 completed cleanly", "passed": true, "weight": 0.7, "reason": "ok"}]}, "expressions": {"skipped": false, "passed": 13, "total": 13, "score": 100.0, "checks": [{"id": "expr_01_cue_format", "category": "expressions", "name": "Case 1 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_01_tone_match", "category": "expressions", "name": "Case 1 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_01_no_cue_leak", "category": "expressions", "name": "Case 1 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_02_cue_format", "category": "expressions", "name": "Case 2 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_02_tone_match", "category": "expressions", "name": "Case 2 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_02_no_cue_leak", "category": "expressions", "name": "Case 2 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_03_cue_format", "category": "expressions", "name": "Case 3 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_03_tone_match", "category": "expressions", "name": "Case 3 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_03_no_cue_leak", "category": "expressions", "name": "Case 3 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_04_cue_format", "category": "expressions", "name": "Case 4 emitted explicit leading [[expression:...]] cue", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_04_tone_match", "category": "expressions", "name": "Case 4 chose an appropriate expression for the prompt", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_04_no_cue_leak", "category": "expressions", "name": "Case 4 kept expression cues out of spoken text", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "expr_variety", "category": "expressions", "name": "Used at least 3 distinct facial expressions across 4 emotional prompts", "passed": true, "weight": 1.2, "reason": "ok"}]}, "tools_weather_time": {"skipped": false, "passed": 2, "total": 5, "score": 42.6, "checks": [{"id": "wt_01_tool_called", "category": "tools_weather_time", "name": "Local time query called get_local_time", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "wt_01_reply_grounded", "category": "tools_weather_time", "name": "Time reply reflected tool clock output without raw tool markers", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "wt_02_tool_called", "category": "tools_weather_time", "name": "Weather query called get_local_weather", "passed": false, "weight": 1.0, "reason": "missing_or_failed_weather_tool"}, {"id": "wt_02_reply_grounded", "category": "tools_weather_time", "name": "Weather reply reflected live tool figures/conditions", "passed": false, "weight": 1.0, "reason": "weather_not_grounded"}, {"id": "wt_02_open_meteo_credit", "category": "tools_weather_time", "name": "Weather reply briefly credited Open-Meteo", "passed": false, "weight": 0.7, "reason": "missing_open_meteo_credit"}]}, "tools_home": {"skipped": false, "passed": 7, "total": 7, "score": 100.0, "checks": [{"id": "home_01_tool", "category": "tools_home", "name": "Status check called get_home_state", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_01_truthful", "category": "tools_home", "name": "Status reply matched real device state", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_02_tool", "category": "tools_home", "name": "Switch on called set_home_power", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_02_independent_state", "category": "tools_home", "name": "Independent device status verified as on", "passed": true, "weight": 1.5, "reason": "ok"}, {"id": "home_03_tool", "category": "tools_home", "name": "Switch off called set_home_power", "passed": true, "weight": 1.0, "reason": "ok"}, {"id": "home_03_independent_state", "category": "tools_home", "name": "Independent device status verified as off", "passed": true, "weight": 1.5, "reason": "ok"}, {"id": "home_04_no_unwanted_switch", "category": "tools_home", "name": "Negative control prompt did not call set_home_power or change state", "passed": true, "weight": 1.2, "reason": "ok"}]}, "personality": {"skipped": false, "passed": 1, "total": 3, "score": 33.3, "checks": [{"id": "pers_01_clean_reply", "category": "personality", "name": "Personality turn 1 replied cleanly with valid expression cue", "passed": false, "weight": 1.0, "reason": "invalid_or_leaked_prompt"}, {"id": "pers_01_register", "category": "personality", "name": "Adopted polite formal Victorian butler tone", "passed": false, "weight": 1.0, "reason": "missing_persona_register"}, {"id": "pers_02_accuracy", "category": "personality", "name": "Maintained factual accuracy (17 * 4 = 68) while in persona", "passed": true, "weight": 1.0, "reason": "ok"}]}, "memory_recall": {"skipped": false, "passed": 7, "total": 12, "score": 54.8, "checks": [{"id": "memory_probe_01_recall", "category": "memory_recall", "name": "Memory probe 1 (fact) incorporated expected memory", "passed": false, "weight": 1.0, "reason": "missed_expected_memory"}, {"id": "memory_probe_01_source", "category": "memory_recall", "name": "Memory probe 1 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_02_recall", "category": "memory_recall", "name": "Memory probe 2 (fact) incorporated expected memory", "passed": true, "weight": 1.0, "reason": "matched_expected_memory"}, {"id": "memory_probe_02_source", "category": "memory_recall", "name": "Memory probe 2 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_03_recall", "category": "memory_recall", "name": "Memory probe 3 (fact) incorporated expected memory", "passed": false, "weight": 1.0, "reason": "missed_expected_memory"}, {"id": "memory_probe_03_source", "category": "memory_recall", "name": "Memory probe 3 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}, {"id": "memory_probe_04_recall", "category": "memory_recall", "name": "Memory probe 4 (search) incorporated expected memory", "passed": false, "weight": 1.5, "reason": "missed_expected_memory"}, {"id": "memory_probe_04_search_tool", "category": "memory_recall", "name": "Memory probe 4 invoked search_memory tool", "passed": false, "weight": 1.0, "reason": "missing_search_memory_call"}, {"id": "memory_probe_04_source", "category": "memory_recall", "name": "Memory probe 4 grounded against expected source conversation", "passed": false, "weight": 0.7, "reason": "missed_source_conv"}, {"id": "memory_probe_05_recall", "category": "memory_recall", "name": "Memory probe 5 (search) incorporated expected memory", "passed": true, "weight": 1.5, "reason": "matched_expected_memory"}, {"id": "memory_probe_05_search_tool", "category": "memory_recall", "name": "Memory probe 5 invoked search_memory tool", "passed": true, "weight": 1.0, "reason": "called_search_memory"}, {"id": "memory_probe_05_source", "category": "memory_recall", "name": "Memory probe 5 grounded against expected source conversation", "passed": true, "weight": 0.7, "reason": "matched_source_conversation"}]}, "memory_extraction": {"skipped": false, "passed": 0, "total": 3, "score": 0.0, "checks": [{"id": "extract_01_real_fact", "category": "memory_extraction", "name": "Extracted valid JSON and captured real-scope fact", "passed": false, "weight": 1.3, "reason": "no_real_fact_extracted"}, {"id": "extract_02_fiction_guard", "category": "memory_extraction", "name": "Fictional statement did not promote to confirmed real fact", "passed": false, "weight": 1.2, "reason": "promoted_fiction_to_real_fact"}, {"id": "extract_03_summary_json", "category": "memory_extraction", "name": "Generated valid JSON summary checkpoint", "passed": false, "weight": 1.0, "reason": "summary_checkpoint_failed"}]}}, "judge": {"judge_model": "google/gemini-3.8-flash", "evaluated_at_utc": "2026-11-22T12:18:49+00:00", "sample_count": 21, "excluded_private_count": 5, "overall_score": 74.0, "dimensions": {"conversational_naturalness": 76.2, "expression_fit": 74.3, "memory_incorporation": 40.0, "tool_honesty": 88.6, "personality_adherence": 25.0}, "case_scores": {"conv_01": 95.0, "conv_02": 90.0, "conv_03": 100.0, "long_01": 90.0, "long_02": 0.0, "long_03": 0.0, "long_04": 96.7, "long_05": 60.0, "long_06": 73.3, "expr_01": 100.0, "expr_02": 100.0, "expr_03": 100.0, "expr_04": 95.0, "wt_01_time": 96.7, "wt_02_weather": 6.7, "home_01_inspect": 100.0, "home_02_switch_first": 96.7, "home_03_switch_second": 96.7, "home_04_no_touch": 93.3, "pers_01_tea": 0.0, "pers_02_math": 63.3}}, "warnings": []}];
+const PALETTE = [
+  "#4fb3ff", "#42d392", "#f6b73c", "#a78bfa",
+  "#ff6b6b", "#2dd4bf", "#f472b6", "#facc15"
+];
+
+function esc(s) {
+  const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"};
+  return String(s ?? "").replace(/[&<>"]/g, c => map[c]);
+}
+function labelOf(r) { return `${r.engine}: ${r.model}`; }
+function effTps(r) {
+  return r.speed.median_tok_per_sec ?? r.speed.median_est_tok_per_sec ?? null;
+}
+function pill(val) {
+  if (val == null) return "—";
+  const cls = val >= 80 ? "pill-hi" : val >= 55 ? "pill-mid" : "pill-lo";
+  return `<span class="pill ${cls}">${val.toFixed(1)}</span>`;
+}
+function fmt(val, suffix = "") {
+  return val == null ? "—" : `${val.toFixed(1)}${suffix}`;
+}
+
+const rows = RESULTS.map((r, i) => ({
+  idx: i,
+  raw: r,
+  engine: r.engine,
+  model: r.model,
+  overall: r.scores.overall_iris_score,
+  cap: r.scores.capability_score,
+  judge: r.scores.judge_quality_score,
+  voice: r.scores.voice_responsiveness_score,
+  ttft: r.speed.median_ttft_ms,
+  ttfs: r.speed.median_ttfs_ms,
+  tps: effTps(r),
+  hw: [r.hardware.gpu_name, r.hardware.cpu].filter(Boolean).join(" / ") || r.hardware.os,
+  comments: r.comments || ""
+}));
+
+let sortKey = "overall";
+let sortAsc = false;
+
+function renderTable() {
+  const sorted = [...rows].sort((a, b) => {
+    const va = a[sortKey], vb = b[sortKey];
+    if (va == null && vb == null) return 0;
+    if (va == null) return 1;
+    if (vb == null) return -1;
+    if (typeof va === "number" && typeof vb === "number") return sortAsc ? va - vb : vb - va;
+    return sortAsc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
+  });
+  const tbody = document.querySelector("#leaderboard tbody");
+  if (!sorted.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">No benchmark JSON files found.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = sorted.map(row => {
+    const rawTps = row.raw.speed.median_tok_per_sec;
+    const estTps = row.raw.speed.median_est_tok_per_sec;
+    const tpsText = rawTps != null
+      ? rawTps.toFixed(1)
+      : (estTps != null ? `~${estTps.toFixed(1)}` : "—");
+    return `<tr>
+      <td>${esc(row.engine)}</td>
+      <td><strong>${esc(row.model)}</strong></td>
+      <td class="num">${pill(row.overall)}</td>
+      <td class="num">${fmt(row.cap, "%")}</td>
+      <td class="num">${fmt(row.judge, "%")}</td>
+      <td class="num">${fmt(row.voice)}</td>
+      <td class="num">${fmt(row.ttft)}</td>
+      <td class="num">${fmt(row.ttfs)}</td>
+      <td class="num">${tpsText}</td>
+      <td>${esc(row.hw)}</td>
+      <td class="comment-cell">${esc(row.comments || "—")}</td>
+    </tr>`;
+  }).join("");
+}
+
+document.querySelectorAll("#leaderboard th[data-key]").forEach(th => {
+  th.addEventListener("click", () => {
+    const k = th.dataset.key;
+    if (sortKey === k) {
+      sortAsc = !sortAsc;
+    } else {
+      sortKey = k;
+      sortAsc = (k === "engine" || k === "model" || k === "ttft" || k === "ttfs");
+    }
+    renderTable();
+  });
+});
+
+function renderScoresChart() {
+  const el = document.getElementById("chart-scores");
+  if (!RESULTS.length) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+  const barH = 11, gap = 3, rowH = 66, left = 180, w = 560, right = 44;
+  const plotW = w - left - right;
+  const h = RESULTS.length * rowH + 20;
+  let svg = `<svg viewBox="0 0 ${w} ${h}">`;
+  for (let t = 0; t <= 100; t += 25) {
+    const x = left + (t / 100) * plotW;
+    svg += `<line x1="${x}" y1="0" x2="${x}" y2="${h - 16}" `
+      + `stroke="#2a3444" stroke-dasharray="2,3"/>`;
+    svg += `<text x="${x}" y="${h - 3}" fill="#9aa7b8" font-size="10" `
+      + `text-anchor="middle">${t}</text>`;
+  }
+  RESULTS.forEach((r, i) => {
+    const y0 = i * rowH + 6;
+    const lbl = esc(labelOf(r).slice(0, 28));
+    svg += `<text x="${left - 8}" y="${y0 + 28}" fill="#e7edf5" font-size="11" `
+      + `text-anchor="end">${lbl}</text>`;
+    const vals = [
+      [r.scores.overall_iris_score, "var(--accent)"],
+      [r.scores.capability_score, "var(--green)"],
+      [r.scores.judge_quality_score, "var(--violet)"],
+      [r.scores.voice_responsiveness_score, "var(--amber)"]
+    ];
+    vals.forEach(([v, col], j) => {
+      const y = y0 + j * (barH + gap);
+      if (v == null) return;
+      const bw = Math.max(2, (v / 100) * plotW);
+      svg += `<rect x="${left}" y="${y}" width="${bw}" height="${barH}" rx="3" fill="${col}"/>`;
+      svg += `<text x="${left + bw + 5}" y="${y + 9}" fill="#9aa7b8" `
+        + `font-size="9">${v.toFixed(1)}</text>`;
+    });
+  });
+  svg += "</svg>";
+  el.innerHTML = svg;
+}
+
+function renderScatterChart() {
+  const el = document.getElementById("chart-scatter");
+  const pts = RESULTS.map((r, i) => ({
+    label: labelOf(r),
+    x: r.speed.median_ttfs_ms ?? r.speed.median_ttft_ms ?? r.speed.median_model_ms,
+    y: r.scores.capability_score,
+    color: PALETTE[i % PALETTE.length]
+  })).filter(p => p.x != null);
+  if (!pts.length) { el.innerHTML = '<div class="empty">No timing data</div>'; return; }
+  const w = 560, h = 280, padL = 48, padR = 24, padT = 20, padB = 38;
+  const maxX = Math.max(1000, ...pts.map(p => p.x)) * 1.15;
+  let svg = `<svg viewBox="0 0 ${w} ${h}">`;
+  for (let yv = 0; yv <= 100; yv += 25) {
+    const y = padT + (1 - yv / 100) * (h - padT - padB);
+    svg += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" `
+      + `stroke="#2a3444" stroke-dasharray="2,3"/>`;
+    svg += `<text x="${padL - 6}" y="${y + 3}" fill="#9aa7b8" font-size="10" `
+      + `text-anchor="end">${yv}%</text>`;
+  }
+  svg += `<text x="${(padL + w - padR) / 2}" y="${h - 6}" fill="#9aa7b8" font-size="10" `
+    + `text-anchor="middle">Median Time to First Sentence (ms — lower is faster)</text>`;
+  pts.forEach(p => {
+    const cx = padL + (p.x / maxX) * (w - padL - padR);
+    const cy = padT + (1 - p.y / 100) * (h - padT - padB);
+    svg += `<circle cx="${cx}" cy="${cy}" r="6" fill="${p.color}" `
+      + `stroke="#0f131a" stroke-width="1.5"/>`;
+    svg += `<text x="${cx + 8}" y="${cy + 3}" fill="#e7edf5" `
+      + `font-size="10">${esc(p.label.slice(0, 22))}</text>`;
+  });
+  svg += "</svg>";
+  el.innerHTML = svg;
+}
+
+function renderSpeedChart() {
+  const el = document.getElementById("chart-speed");
+  if (!RESULTS.length) { el.innerHTML = '<div class="empty">No data</div>'; return; }
+  const msVals = RESULTS.flatMap(r => [r.speed.median_ttft_ms || 0, r.speed.median_ttfs_ms || 0]);
+  const maxMs = Math.max(500, ...msVals);
+  const maxTps = Math.max(20, ...RESULTS.map(r => effTps(r) || 0));
+  const rowH = 54, left = 180, w = 560, right = 60;
+  const plotW = w - left - right;
+  const h = RESULTS.length * rowH + 14;
+  let svg = `<svg viewBox="0 0 ${w} ${h}">`;
+  RESULTS.forEach((r, i) => {
+    const y0 = i * rowH + 6;
+    const lbl = esc(labelOf(r).slice(0, 28));
+    svg += `<text x="${left - 8}" y="${y0 + 24}" fill="#e7edf5" font-size="11" `
+      + `text-anchor="end">${lbl}</text>`;
+    const bars = [
+      [r.speed.median_ttft_ms, maxMs, "var(--accent)", "ms"],
+      [r.speed.median_ttfs_ms, maxMs, "var(--amber)", "ms"],
+      [effTps(r), maxTps, "var(--green)", " tok/s"]
+    ];
+    bars.forEach(([val, maxV, col, unit], j) => {
+      if (val == null) return;
+      const y = y0 + j * 14;
+      const bw = Math.max(2, (val / maxV) * plotW);
+      svg += `<rect x="${left}" y="${y}" width="${bw}" height="10" rx="3" fill="${col}"/>`;
+      svg += `<text x="${left + bw + 5}" y="${y + 8}" fill="#9aa7b8" `
+        + `font-size="9">${val.toFixed(0)}${unit}</text>`;
+    });
+  });
+  svg += "</svg>";
+  el.innerHTML = svg;
+}
+
+function renderContextChart() {
+  const el = document.getElementById("chart-context");
+  const series = RESULTS.map((r, i) => ({
+    label: labelOf(r),
+    vals: r.speed.long_conversation_ttfs_ms || [],
+    color: PALETTE[i % PALETTE.length]
+  })).filter(s => s.vals.some(v => v != null));
+  if (!series.length) {
+    el.innerHTML = '<div class="empty">No long-conversation timing data</div>';
+    return;
+  }
+  const w = 560, h = 260, padL = 52, padR = 24, padT = 18, padB = 34;
+  const maxTurns = Math.max(2, ...series.map(s => s.vals.length));
+  const maxY = Math.max(500, ...series.flatMap(s => s.vals.filter(v => v != null))) * 1.1;
+  let svg = `<svg viewBox="0 0 ${w} ${h}">`;
+  for (let step = 0; step <= 4; step++) {
+    const val = (maxY * step) / 4;
+    const y = padT + (1 - step / 4) * (h - padT - padB);
+    svg += `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" `
+      + `stroke="#2a3444" stroke-dasharray="2,3"/>`;
+    svg += `<text x="${padL - 6}" y="${y + 3}" fill="#9aa7b8" font-size="10" `
+      + `text-anchor="end">${val.toFixed(0)}ms</text>`;
+  }
+  for (let t = 0; t < maxTurns; t++) {
+    const x = padL + (t / Math.max(1, maxTurns - 1)) * (w - padL - padR);
+    svg += `<text x="${x}" y="${h - 10}" fill="#9aa7b8" font-size="10" `
+      + `text-anchor="middle">T${t + 1}</text>`;
+  }
+  series.forEach(s => {
+    const pts = s.vals.map((v, t) => v == null ? null : [
+      padL + (t / Math.max(1, maxTurns - 1)) * (w - padL - padR),
+      padT + (1 - v / maxY) * (h - padT - padB)
+    ]).filter(Boolean);
+    if (pts.length >= 2) {
+      const ptStr = pts.map(p => p.join(",")).join(" ");
+      svg += `<polyline fill="none" stroke="${s.color}" stroke-width="2.2" points="${ptStr}"/>`;
+    }
+    pts.forEach(([cx, cy]) => {
+      svg += `<circle cx="${cx}" cy="${cy}" r="3.5" fill="${s.color}"/>`;
+    });
+  });
+  svg += "</svg>";
+  el.innerHTML = svg;
+}
+
+function renderHeatmap() {
+  const wrap = document.getElementById("heatmap-wrap");
+  if (!RESULTS.length) { wrap.innerHTML = '<div class="empty">No data</div>'; return; }
+  const cats = Object.keys(RESULTS[0].categories);
+  let html = "<table><thead><tr><th>Engine / Model</th>";
+  cats.forEach(c => { html += `<th class="num">${esc(c)}</th>`; });
+  html += "</tr></thead><tbody>";
+  RESULTS.forEach(r => {
+    html += `<tr><td><strong>${esc(labelOf(r))}</strong></td>`;
+    cats.forEach(c => {
+      const cat = r.categories[c];
+      if (!cat || cat.skipped) {
+        html += `<td class="heat-cell" style="color:#9aa7b8">skipped</td>`;
+      } else {
+        const s = cat.score;
+        const bg = s >= 80
+          ? "rgba(66,211,146,0.22)"
+          : s >= 55 ? "rgba(246,183,60,0.22)" : "rgba(255,107,107,0.22)";
+        const fg = s >= 80 ? "#42d392" : s >= 55 ? "#f6b73c" : "#ff6b6b";
+        html += `<td class="heat-cell" style="background:${bg};color:${fg}">`
+          + `${s.toFixed(0)}% (${cat.passed}/${cat.total})</td>`;
+      }
+    });
+    html += "</tr>";
+  });
+  html += "</tbody></table>";
+  wrap.innerHTML = html;
+}
+
+document.getElementById("meta-line").textContent =
+  `${RESULTS.length} run(s) loaded — generated offline from sanitized public benchmark JSONs.`;
+renderTable();
+renderScoresChart();
+renderScatterChart();
+renderSpeedChart();
+renderContextChart();
+renderHeatmap();
+</script>
+</body>
+</html>
