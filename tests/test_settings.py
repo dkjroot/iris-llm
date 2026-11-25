@@ -173,3 +173,58 @@ def test_notification_credentials_are_private_and_environment_overrides_file(tmp
 def test_pushover_device_must_be_a_single_registered_name(device):
     with pytest.raises(ValidationError):
         Settings(pushover_device=device)
+
+
+def test_reasoning_mode_settings_and_effective_payload_helpers() -> None:
+    off_cfg = Settings(
+        reasoning_mode="off",
+        max_tokens=300,
+        reasoning_max_tokens=1024,
+        chat_template_kwargs={"custom": 1},
+        chat_request_options={"top_k": 40},
+        reasoning_chat_template_kwargs={"enable_thinking": True, "thinking_budget": 192},
+        reasoning_chat_request_options={"reasoning_effort": "low"},
+    )
+    assert off_cfg.effective_max_tokens() == 300
+    assert off_cfg.effective_chat_template_kwargs() == {"custom": 1, "enable_thinking": False}
+    assert off_cfg.effective_chat_request_options() == {
+        "top_k": 40,
+        "reasoning_effort": "none",
+        "enable_thinking": False,
+    }
+
+    low_cfg = off_cfg.model_copy(update={"reasoning_mode": "low"})
+    assert low_cfg.effective_max_tokens() == 1024
+    assert low_cfg.effective_chat_template_kwargs() == {
+        "enable_thinking": True,
+        "thinking_budget": 192,
+    }
+    assert low_cfg.effective_chat_request_options() == {
+        "reasoning_effort": "low",
+        "enable_thinking": True,
+    }
+
+    on_cfg = off_cfg.model_copy(
+        update={
+            "reasoning_mode": "on",
+            "reasoning_max_tokens": None,
+            "reasoning_chat_request_options": {
+                "reasoning_effort": "none",
+                "temperature_mode": "std",
+            },
+        }
+    )
+    assert on_cfg.effective_max_tokens() == 1024
+    assert on_cfg.effective_chat_request_options() == {
+        "enable_thinking": True,
+        "temperature_mode": "std",
+    }
+
+    or_low = Settings(
+        base_url="https://openrouter.ai/api/v1",
+        allow_remote=True,
+        reasoning_mode="low",
+    )
+    assert or_low.effective_chat_request_options() == {"reasoning": {"effort": "low"}}
+    or_off = or_low.model_copy(update={"reasoning_mode": "off"})
+    assert or_off.effective_chat_request_options() == {"reasoning": {"effort": "none"}}

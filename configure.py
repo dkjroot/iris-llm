@@ -105,6 +105,14 @@ ADVANCED_HELP = {
     "reply_encoding": "Reply text encoding: text, html or double-html",
     "chat_template_kwargs": "Host template options as a JSON object",
     "chat_request_options": "Additional model request options as a JSON object",
+    "reasoning_mode": "Thinking mode: server, off, low or on",
+    "reasoning_max_tokens": (
+        "Max completion tokens when reasoning is enabled; null scales automatically"
+    ),
+    "reasoning_chat_template_kwargs": "Host template options used when reasoning_mode is low or on",
+    "reasoning_chat_request_options": (
+        "Additional request options used when reasoning_mode is low or on"
+    ),
     "whisper_model": "Whisper model name or local path",
     "whisper_vad_filter": "Filter silence in Whisper STT; disable if client VAD is already active",
     "whisper_beam_size": "Whisper beam search width (1 is fastest greedy decoding, 5 is default)",

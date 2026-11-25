@@ -39,7 +39,8 @@ def _median(values: list[float]) -> float | None:
 
 def summarize_speed(turns: list[TurnRecord]) -> SpeedSummary:
     """Compute speed summary across metered interactive turns (excluding warm-ups)."""
-    interactive = [t for t in turns if t.category != "memory_extraction" and t.error is None]
+    interactive_all = [t for t in turns if t.category != "memory_extraction"]
+    interactive = [t for t in interactive_all if t.error is None]
     ttfts = [t.ttft_ms for t in interactive if t.ttft_ms is not None]
     ttfss = [t.ttfs_ms for t in interactive if t.ttfs_ms is not None]
     models = [t.model_ms for t in interactive if t.model_ms is not None]
@@ -47,6 +48,10 @@ def summarize_speed(turns: list[TurnRecord]) -> SpeedSummary:
     tps = [t.tokens_per_sec for t in interactive if t.tokens_per_sec is not None]
     est_tps = [t.est_tokens_per_sec for t in interactive if t.est_tokens_per_sec is not None]
     ptps = [t.prompt_tokens_per_sec for t in interactive if t.prompt_tokens_per_sec is not None]
+    reasoning_vals = [float(t.reasoning_chars) for t in interactive_all if t.reasoning_chars > 0]
+    empty_replies = sum(
+        1 for t in interactive_all if t.error and "empty assistant reply" in t.error.lower()
+    )
 
     long_turns = sorted(
         (t for t in interactive if t.category == "long_conversation"),
@@ -63,6 +68,9 @@ def summarize_speed(turns: list[TurnRecord]) -> SpeedSummary:
         median_tok_per_sec=_median(tps),
         median_est_tok_per_sec=_median(est_tps),
         median_prompt_tok_per_sec=_median(ptps),
+        reasoning_turns=len(reasoning_vals),
+        median_reasoning_chars=_median(reasoning_vals),
+        empty_reply_turns=empty_replies,
         long_conversation_ttfs_ms=[t.ttfs_ms for t in long_turns],
         long_conversation_model_ms=[t.model_ms for t in long_turns],
     )

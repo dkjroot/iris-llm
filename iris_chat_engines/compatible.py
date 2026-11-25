@@ -25,11 +25,13 @@ from iris_domain.expression import (
     FACE_PROMPT,
     FaceExpression,
     ModelReply,
+    ThinkingTagFilter,
     could_be_leading_cue,
     extract_expression_cue,
     read_model_reply,
     split_inline_leading_cue,
     strip_expression_cues,
+    strip_thinking_tags,
 )
 from iris_domain.session import SessionState
 from iris_domain.turn import effect_scope
@@ -122,6 +124,7 @@ class _SentenceFeeder:
         self._face = face
         self._known_tools = known_tools
         self._on_sentence = on_sentence
+        self._think_filter = ThinkingTagFilter()
         self._header_done = False
         self._header_buf = ""
         self._body_buf = ""
@@ -131,6 +134,9 @@ class _SentenceFeeder:
 
     def feed(self, chunk: str) -> None:
         if self.suppressed or not chunk:
+            return
+        chunk = self._think_filter.feed(chunk)
+        if not chunk:
             return
         if not self._header_done:
             self._header_buf += chunk
@@ -178,6 +184,12 @@ class _SentenceFeeder:
     def finish(self) -> None:
         if self.suppressed:
             return
+        tail = self._think_filter.finish()
+        if tail:
+            if not self._header_done:
+                self._header_buf += tail
+            else:
+                self._body_buf += tail
         if not self._header_done:
             parsed = read_model_reply(self._header_buf, face=self._face)
             self.expression = parsed.expression
@@ -226,8 +238,10 @@ class _SentenceFeeder:
             if _tool_markers(self._body_buf, self._known_tools):
                 self.suppressed = True
                 return
-            for sentence in split_speech_sentences(self._body_buf):
-                spoken = plain_speech_text(self._clean_sentence(sentence)).strip()
+            # A malformed cue can contain sentence punctuation. Remove it before
+            # splitting the final buffer so its fragments cannot reach speech.
+            for sentence in split_speech_sentences(self._clean_sentence(self._body_buf)):
+                spoken = plain_speech_text(sentence).strip()
                 if spoken:
                     self.emitted = True
                     self._on_sentence(spoken, self.expression)
@@ -454,7 +468,10 @@ class ChatEngine(SessionState):
                 if text is None or not text.strip():
                     raise ChatError("The server returned an empty assistant reply")
                 decoded = self._decode(text)
-                if _tool_markers(decoded, known_tool_names):
+                cleaned = strip_thinking_tags(decoded)
+                if not cleaned.strip():
+                    raise ChatError("The server returned an empty assistant reply")
+                if _tool_markers(cleaned, known_tool_names):
                     if corrected_marker or (feeder is not None and feeder.emitted):
                         raise ChatError("The model returned a tool marker instead of an answer.")
                     corrected_marker = True
@@ -462,7 +479,7 @@ class ChatEngine(SessionState):
                     continue
                 if feeder is not None:
                     feeder.finish()
-                result = self._spoken_reply(decoded, face=face)
+                result = self._spoken_reply(cleaned, face=face)
                 assistant_reply = Message(role="assistant", content=result.text)
                 self._remember([*self.history, *messages[turn_start:], assistant_reply])
                 self.last_tool_names = tuple(sorted(tool_names))

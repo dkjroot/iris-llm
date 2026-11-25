@@ -175,9 +175,10 @@ looping on a broken release. As soon as upstream advances past that commit, the 
 will try again normally.
 
 On Windows, if initial startup or post-rollback readiness times out while the server
-process is still alive, the watcher logs a warning and leaves the server running
-instead of stopping it and quitting. If the server exits with a non-zero exit code,
-the watcher automatically restarts it after a short backoff.
+process is still alive, the watcher logs a warning and leaves it running. If the
+launcher exits, even with exit code 0, the watcher retries startup. The delay starts
+at five seconds and increases up to a minute if the launcher keeps exiting. Press
+Ctrl+C in the watcher window to stop both Iris and the watcher.
 
 If a run is interrupted mid-flight (for example by a power cut) or rollback itself fails,
 leave the pending state file in place, fix the reported problem, and rerun the updater

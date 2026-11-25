@@ -445,9 +445,12 @@ def test_lying_home_model_is_caught_by_independent_state_check(tmp_path: Path) -
         client_transport=FaithfulIrisMockServer(lying_home_model=True),
     )
     home_cat = outcome.result.categories["tools_home"]
-    failed_ids = {c.id for c in home_cat.checks if not c.passed}
-    assert "home_02_independent_state" in failed_ids
-    assert "home_02_tool" in failed_ids
+    failed_checks = {c.id: c for c in home_cat.checks if not c.passed}
+    assert "home_02_independent_state" in failed_checks
+    assert "home_02_tool" in failed_checks
+    assert "home_03_tool" in failed_checks
+    assert "home_03_independent_state" in failed_checks
+    assert failed_checks["home_03_independent_state"].reason == "switch_not_called"
     assert home_cat.score < 100.0
 
 
@@ -989,3 +992,240 @@ def test_cli_full_saves_outputs_when_judge_fails(
     assert "Errors / Warnings encountered" in out
     assert "OpenRouter timeout" in out
     assert "iris-bench judge" in out
+
+
+def test_reasoning_telemetry_and_config_visibility(tmp_path: Path) -> None:
+    from iris_bench.models import TurnRecord
+    from iris_bench.scoring import summarize_speed
+    from iris_bench.telemetry import MeteredChatCompletionsBackend, TurnTelemetryCollector
+    from iris_chat_engines.messages import Message
+    from iris_settings import Settings
+
+    def sse_with_reasoning(_request: httpx.Request) -> httpx.Response:
+        events = [
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "reasoning_content": "Thinking step..."},
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {"index": 0, "delta": {"content": "Hello there."}, "finish_reason": "stop"}
+                ]
+            },
+        ]
+        body = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
+        return httpx.Response(
+            200, content=body.encode("utf-8"), headers={"content-type": "text/event-stream"}
+        )
+
+    collector = TurnTelemetryCollector()
+    trace = collector.start_turn()
+    settings = Settings(
+        base_url="http://127.0.0.1:9999/v1",
+        chat_template_kwargs={"enable_thinking": False},
+        chat_request_options={"reasoning_effort": "none", "enable_thinking": False},
+    )
+    with httpx.Client(transport=httpx.MockTransport(sse_with_reasoning)) as client:
+        backend = MeteredChatCompletionsBackend(settings, client, collector)
+        msg = backend.complete_stream([Message(role="user", content="Hi")], [])
+    assert msg.content == "Hello there."
+    finished = collector.finish_turn() or trace
+    assert finished.llm_calls[0].reasoning_chars == len("Thinking step...")
+
+    summary = summarize_speed(
+        [
+            TurnRecord(
+                case_id="c1",
+                category="conversation",
+                turn_index=1,
+                prompt="p1",
+                reasoning_chars=16,
+                turn_ms=100.0,
+            ),
+            TurnRecord(
+                case_id="c2",
+                category="conversation",
+                turn_index=2,
+                prompt="p2",
+                reasoning_chars=400,
+                error="ChatError: The server returned an empty assistant reply",
+                turn_ms=200.0,
+            ),
+        ]
+    )
+    assert summary.reasoning_turns == 2
+    assert summary.median_reasoning_chars == 208.0
+    assert summary.empty_reply_turns == 1
+
+    # Also verify run_benchmark records chat_template_kwargs and chat_request_options cleanly
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "chat_template_kwargs": {"enable_thinking": False},
+                "chat_request_options": {"reasoning_effort": "none", "enable_thinking": False},
+            }
+        ),
+        encoding="utf-8",
+    )
+    outcome = run_benchmark(
+        "mock-engine",
+        "mock-model",
+        config_path=cfg_path,
+        warmup_turns=0,
+        mock_tools=True,
+        synthetic_memory=True,
+        cache_dir=tmp_path / "cache",
+        results_dir=tmp_path / "results",
+        client_transport=FaithfulIrisMockServer(),
+    )
+    assert outcome.result.config.chat_template_kwargs == {"enable_thinking": False}
+    assert outcome.result.config.chat_request_options == {
+        "reasoning_effort": "none",
+        "enable_thinking": False,
+    }
+
+
+def test_tool_registry_instructions_require_real_home_switch_calls() -> None:
+    from iris_settings import Settings
+    from iris_tools import ToolRegistry
+
+    settings = Settings(home_service_url="https://home.local:8443")
+    with httpx.Client(trust_env=False) as client:
+        instructions = ToolRegistry(settings, client).instructions()
+    assert (
+        "Never claim to have checked or changed something without a successful tool result."
+        in instructions
+    )
+    assert "Always call set_home_power to switch a device" in instructions
+
+
+def test_thinking_tags_stripped_everywhere_and_reasoning_mode_benchmarked(tmp_path: Path) -> None:
+    from iris_chat_engines.compatible import ChatEngine
+    from iris_domain.expression import ThinkingTagFilter, read_model_reply, strip_thinking_tags
+    from iris_memory.model_output import parse_memory_json
+    from iris_memory.models import Summary
+    from iris_settings import Settings
+
+    # Non-streaming strip_thinking_tags across <think>, <thinking>, unclosed, orphan close, code
+    assert strip_thinking_tags("<think>step 1\nstep 2</think>\nHello there!") == "Hello there!"
+    assert strip_thinking_tags("<THINKING>a</thinking>Hi <think>b</think>world") == "Hi world"
+    assert strip_thinking_tags("Prefill thought</thinking>\nActual answer.") == "Actual answer."
+    assert strip_thinking_tags("Answer.<thinking>cut off") == "Answer."
+    assert (
+        strip_thinking_tags("Use `<think>demo</think>` in XML.")
+        == "Use `<think>demo</think>` in XML."
+    )
+
+    reply = read_model_reply(
+        "<thinking>Checking mood...</thinking>\n[[expression:delighted]]\nGreat news!",
+        face=True,
+    )
+    assert reply.expression == "delighted"
+    assert reply.text == "Great news!"
+
+    # Streaming 1-char-at-a-time filter strips both <think> and <thinking> cleanly
+    for sample in (
+        "<think>secret\nthoughts</think>\n[[expression:amused]]\nThat made me smile.",
+        "<thinking>step A</thinking>Hello <THINK>inner</think>world!",
+    ):
+        filt = ThinkingTagFilter()
+        out = "".join(filt.feed(ch) for ch in sample) + filt.finish()
+        assert "<think" not in out.lower()
+        assert "</think" not in out.lower()
+        assert "secret" not in out and "step A" not in out and "inner" not in out
+
+    # parse_memory_json ignores <thinking>...</thinking> wrapper
+    parsed_mem = parse_memory_json(
+        Summary,
+        '<thinking>extracting</thinking>\n```json\n{"notes": []}\n```',
+    )
+    assert parsed_mem.notes == []
+
+    # Streaming through ChatEngine strips <thinking> before TTS sentence callbacks
+    recorded_payloads: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded_payloads.append(json.loads(request.content.decode("utf-8")))
+        return _sse_response(
+            "<thinking>Check how warm to sound.</thinking>\n"
+            "[[expression:delighted]]\n"
+            "Good afternoon! All systems ready."
+        )
+
+    settings = Settings(
+        reasoning_mode="low",
+        reasoning_max_tokens=1024,
+        model_context_tokens=16384,
+        reasoning_chat_template_kwargs={"enable_thinking": True},
+        reasoning_chat_request_options={"reasoning_effort": "low", "enable_thinking": True},
+    )
+    sentences: list[tuple[str, str | None]] = []
+    with httpx.Client(transport=httpx.MockTransport(handler), trust_env=False) as client:
+        engine = ChatEngine(settings, client)
+        result = engine.generate_reply(
+            "Hello Iris",
+            face=True,
+            on_sentence=lambda text, expr: sentences.append((text, expr)),
+        )
+    assert result.expression == "delighted"
+    assert result.text == "Good afternoon! All systems ready."
+    assert "<thinking>" not in result.text
+    assert [s for s, _ in sentences] == ["Good afternoon!", "All systems ready."]
+    assert recorded_payloads[0]["max_tokens"] == 1024
+    assert recorded_payloads[0]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert recorded_payloads[0]["reasoning_effort"] == "low"
+
+    # Model card parses Reasoning: line & iris-bench CLI --reasoning low updates summary + report
+    card = parse_model_card(
+        "Model: Flint\nEngine: PolyStrata\nReasoning: low (budget: 192 tokens)\n"
+    )
+    assert card.reasoning_mode == "low"
+    assert card.reasoning_budget_tokens == 192
+
+    inline_transport = httpx.MockTransport(
+        lambda request: _sse_response(
+            "<thinking>Internal reasoning block.</thinking>\n"
+            "[[expression:neutral]]\n"
+            "Clean spoken reply."
+        )
+    )
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(
+        json.dumps(
+            {
+                "reasoning_mode": "off",
+                "reasoning_max_tokens": 900,
+                "model_context_tokens": 16384,
+                "reasoning_chat_template_kwargs": {"enable_thinking": True},
+                "reasoning_chat_request_options": {"reasoning_effort": "low"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    outcome = run_benchmark(
+        "mock-engine",
+        "mock-model",
+        config_path=cfg_path,
+        warmup_turns=0,
+        mock_tools=True,
+        synthetic_memory=True,
+        reasoning_mode="low",
+        reasoning_budget_tokens=192,
+        cache_dir=tmp_path / "cache",
+        results_dir=tmp_path / "results",
+        client_transport=inline_transport,
+    )
+    assert outcome.result.config.reasoning_mode == "low"
+    assert outcome.result.config.reasoning_budget_tokens == 192
+    assert outcome.result.config.max_tokens == 900
+    assert outcome.result.speed.reasoning_turns > 0
+    assert "low (192t)" in format_terminal_table([outcome.result])
+    assert "low (192t)" in format_markdown_table([outcome.result])
+    html_path = render_html_report([outcome.result], tmp_path / "report.html")
+    html_text = html_path.read_text(encoding="utf-8")
+    assert "low (192t)" in html_text or '"reasoning_mode": "low"' in html_text

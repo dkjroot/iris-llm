@@ -26,6 +26,7 @@ from iris_chat_engines.backends import (
     chat_headers,
 )
 from iris_chat_engines.messages import ChatError, Message
+from iris_domain.expression import strip_thinking_tags
 from iris_domain.messages import ToolCall
 from iris_home.protocol import DeviceRequest, MeterRequest, ScheduleRequest, SwitchRequest
 from iris_settings import Settings
@@ -144,6 +145,7 @@ def _build_llm_telemetry(
     server_pred_tps: float | None,
     server_prompt_tps: float | None,
     raw_content: str,
+    reasoning_chars: int = 0,
     tool_calls_count: int,
     finish_reason: str | None,
 ) -> LLMCallTelemetry:
@@ -180,6 +182,7 @@ def _build_llm_telemetry(
         est_tokens_per_sec=est_tokens_per_sec,
         prompt_tokens_per_sec=prompt_tokens_per_sec,
         output_chars=len(raw_content),
+        reasoning_chars=reasoning_chars,
         finish_reason=finish_reason,
         tool_calls_count=tool_calls_count,
         raw_content=raw_content,
@@ -242,6 +245,8 @@ class MeteredChatCompletionsBackend(ChatCompletionsBackend):
         pt, ct, pred_tps, prompt_tps = _extract_usage_and_timings(
             raw_json if isinstance(raw_json, dict) else {}, None, None, None, None
         )
+        raw_content = reply.content or ""
+        inline_think_chars = max(0, len(raw_content) - len(strip_thinking_tags(raw_content)))
         self.collector.record_llm_call(
             _build_llm_telemetry(
                 streamed=False,
@@ -253,7 +258,8 @@ class MeteredChatCompletionsBackend(ChatCompletionsBackend):
                 completion_tokens=ct,
                 server_pred_tps=pred_tps,
                 server_prompt_tps=prompt_tps,
-                raw_content=reply.content or "",
+                raw_content=raw_content,
+                reasoning_chars=len(reply.reasoning_content or "") + inline_think_chars,
                 tool_calls_count=len(reply.tool_calls or ()),
                 finish_reason=choice.finish_reason,
             )
@@ -445,6 +451,8 @@ class MeteredChatCompletionsBackend(ChatCompletionsBackend):
                 "The server didn't return a text chat reply in the expected format."
             ) from error
         ended = perf_counter()
+        raw_content = reply.content or ""
+        inline_think_chars = max(0, len(raw_content) - len(strip_thinking_tags(raw_content)))
         self.collector.record_llm_call(
             _build_llm_telemetry(
                 streamed=True,
@@ -456,7 +464,8 @@ class MeteredChatCompletionsBackend(ChatCompletionsBackend):
                 completion_tokens=completion_tokens,
                 server_pred_tps=server_pred_tps,
                 server_prompt_tps=server_prompt_tps,
-                raw_content=reply.content or "",
+                raw_content=raw_content,
+                reasoning_chars=len(reply.reasoning_content or "") + inline_think_chars,
                 tool_calls_count=len(reply.tool_calls or ()),
                 finish_reason=finish_reason,
             )

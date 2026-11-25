@@ -365,6 +365,16 @@ def test_web_chat_starts_with_assistant_and_lists_default_personalities():
             ["Hello there!"],
             "amused",
         ),
+        (
+            ["Hello there! ", "\n**Expression:", "** *curious*.\nHow did you do it?"],
+            ["Hello there!", "How did you do it?"],
+            "neutral",
+        ),
+        (
+            ["Hello there! ", "[[expression:not. a valid cue]] ", "How did you do it?"],
+            ["Hello there!", "How did you do it?"],
+            "neutral",
+        ),
     ],
 )
 def test_sentence_feeder_strips_cues_and_preserves_inline_text(

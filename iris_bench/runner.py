@@ -6,6 +6,7 @@ import importlib.metadata
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -81,6 +82,18 @@ class RunOutcome:
     public_path: Path
     transcript: PrivateRunTranscript
     transcript_path: Path
+
+
+def _atomic_json_retry(path: Path, data: object) -> None:
+    """Retry atomic_json briefly on transient Windows AV/indexer file locks."""
+    for attempt in range(5):
+        try:
+            atomic_json(path, data)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.02 * (attempt + 1))
 
 
 def _slug(value: str) -> str:
@@ -345,6 +358,9 @@ def run_benchmark(
     model_context_tokens: int | None = None,
     model_file: str | None = None,
     benchmark_label: str | None = None,
+    reasoning_mode: Literal["off", "low", "on", "server"] | None = None,
+    reasoning_budget_tokens: int | None = None,
+    max_tokens: int | None = None,
     cache_dir: Path = BENCH_CACHE_DIR,
     results_dir: Path = DEFAULT_RESULTS_DIR,
     client_transport: httpx.BaseTransport | None = None,
@@ -361,6 +377,22 @@ def run_benchmark(
     resolved_cache.mkdir(parents=True, exist_ok=True)
     dotenv = load_dotenv_if_present(PROJECT_ROOT)
     base_settings, _ = _load_bench_settings(config_path, dotenv=dotenv)
+    settings_updates: dict[str, object] = {}
+    if reasoning_mode is not None:
+        settings_updates["reasoning_mode"] = reasoning_mode
+    target_mode = reasoning_mode if reasoning_mode is not None else base_settings.reasoning_mode
+    if max_tokens is not None:
+        if max_tokens < 1 or max_tokens > 32768:
+            raise ValueError("max_tokens must be between 1 and 32768.")
+        if target_mode in {"low", "on"}:
+            settings_updates["reasoning_max_tokens"] = max_tokens
+        else:
+            settings_updates["max_tokens"] = max_tokens
+    if model_context_tokens is not None:
+        settings_updates["model_context_tokens"] = model_context_tokens
+    if settings_updates:
+        base_settings = base_settings.model_copy(update=settings_updates)
+        base_settings.validate_constraints()
     local_cfg = load_local_bench_config(resolved_cache)
 
     live_db = database_path(base_settings) if base_settings.memory_enabled else None
@@ -429,8 +461,10 @@ def run_benchmark(
     )
     config_summary = ConfigSummary(
         temperature=base_settings.temperature,
-        max_tokens=base_settings.max_tokens,
+        max_tokens=base_settings.effective_max_tokens(),
         model_context_tokens=effective_ctx,
+        reasoning_mode=base_settings.reasoning_mode,
+        reasoning_budget_tokens=reasoning_budget_tokens,
         tools_enabled=True,
         mock_tools=mock_tools,
         warmup_turns=warmup_turns,
@@ -440,6 +474,8 @@ def run_benchmark(
         has_semantic_memory=has_semantic,
         has_home_service=has_home_service,
         has_weather=has_weather,
+        chat_template_kwargs=base_settings.effective_chat_template_kwargs(),
+        chat_request_options=base_settings.effective_chat_request_options(),
     )
     clean_model_file = (
         PureWindowsPath(model_file).name if model_file and model_file.strip() else None
@@ -506,9 +542,9 @@ def run_benchmark(
             lamp_device_to_scrub=effective_lamp or "",
             turns=list(all_turns),
         )
-        atomic_json(transcript_path, transcript.model_dump(mode="json"))
+        _atomic_json_retry(transcript_path, transcript.model_dump(mode="json"))
         assert_public_privacy(public_result, forbidden_terms=forbidden_terms)
-        atomic_json(public_path, public_result.model_dump(mode="json"))
+        _atomic_json_retry(public_path, public_result.model_dump(mode="json"))
         return RunOutcome(
             result=public_result,
             public_path=public_path,

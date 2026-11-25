@@ -87,6 +87,10 @@ class Settings(ChatterboxSettings, PocketSettings):
     tools_enabled: bool = True
     chat_template_kwargs: dict[str, JsonValue] = Field(default_factory=dict)
     chat_request_options: dict[str, JsonValue] = Field(default_factory=dict)
+    reasoning_mode: Literal["off", "low", "on", "server"] = "server"
+    reasoning_max_tokens: int | None = Field(default=None, gt=0, le=32768)
+    reasoning_chat_template_kwargs: dict[str, JsonValue] = Field(default_factory=dict)
+    reasoning_chat_request_options: dict[str, JsonValue] = Field(default_factory=dict)
     local_timezone: str = "Europe/London"
     weather_enabled: bool = False
     weather_location: str = "Stroud"
@@ -99,7 +103,7 @@ class Settings(ChatterboxSettings, PocketSettings):
     pushover_user_key: SecretStr | None = Field(default=None, exclude=True)
     pushover_device: str = Field(default="", max_length=25, pattern=r"^[A-Za-z0-9_-]*$")
 
-    @field_validator("chat_request_options")
+    @field_validator("chat_request_options", "reasoning_chat_request_options")
     @classmethod
     def valid_chat_request_options(cls, value: dict[str, JsonValue]) -> dict[str, JsonValue]:
         reserved = {
@@ -170,6 +174,55 @@ class Settings(ChatterboxSettings, PocketSettings):
     def uses_openrouter(self) -> bool:
         return self.base_url == OPENROUTER_BASE_URL
 
+    def effective_max_tokens(self) -> int:
+        if self.reasoning_mode in {"low", "on"}:
+            if self.reasoning_max_tokens is not None:
+                return self.reasoning_max_tokens
+            headroom = max(
+                self.max_tokens,
+                self.model_context_tokens - self.context_margin_tokens - 1025,
+            )
+            return min(max(self.max_tokens, 1024), headroom)
+        return self.max_tokens
+
+    def effective_chat_template_kwargs(self) -> dict[str, JsonValue]:
+        if self.reasoning_mode == "off":
+            return {**self.chat_template_kwargs, "enable_thinking": False}
+        if self.reasoning_mode in {"low", "on"}:
+            return {"enable_thinking": True, **self.reasoning_chat_template_kwargs}
+        return dict(self.chat_template_kwargs)
+
+    def effective_chat_request_options(self) -> dict[str, JsonValue]:
+        if self.reasoning_mode == "off":
+            if self.uses_openrouter:
+                return {**self.chat_request_options, "reasoning": {"effort": "none"}}
+            return {
+                **self.chat_request_options,
+                "reasoning_effort": "none",
+                "enable_thinking": False,
+            }
+        if self.reasoning_mode == "low":
+            if self.uses_openrouter:
+                return {"reasoning": {"effort": "low"}, **self.reasoning_chat_request_options}
+            return {
+                "reasoning_effort": "low",
+                "enable_thinking": True,
+                **self.reasoning_chat_request_options,
+            }
+        if self.reasoning_mode == "on":
+            if self.uses_openrouter:
+                return dict(self.reasoning_chat_request_options)
+            merged: dict[str, JsonValue] = {
+                "enable_thinking": True,
+                **{
+                    key: value
+                    for key, value in self.reasoning_chat_request_options.items()
+                    if not (key == "reasoning_effort" and value == "none")
+                },
+            }
+            return merged
+        return dict(self.chat_request_options)
+
     @field_validator("base_url")
     @classmethod
     def validate_endpoint(cls, value: str) -> str:
@@ -228,14 +281,14 @@ class Settings(ChatterboxSettings, PocketSettings):
                     "Set IRIS_HOME_SERVICE_TOKEN to at least 32 ASCII letters or digits"
                 )
 
-    @model_validator(mode="after")
-    def check_privacy(self) -> Settings:
+    def validate_constraints(self) -> None:
         if self.memory_semantic_enabled and not self.memory_enabled:
             raise ValueError("memory_semantic_enabled requires memory_enabled=true")
+        base_output = max(
+            self.max_tokens, self.effective_max_tokens(), self.reasoning_max_tokens or 0
+        )
         output_tokens = (
-            max(self.max_tokens, self.memory_summary_tokens)
-            if self.memory_enabled
-            else self.max_tokens
+            max(base_output, self.memory_summary_tokens) if self.memory_enabled else base_output
         )
         if output_tokens + self.context_margin_tokens + 1024 >= self.model_context_tokens:
             raise ValueError(
@@ -252,6 +305,10 @@ class Settings(ChatterboxSettings, PocketSettings):
             host not in {"localhost", "127.0.0.1", "::1"} or self.stt_engine == "google"
         ):
             raise ValueError("Remote endpoints or Google speech need allow_remote=true")
+
+    @model_validator(mode="after")
+    def check_privacy(self) -> Settings:
+        self.validate_constraints()
         return self
 
 

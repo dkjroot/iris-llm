@@ -63,6 +63,10 @@ margin and 1,024 prompt tokens must fit inside the model context window.
 | `tools_enabled` | `true` | boolean | Expose configured skills to a model that supports tools. |
 | `chat_template_kwargs` | `null` | object | Host template options as a JSON object |
 | `chat_request_options` | `null` | object | Additional model request options as a JSON object |
+| `reasoning_mode` | `"server"` | "off", "low", "on", "server" | Thinking mode: server, off, low or on |
+| `reasoning_max_tokens` | `null` | integer; maximum=32768; exclusiveMinimum=0 or null | Max completion tokens when reasoning is enabled; null scales automatically |
+| `reasoning_chat_template_kwargs` | `null` | object | Host template options used when reasoning_mode is low or on |
+| `reasoning_chat_request_options` | `null` | object | Additional request options used when reasoning_mode is low or on |
 | `local_timezone` | `"Europe/London"` | string | IANA timezone for clock, memory dates and conversation context. |
 | `weather_enabled` | `false` | boolean | Opt in to Open-Meteo requests independently of local model traffic. |
 | `weather_location` | `"Stroud"` | string | Town sent to the weather geocoder. |
@@ -190,7 +194,7 @@ be unique. See [home setup](home-automation.md) for pairing and an explained exa
 | `IRIS_TEST_EMBEDDING_MODEL_DIR`, `IRIS_TEST_BROWSER_CHANNEL`, `PLAYWRIGHT_BROWSERS_PATH` | Test-only opt-ins, described in the testing guide. |
 
 Server listening and web switches are launch options, not server JSON keys:
-`--config`, `--host` (127.0.0.1), `--port` (8765), `--web-chat`, and
+`--config`, `--host` (127.0.0.1), `--port` (8765), `--web-chat`, `--reasoning`, and
 `--web-personalities-file`. Use `python iris.py server --help` for their descriptions.
 The updater, memory, voice, notification and display commands have their own
 `--help`; [interface reference](interfaces.md) maps each to its guide and tests.

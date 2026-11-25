@@ -5,12 +5,17 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from pathlib import PureWindowsPath
+from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict
 
 _URL_RE = re.compile(r"^(https?://\S+)(?:\s*\((.+)\))?\s*$", re.IGNORECASE)
 _ALIAS_RE = re.compile(r"\balias\s*:\s*([^,)]+)", re.IGNORECASE)
 _CTX_RE = re.compile(r"\bctx\s*:\s*(\d+)", re.IGNORECASE)
+_REASONING_RE = re.compile(r"^(off|low|on|server)\b", re.IGNORECASE)
+_BUDGET_RE = re.compile(r"\bbudget\s*:\s*(\d+)", re.IGNORECASE)
+
+ReasoningMode = Literal["off", "low", "on", "server"]
 
 
 class ParsedModelCard(BaseModel):
@@ -25,6 +30,8 @@ class ParsedModelCard(BaseModel):
     base_url: str | None = None
     api_model: str | None = None
     model_context_tokens: int | None = None
+    reasoning_mode: ReasoningMode | None = None
+    reasoning_budget_tokens: int | None = None
 
 
 def _basename_only(raw_path: str) -> str | None:
@@ -86,6 +93,16 @@ def parse_model_card(text: str) -> ParsedModelCard:
 
     base_url, api_model, ctx_tokens = _parse_endpoint(fields.get("endpoint", ""))
     benchmark_label = fields.get("benchmark label", "").strip() or None
+    reasoning_raw = fields.get("reasoning", "").strip()
+    reasoning_mode: ReasoningMode | None = None
+    reasoning_budget_tokens: int | None = None
+    if reasoning_raw:
+        rmatch = _REASONING_RE.match(reasoning_raw)
+        if rmatch is not None:
+            reasoning_mode = cast(ReasoningMode, rmatch.group(1).lower())
+        bmatch = _BUDGET_RE.search(reasoning_raw)
+        if bmatch is not None:
+            reasoning_budget_tokens = int(bmatch.group(1))
 
     return ParsedModelCard(
         engine=engine,
@@ -95,6 +112,8 @@ def parse_model_card(text: str) -> ParsedModelCard:
         base_url=base_url,
         api_model=api_model,
         model_context_tokens=ctx_tokens,
+        reasoning_mode=reasoning_mode,
+        reasoning_budget_tokens=reasoning_budget_tokens,
     )
 
 

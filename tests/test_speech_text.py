@@ -50,7 +50,14 @@ def test_emoji_are_removed_as_complete_graphemes(original, spoken):
 
 
 @pytest.mark.parametrize("streaming", [False, True])
-@pytest.mark.parametrize("original,spoken", [("😊✨!", ""), ("**Café** 🌸!", "Café!")])
+@pytest.mark.parametrize(
+    "original,spoken",
+    [
+        ("😊✨!", ""),
+        ("**Café** 🌸!", "Café!"),
+        ("Expression: amused\nNice to see you.", "Nice to see you."),
+    ],
+)
 def test_reply_uses_cleaned_text_only_for_speech(brain_factory, streaming, original, spoken):
     harness = brain_factory(replies=[Message(role="assistant", content=original)])
     streamed = []
@@ -80,6 +87,11 @@ def test_reply_uses_cleaned_text_only_for_speech(brain_factory, streaming, origi
         ("[[amused]] Nice to see you.", "Nice to see you."),
         ("**[[expression:amused]] world**", "world"),
         ("Use `[[expression:amused]]` in code.", "Use `[[expression:amused]]` in code."),
+        ("Hi!\r\n**Expression:** *amused*.\r\nGood to see you.", "Hi!\r\nGood to see you."),
+        ("Hi!\n`[[expression:amused]]`\nGood to see you.", "Hi!\nGood to see you."),
+        ('Hi!\n"[[expression:amused]]"\nGood to see you.', "Hi!\nGood to see you."),
+        ("Face: proud of our work.", "Face: proud of our work."),
+        ("```\nExpression: amused\n```", "```\nExpression: amused\n```"),
         ("[[expression:amused]]", ""),
     ],
 )

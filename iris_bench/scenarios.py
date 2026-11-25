@@ -20,7 +20,7 @@ from iris_bench.models import (
 from iris_bench.scoring import compute_category_score
 from iris_bench.telemetry import TurnTelemetryCollector
 from iris_chat_engines.messages import ChatError
-from iris_domain.expression import FACE_EXPRESSIONS
+from iris_domain.expression import FACE_EXPRESSIONS, strip_thinking_tags
 from iris_domain.personality import PersonalityContext
 from iris_droid.protocol import write_wav
 from iris_home.protocol import DeviceRequest, PowerState, Request, SwitchRequest
@@ -39,6 +39,7 @@ _RAW_LEADING_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 _LEAKED_CUE_RE = re.compile(r"\[\[\s*(?:expression|face)\s*[:=][^\]]+\]\]", re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"</?think(?:ing)?>", re.IGNORECASE)
 _HTML_ENTITY_RE = re.compile(r"&(?:amp|apos|quot|lt|gt|#x27|#39);")
 _RAW_TOOL_MARKER_RE = re.compile(
     r"\[\[(?:list_home_devices|get_home_state|set_home_power|read_home_meter|"
@@ -91,7 +92,8 @@ def _word_count(text: str) -> int:
 
 
 def _has_explicit_leading_cue(raw_reply: str) -> bool:
-    match = _RAW_LEADING_CUE_RE.match(raw_reply)
+    cleaned = strip_thinking_tags(raw_reply)
+    match = _RAW_LEADING_CUE_RE.match(cleaned)
     if match is None:
         return False
     return match.group(1).strip().lower() in FACE_EXPRESSIONS
@@ -188,6 +190,7 @@ def _run_voice_turn(
         prompt=prompt,
         raw_reply=final_call.raw_content if final_call is not None else "",
         spoken_text=spoken_text,
+        reasoning_chars=sum(c.reasoning_chars for c in finished.llm_calls),
         expression=expression,
         streamed_sentences=list(finished.sentences),
         ttft_ms=first_call.ttft_ms if first_call is not None else None,
@@ -276,16 +279,22 @@ def run_conversation_category(
         )
         turns.append(rec)
         ok_reply = rec.error is None and bool(rec.spoken_text.strip())
+        no_leaked_think = not _THINK_TAG_RE.search(rec.spoken_text) and all(
+            not _THINK_TAG_RE.search(s) for s in rec.streamed_sentences
+        )
         checks.append(
             CheckResult(
                 id=f"{cid}_reply",
                 category="conversation",
                 name=f"Turn {idx} produced clean spoken reply",
                 passed=ok_reply
+                and no_leaked_think
                 and not _LEAKED_CUE_RE.search(rec.spoken_text)
                 and not _HTML_ENTITY_RE.search(rec.spoken_text)
                 and not _RAW_TOOL_MARKER_RE.search(rec.spoken_text),
-                reason="ok" if ok_reply else (rec.error or "empty_or_leaked_reply"),
+                reason="ok"
+                if (ok_reply and no_leaked_think)
+                else (rec.error or "empty_or_leaked_reply"),
             )
         )
         checks.append(
@@ -496,6 +505,8 @@ def run_expressions_category(
         clean_speech = (
             rec.error is None
             and bool(rec.spoken_text.strip())
+            and not _THINK_TAG_RE.search(rec.spoken_text)
+            and all(not _THINK_TAG_RE.search(s) for s in rec.streamed_sentences)
             and not _LEAKED_CUE_RE.search(rec.spoken_text)
             and all(not _LEAKED_CUE_RE.search(s) for s in rec.streamed_sentences)
         )
@@ -769,7 +780,7 @@ def run_home_category(
         t2.independent_device_state = after_first
         turns.append(t2)
         called_first = t2.error is None and _switch_call_matches(t2.tool_calls, first_target)
-        verified_first = after_first == first_target
+        verified_first = called_first and after_first == first_target
         checks.append(
             CheckResult(
                 id="home_02_tool",
@@ -786,7 +797,15 @@ def run_home_category(
                 name=f"Independent device status verified as {first_target}",
                 passed=verified_first,
                 weight=1.5,
-                reason="ok" if verified_first else f"independent_state_was_{after_first}",
+                reason=(
+                    "ok"
+                    if verified_first
+                    else (
+                        f"independent_state_was_{after_first}"
+                        if after_first != first_target
+                        else "switch_not_called"
+                    )
+                ),
             )
         )
 
@@ -808,7 +827,7 @@ def run_home_category(
         t3.independent_device_state = after_second
         turns.append(t3)
         called_second = t3.error is None and _switch_call_matches(t3.tool_calls, second_target)
-        verified_second = after_second == second_target
+        verified_second = called_second and after_second == second_target
         checks.append(
             CheckResult(
                 id="home_03_tool",
@@ -825,7 +844,15 @@ def run_home_category(
                 name=f"Independent device status verified as {second_target}",
                 passed=verified_second,
                 weight=1.5,
-                reason="ok" if verified_second else f"independent_state_was_{after_second}",
+                reason=(
+                    "ok"
+                    if verified_second
+                    else (
+                        f"independent_state_was_{after_second}"
+                        if after_second != second_target
+                        else "switch_not_called"
+                    )
+                ),
             )
         )
 

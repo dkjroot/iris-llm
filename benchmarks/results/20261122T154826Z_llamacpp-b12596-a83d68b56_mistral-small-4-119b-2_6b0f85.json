@@ -1,0 +1,665 @@
+{
+    "schema_version": "1.0",
+    "suite_version": "1.0",
+    "run_id": "20261122T154826Z_llamacpp-b12596-a83d68b56_mistral-small-4-119b-2_6b0f85",
+    "timestamp_utc": "2026-11-22T15:48:26+00:00",
+    "iris_version": "0.2.0",
+    "iris_git_commit": "2f13ef5",
+    "engine": "llama.cpp 1.0.0-dev (build 12596, commit a83d68b56)",
+    "model": "Mistral-Small-4-119B-2603 (2603 / UD-Q3_K_S / GGUF v3 qv2)",
+    "model_file": "Mistral-Small-4-119B-2603-UD-Q3_K_S.gguf",
+    "benchmark_label": "llamacpp-b12596-a83d68b56_mistral-small-4-119b-2603-ud-q3_k_s",
+    "comments": "",
+    "hardware": {
+        "os": "Windows 11",
+        "arch": "AMD64",
+        "python": "3.12.14",
+        "cpu": "AMD Ryzen 7 5800X3D 8-Core Processor",
+        "ram_gb": 127.9,
+        "gpu_name": "NVIDIA GeForce RTX 3090",
+        "gpu_vram_gb": 24.0
+    },
+    "config": {
+        "temperature": 0.7,
+        "max_tokens": 512,
+        "model_context_tokens": 32768,
+        "reasoning_mode": "off",
+        "reasoning_budget_tokens": null,
+        "tools_enabled": true,
+        "mock_tools": false,
+        "warmup_turns": 2,
+        "runs": 1,
+        "memory_mode": "snapshot",
+        "memory_probe_count": 5,
+        "has_semantic_memory": true,
+        "has_home_service": true,
+        "has_weather": true,
+        "chat_template_kwargs": {
+            "enable_thinking": false
+        },
+        "chat_request_options": {
+            "reasoning_effort": "none",
+            "enable_thinking": false
+        }
+    },
+    "scores": {
+        "overall_iris_score": 17.5,
+        "capability_score": 26.7,
+        "voice_responsiveness_score": 8.3,
+        "judge_quality_score": 8.4,
+        "weights": {
+            "capability": 0.5,
+            "judge_quality": 0.25,
+            "voice_responsiveness": 0.25
+        }
+    },
+    "speed": {
+        "metered_turns": 7,
+        "median_ttft_ms": 17670.23,
+        "p95_ttft_ms": 29207.16,
+        "median_ttfs_ms": 18115.56,
+        "p95_ttfs_ms": 29441.82,
+        "median_model_ms": 21960.63,
+        "median_turn_ms": 18674.99,
+        "median_tok_per_sec": 20.24,
+        "median_est_tok_per_sec": 20.95,
+        "median_prompt_tok_per_sec": 177.53,
+        "reasoning_turns": 0,
+        "median_reasoning_chars": null,
+        "empty_reply_turns": 0,
+        "long_conversation_ttfs_ms": [],
+        "long_conversation_model_ms": []
+    },
+    "categories": {
+        "conversation": {
+            "skipped": false,
+            "passed": 0,
+            "total": 10,
+            "score": 0.0,
+            "checks": [
+                {
+                    "id": "conv_01_reply",
+                    "category": "conversation",
+                    "name": "Turn 1 produced clean spoken reply",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "conv_01_brevity",
+                    "category": "conversation",
+                    "name": "Turn 1 stayed within spoken brevity budget (<= 90 words)",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "too_long"
+                },
+                {
+                    "id": "conv_01_no_tools",
+                    "category": "conversation",
+                    "name": "Turn 1 answered ordinary chat without tool calls",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ok"
+                },
+                {
+                    "id": "conv_02_reply",
+                    "category": "conversation",
+                    "name": "Turn 2 produced clean spoken reply",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "conv_02_brevity",
+                    "category": "conversation",
+                    "name": "Turn 2 stayed within spoken brevity budget (<= 65 words)",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "too_long"
+                },
+                {
+                    "id": "conv_02_no_tools",
+                    "category": "conversation",
+                    "name": "Turn 2 answered ordinary chat without tool calls",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ok"
+                },
+                {
+                    "id": "conv_03_reply",
+                    "category": "conversation",
+                    "name": "Turn 3 produced clean spoken reply",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "conv_03_brevity",
+                    "category": "conversation",
+                    "name": "Turn 3 stayed within spoken brevity budget (<= 45 words)",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "too_long"
+                },
+                {
+                    "id": "conv_03_no_tools",
+                    "category": "conversation",
+                    "name": "Turn 3 answered ordinary chat without tool calls",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ok"
+                },
+                {
+                    "id": "conv_03_no_unneeded_question",
+                    "category": "conversation",
+                    "name": "Closing turn avoided unnecessary follow-up question",
+                    "passed": false,
+                    "weight": 0.8,
+                    "reason": "asked_unneeded_followup"
+                }
+            ]
+        },
+        "long_conversation": {
+            "skipped": false,
+            "passed": 0,
+            "total": 8,
+            "score": 0.0,
+            "checks": [
+                {
+                    "id": "long_01_ok",
+                    "category": "long_conversation",
+                    "name": "Long turn 1 completed cleanly",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "long_02_ok",
+                    "category": "long_conversation",
+                    "name": "Long turn 2 completed cleanly",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "long_03_ok",
+                    "category": "long_conversation",
+                    "name": "Long turn 3 completed cleanly",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "long_04_ok",
+                    "category": "long_conversation",
+                    "name": "Long turn 4 completed cleanly",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "long_04_clock_tool",
+                    "category": "long_conversation",
+                    "name": "Mid-conversation live time request used get_local_time",
+                    "passed": false,
+                    "weight": 1.2,
+                    "reason": "missing_get_local_time"
+                },
+                {
+                    "id": "long_05_ok",
+                    "category": "long_conversation",
+                    "name": "Long turn 5 completed cleanly",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                },
+                {
+                    "id": "long_05_updated_constraints",
+                    "category": "long_conversation",
+                    "name": "Retained updated wood (pine) and width (80 cm) across 5 turns",
+                    "passed": false,
+                    "weight": 2.0,
+                    "reason": "missed_or_stale_constraint"
+                },
+                {
+                    "id": "long_06_ok",
+                    "category": "long_conversation",
+                    "name": "Long turn 6 completed cleanly",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "ChatError: The chat server returned HTTP 503. Check its model, API settings and console."
+                }
+            ]
+        },
+        "expressions": {
+            "skipped": false,
+            "passed": 0,
+            "total": 13,
+            "score": 0.0,
+            "checks": [
+                {
+                    "id": "expr_01_cue_format",
+                    "category": "expressions",
+                    "name": "Case 1 emitted explicit leading [[expression:...]] cue",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_explicit_leading_cue"
+                },
+                {
+                    "id": "expr_01_tone_match",
+                    "category": "expressions",
+                    "name": "Case 1 chose an appropriate expression for the prompt",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "unexpected_expression:None"
+                },
+                {
+                    "id": "expr_01_no_cue_leak",
+                    "category": "expressions",
+                    "name": "Case 1 kept expression cues out of spoken text",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "leaked_cue_or_empty"
+                },
+                {
+                    "id": "expr_02_cue_format",
+                    "category": "expressions",
+                    "name": "Case 2 emitted explicit leading [[expression:...]] cue",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_explicit_leading_cue"
+                },
+                {
+                    "id": "expr_02_tone_match",
+                    "category": "expressions",
+                    "name": "Case 2 chose an appropriate expression for the prompt",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "unexpected_expression:None"
+                },
+                {
+                    "id": "expr_02_no_cue_leak",
+                    "category": "expressions",
+                    "name": "Case 2 kept expression cues out of spoken text",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "leaked_cue_or_empty"
+                },
+                {
+                    "id": "expr_03_cue_format",
+                    "category": "expressions",
+                    "name": "Case 3 emitted explicit leading [[expression:...]] cue",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_explicit_leading_cue"
+                },
+                {
+                    "id": "expr_03_tone_match",
+                    "category": "expressions",
+                    "name": "Case 3 chose an appropriate expression for the prompt",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "unexpected_expression:None"
+                },
+                {
+                    "id": "expr_03_no_cue_leak",
+                    "category": "expressions",
+                    "name": "Case 3 kept expression cues out of spoken text",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "leaked_cue_or_empty"
+                },
+                {
+                    "id": "expr_04_cue_format",
+                    "category": "expressions",
+                    "name": "Case 4 emitted explicit leading [[expression:...]] cue",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_explicit_leading_cue"
+                },
+                {
+                    "id": "expr_04_tone_match",
+                    "category": "expressions",
+                    "name": "Case 4 chose an appropriate expression for the prompt",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "unexpected_expression:None"
+                },
+                {
+                    "id": "expr_04_no_cue_leak",
+                    "category": "expressions",
+                    "name": "Case 4 kept expression cues out of spoken text",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "leaked_cue_or_empty"
+                },
+                {
+                    "id": "expr_variety",
+                    "category": "expressions",
+                    "name": "Used at least 3 distinct facial expressions across 4 emotional prompts",
+                    "passed": false,
+                    "weight": 1.2,
+                    "reason": "only_0_distinct"
+                }
+            ]
+        },
+        "tools_weather_time": {
+            "skipped": false,
+            "passed": 0,
+            "total": 5,
+            "score": 0.0,
+            "checks": [
+                {
+                    "id": "wt_01_tool_called",
+                    "category": "tools_weather_time",
+                    "name": "Local time query called get_local_time",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_or_failed_clock_tool"
+                },
+                {
+                    "id": "wt_01_reply_grounded",
+                    "category": "tools_weather_time",
+                    "name": "Time reply reflected tool clock output without raw tool markers",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "time_not_grounded"
+                },
+                {
+                    "id": "wt_02_tool_called",
+                    "category": "tools_weather_time",
+                    "name": "Weather query called get_local_weather",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_or_failed_weather_tool"
+                },
+                {
+                    "id": "wt_02_reply_grounded",
+                    "category": "tools_weather_time",
+                    "name": "Weather reply reflected live tool figures/conditions",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "weather_not_grounded"
+                },
+                {
+                    "id": "wt_02_open_meteo_credit",
+                    "category": "tools_weather_time",
+                    "name": "Weather reply briefly credited Open-Meteo",
+                    "passed": false,
+                    "weight": 0.7,
+                    "reason": "missing_open_meteo_credit"
+                }
+            ]
+        },
+        "tools_home": {
+            "skipped": false,
+            "passed": 0,
+            "total": 7,
+            "score": 0.0,
+            "checks": [
+                {
+                    "id": "home_01_tool",
+                    "category": "tools_home",
+                    "name": "Status check called get_home_state",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_get_home_state"
+                },
+                {
+                    "id": "home_01_truthful",
+                    "category": "tools_home",
+                    "name": "Status reply matched real device state",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "state_mismatch"
+                },
+                {
+                    "id": "home_02_tool",
+                    "category": "tools_home",
+                    "name": "Switch on called set_home_power",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_or_wrong_switch_call"
+                },
+                {
+                    "id": "home_02_independent_state",
+                    "category": "tools_home",
+                    "name": "Independent device status verified as on",
+                    "passed": false,
+                    "weight": 1.5,
+                    "reason": "independent_state_was_off"
+                },
+                {
+                    "id": "home_03_tool",
+                    "category": "tools_home",
+                    "name": "Switch off called set_home_power",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_or_wrong_switch_call"
+                },
+                {
+                    "id": "home_03_independent_state",
+                    "category": "tools_home",
+                    "name": "Independent device status verified as off",
+                    "passed": false,
+                    "weight": 1.5,
+                    "reason": "switch_not_called"
+                },
+                {
+                    "id": "home_04_no_unwanted_switch",
+                    "category": "tools_home",
+                    "name": "Negative control prompt did not call set_home_power or change state",
+                    "passed": false,
+                    "weight": 1.2,
+                    "reason": "unexpected_device_change"
+                }
+            ]
+        },
+        "personality": {
+            "skipped": false,
+            "passed": 2,
+            "total": 3,
+            "score": 66.7,
+            "checks": [
+                {
+                    "id": "pers_01_clean_reply",
+                    "category": "personality",
+                    "name": "Personality turn 1 replied cleanly with valid expression cue",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "ok"
+                },
+                {
+                    "id": "pers_01_register",
+                    "category": "personality",
+                    "name": "Adopted polite formal Victorian butler tone",
+                    "passed": true,
+                    "weight": 1.0,
+                    "reason": "ok"
+                },
+                {
+                    "id": "pers_02_accuracy",
+                    "category": "personality",
+                    "name": "Maintained factual accuracy (17 * 4 = 68) while in persona",
+                    "passed": true,
+                    "weight": 1.0,
+                    "reason": "ok"
+                }
+            ]
+        },
+        "memory_recall": {
+            "skipped": false,
+            "passed": 9,
+            "total": 12,
+            "score": 73.9,
+            "checks": [
+                {
+                    "id": "memory_probe_01_recall",
+                    "category": "memory_recall",
+                    "name": "Memory probe 1 (fact) incorporated expected memory",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missed_expected_memory"
+                },
+                {
+                    "id": "memory_probe_01_source",
+                    "category": "memory_recall",
+                    "name": "Memory probe 1 grounded against expected source conversation",
+                    "passed": true,
+                    "weight": 0.7,
+                    "reason": "matched_source_conversation"
+                },
+                {
+                    "id": "memory_probe_02_recall",
+                    "category": "memory_recall",
+                    "name": "Memory probe 2 (fact) incorporated expected memory",
+                    "passed": true,
+                    "weight": 1.0,
+                    "reason": "matched_expected_memory"
+                },
+                {
+                    "id": "memory_probe_02_source",
+                    "category": "memory_recall",
+                    "name": "Memory probe 2 grounded against expected source conversation",
+                    "passed": true,
+                    "weight": 0.7,
+                    "reason": "matched_source_conversation"
+                },
+                {
+                    "id": "memory_probe_03_recall",
+                    "category": "memory_recall",
+                    "name": "Memory probe 3 (fact) incorporated expected memory",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missed_expected_memory"
+                },
+                {
+                    "id": "memory_probe_03_source",
+                    "category": "memory_recall",
+                    "name": "Memory probe 3 grounded against expected source conversation",
+                    "passed": true,
+                    "weight": 0.7,
+                    "reason": "matched_source_conversation"
+                },
+                {
+                    "id": "memory_probe_04_recall",
+                    "category": "memory_recall",
+                    "name": "Memory probe 4 (search) incorporated expected memory",
+                    "passed": true,
+                    "weight": 1.5,
+                    "reason": "matched_expected_memory"
+                },
+                {
+                    "id": "memory_probe_04_search_tool",
+                    "category": "memory_recall",
+                    "name": "Memory probe 4 invoked search_memory tool",
+                    "passed": true,
+                    "weight": 1.0,
+                    "reason": "called_search_memory"
+                },
+                {
+                    "id": "memory_probe_04_source",
+                    "category": "memory_recall",
+                    "name": "Memory probe 4 grounded against expected source conversation",
+                    "passed": true,
+                    "weight": 0.7,
+                    "reason": "matched_source_conversation"
+                },
+                {
+                    "id": "memory_probe_05_recall",
+                    "category": "memory_recall",
+                    "name": "Memory probe 5 (search) incorporated expected memory",
+                    "passed": true,
+                    "weight": 1.5,
+                    "reason": "matched_expected_memory"
+                },
+                {
+                    "id": "memory_probe_05_search_tool",
+                    "category": "memory_recall",
+                    "name": "Memory probe 5 invoked search_memory tool",
+                    "passed": false,
+                    "weight": 1.0,
+                    "reason": "missing_search_memory_call"
+                },
+                {
+                    "id": "memory_probe_05_source",
+                    "category": "memory_recall",
+                    "name": "Memory probe 5 grounded against expected source conversation",
+                    "passed": true,
+                    "weight": 0.7,
+                    "reason": "matched_source_conversation"
+                }
+            ]
+        },
+        "memory_extraction": {
+            "skipped": false,
+            "passed": 2,
+            "total": 3,
+            "score": 62.9,
+            "checks": [
+                {
+                    "id": "extract_01_real_fact",
+                    "category": "memory_extraction",
+                    "name": "Extracted valid JSON and captured real-scope fact",
+                    "passed": false,
+                    "weight": 1.3,
+                    "reason": "no_real_fact_extracted"
+                },
+                {
+                    "id": "extract_02_fiction_guard",
+                    "category": "memory_extraction",
+                    "name": "Fictional statement did not promote to confirmed real fact",
+                    "passed": true,
+                    "weight": 1.2,
+                    "reason": "ok"
+                },
+                {
+                    "id": "extract_03_summary_json",
+                    "category": "memory_extraction",
+                    "name": "Generated valid JSON summary checkpoint",
+                    "passed": true,
+                    "weight": 1.0,
+                    "reason": "ok"
+                }
+            ]
+        }
+    },
+    "judge": {
+        "judge_model": "google/gemini-3.8-flash",
+        "evaluated_at_utc": "2026-11-22T15:51:41+00:00",
+        "sample_count": 21,
+        "excluded_private_count": 5,
+        "overall_score": 8.4,
+        "dimensions": {
+            "conversational_naturalness": 8.6,
+            "tool_honesty": 0.0,
+            "memory_incorporation": 0.0,
+            "expression_fit": 30.0,
+            "personality_adherence": 85.0
+        },
+        "case_scores": {
+            "conv_01": 0.0,
+            "conv_02": 0.0,
+            "conv_03": 0.0,
+            "long_01": 0.0,
+            "long_02": 0.0,
+            "long_03": 0.0,
+            "long_04": 0.0,
+            "long_05": 0.0,
+            "long_06": 0.0,
+            "expr_01": 0.0,
+            "expr_02": 0.0,
+            "expr_03": 0.0,
+            "expr_04": 0.0,
+            "wt_01_time": 0.0,
+            "wt_02_weather": 0.0,
+            "home_01_inspect": 0.0,
+            "home_02_switch_first": 0.0,
+            "home_03_switch_second": 0.0,
+            "home_04_no_touch": 0.0,
+            "pers_01_tea": 86.7,
+            "pers_02_math": 90.0
+        }
+    },
+    "warnings": []
+}

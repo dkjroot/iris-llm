@@ -210,7 +210,11 @@ def test_probe_requires_new_instance_and_continuous_readiness(probe, clock):
     assert requests[0].get_method() == "GET"
 
 
-@pytest.mark.parametrize("body", [b"not-json", b"x" * 65537, b"[]", b'{"status":"busy"}'])
+@pytest.mark.parametrize(
+    "body",
+    [b"not-json", b"x" * 65537, b"[]", b'{"status":"busy"}'],
+    ids=["invalid-json", "oversized", "array", "busy"],
+)
 def test_bad_health_response_times_out_without_logging_body(probe, clock, capsys, body):
     probe.opener.open = lambda *a, **kw: io.BytesIO(body)
     with pytest.raises(updater.UpdateError, match="timed out"):
@@ -342,7 +346,7 @@ def test_windows_main_wires_process_identity_and_readiness(repos, monkeypatch):
     commit(upstream, "update")
     events = []
     server = Mock(process=None, instance="a" * 32)
-    server.wait.return_value = 0
+    server.wait.side_effect = KeyboardInterrupt
     server.stop.side_effect = lambda: events.append("stop")
 
     def restart():
@@ -582,7 +586,6 @@ def test_windows_main_keeps_rolled_back_server_on_rollback_readiness_timeout(rep
         "stop",
         "restart:broken",
         "stop",
-        "stop",
         "restart:original",
         "stop",
     ]
@@ -612,7 +615,8 @@ def test_windows_main_retries_when_initial_start_fails(repos, monkeypatch):
     assert sleeps == [5.0]
 
 
-def test_windows_main_restarts_server_on_unexpected_nonzero_exit(repos, monkeypatch, capsys):
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_windows_main_restarts_server_on_launcher_exit(repos, monkeypatch, capsys, exit_code):
     _, repo = repos
     server = Mock(process=None, instance=None)
 
@@ -622,10 +626,62 @@ def test_windows_main_restarts_server_on_unexpected_nonzero_exit(repos, monkeypa
         server.instance = "inst-live"
 
     server.start.side_effect = start
-    server.wait.side_effect = [1, KeyboardInterrupt]
+    server.wait.side_effect = [exit_code, KeyboardInterrupt]
     probe = Mock()
     sleeps = _wire_windows_main(monkeypatch, repo, server, probe)
     assert updater.main() == 0
     assert server.start.call_count == 2
     assert sleeps == [5.0]
-    assert "restarting in 5s" in capsys.readouterr().out
+    assert f"exit code {exit_code}); restarting in 5s" in capsys.readouterr().out
+
+
+def test_windows_main_recovers_after_rollback_launcher_fails(repos, monkeypatch):
+    upstream, repo = repos
+    before = git(repo.path, "rev-parse", "HEAD")
+    (upstream / "code.txt").write_text("broken", encoding="utf-8")
+    commit(upstream, "Broken release")
+    server = Mock(process=None, instance=None)
+    attempts = []
+
+    def stop():
+        server.process = None
+        server.instance = None
+
+    def start():
+        attempts.append((repo.path / "code.txt").read_text(encoding="utf-8"))
+        if len(attempts) in (2, 3):
+            raise updater.UpdateError("launcher exited")
+        server.process = Mock()
+        server.process.poll.return_value = None
+
+    def restart():
+        stop()
+        start()
+
+    server.stop.side_effect = stop
+    server.restart.side_effect = restart
+    server.start.side_effect = start
+    server.wait.side_effect = KeyboardInterrupt
+    probe = Mock()
+    probe.wait.side_effect = [updater.UpdateError("readiness timed out"), None]
+    sleeps = _wire_windows_main(monkeypatch, repo, server, probe)
+
+    assert updater.main() == 0
+    assert git(repo.path, "rev-parse", "HEAD") == before
+    assert attempts == ["broken", "original", "original", "original"]
+    assert sleeps == [5.0]
+
+
+def test_windows_main_checks_for_updates_while_startup_keeps_failing(repos, monkeypatch, clock):
+    _, repo = repos
+    server = Mock(process=None, instance=None)
+    server.start.side_effect = updater.UpdateError("launcher exited")
+    update = Mock(side_effect=[None, KeyboardInterrupt])
+    monkeypatch.setattr(updater.Checkout, "update", update)
+    _wire_windows_main(monkeypatch, repo, server, Mock())
+    monkeypatch.setattr(updater, "_sleep_interruptible", updater.time.sleep)
+
+    assert updater.main() == 0
+    assert update.call_count == 2
+    assert 300 <= clock[0] < 360
+    server.wait.assert_not_called()

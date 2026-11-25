@@ -173,6 +173,7 @@ cython_debug/
 
 # Iris specific:
 local-config.json
+local-config-*.json
 client_config.json
 
 # Local working notes

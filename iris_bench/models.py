@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class StrictBenchModel(BaseModel):
@@ -74,6 +74,7 @@ class LLMCallTelemetry(StrictBenchModel):
     est_tokens_per_sec: float | None = None
     prompt_tokens_per_sec: float | None = None
     output_chars: int = 0
+    reasoning_chars: int = 0
     finish_reason: str | None = None
     tool_calls_count: int = 0
     raw_content: str = ""
@@ -98,6 +99,7 @@ class TurnRecord(StrictBenchModel):
     prompt: str
     raw_reply: str = ""
     spoken_text: str = ""
+    reasoning_chars: int = 0
     expression: str | None = None
     streamed_sentences: list[str] = Field(default_factory=list)
     ttft_ms: float | None = None
@@ -152,6 +154,9 @@ class SpeedSummary(StrictBenchModel):
     median_tok_per_sec: float | None = None
     median_est_tok_per_sec: float | None = None
     median_prompt_tok_per_sec: float | None = None
+    reasoning_turns: int = 0
+    median_reasoning_chars: float | None = None
+    empty_reply_turns: int = 0
     long_conversation_ttfs_ms: list[float | None] = Field(default_factory=list)
     long_conversation_model_ms: list[float | None] = Field(default_factory=list)
 
@@ -184,6 +189,8 @@ class ConfigSummary(StrictBenchModel):
     temperature: float
     max_tokens: int
     model_context_tokens: int
+    reasoning_mode: Literal["off", "low", "on", "server"] = "server"
+    reasoning_budget_tokens: int | None = None
     tools_enabled: bool
     mock_tools: bool
     warmup_turns: int
@@ -193,6 +200,8 @@ class ConfigSummary(StrictBenchModel):
     has_semantic_memory: bool
     has_home_service: bool
     has_weather: bool
+    chat_template_kwargs: dict[str, JsonValue] = Field(default_factory=dict)
+    chat_request_options: dict[str, JsonValue] = Field(default_factory=dict)
 
 
 class PublicBenchmarkResult(StrictBenchModel):

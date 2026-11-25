@@ -26,7 +26,8 @@ from iris_bench.report import (
     render_html_report,
 )
 from iris_bench.runner import load_local_bench_config, prepare_benchmark, run_benchmark
-from iris_paths import atomic_json
+from iris_paths import atomic_json, server_config
+from iris_settings import load_settings
 
 
 def _add_run_flags(parser: argparse.ArgumentParser) -> None:
@@ -50,6 +51,18 @@ def _add_run_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", type=Path, default=None, help="Path to local-config.json.")
     parser.add_argument("--base-url", default=None, help="Override OpenAI-compatible base URL.")
     parser.add_argument("--api-model", default=None, help="Override API model ID sent to server.")
+    parser.add_argument(
+        "--reasoning",
+        choices=["off", "low", "on", "server"],
+        default=None,
+        help="Override reasoning mode for this run (off, low, on, server).",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="Override completion token cap for this run (applies to reasoning or non-reasoning).",
+    )
     parser.add_argument(
         "--warmup", type=int, default=2, help="Unmeasured warm-up turns (default: 2)."
     )
@@ -123,6 +136,12 @@ def _print_outcome_summary(outcome_result: object, public_path: Path) -> None:
         f"Model={outcome_result.speed.median_model_ms} ms  "
         f"Throughput={tps_text}"
     )
+    if outcome_result.speed.reasoning_turns or outcome_result.speed.empty_reply_turns:
+        print(
+            f"Thinking/Empty : reasoning_turns={outcome_result.speed.reasoning_turns} "
+            f"(median {outcome_result.speed.median_reasoning_chars or 0:.0f} chars), "
+            f"empty_reply_turns={outcome_result.speed.empty_reply_turns}"
+        )
     for name, cat in outcome_result.categories.items():
         if cat.skipped:
             print(f"  - {name:<20} skipped")
@@ -184,12 +203,43 @@ def _resolve_run_target(
         print("Server Details : " + ", ".join(part for part in details if part))
     if card.benchmark_label:
         print(f"Bench Label    : {card.benchmark_label}")
+    effective_reasoning = args.reasoning if args.reasoning is not None else card.reasoning_mode
+    try:
+        cfg_settings = load_settings(server_config(args.config))
+        updates: dict[str, object] = {}
+        if effective_reasoning is not None:
+            updates["reasoning_mode"] = effective_reasoning
+        target_mode = (
+            effective_reasoning if effective_reasoning is not None else cfg_settings.reasoning_mode
+        )
+        if args.max_tokens is not None:
+            if target_mode in {"low", "on"}:
+                updates["reasoning_max_tokens"] = args.max_tokens
+            else:
+                updates["max_tokens"] = args.max_tokens
+        if updates:
+            cfg_settings = cfg_settings.model_copy(update=updates)
+        budget_note = (
+            f" (server budget: {card.reasoning_budget_tokens})"
+            if card.reasoning_budget_tokens
+            else ""
+        )
+        print(
+            "Chat Options   : "
+            f"reasoning={cfg_settings.reasoning_mode}{budget_note}, "
+            f"max_tokens={cfg_settings.effective_max_tokens()}, "
+            f"chat_template_kwargs={cfg_settings.effective_chat_template_kwargs()}, "
+            f"chat_request_options={cfg_settings.effective_chat_request_options()}"
+        )
+    except Exception:
+        pass
     print("Running benchmark suite unattended...")
     return card, base_url, api_model
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
     card, base_url, api_model = _resolve_run_target(args)
+    effective_reasoning = args.reasoning if args.reasoning is not None else card.reasoning_mode
     outcome = run_benchmark(
         card.engine,
         card.model,
@@ -205,6 +255,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         model_context_tokens=card.model_context_tokens,
         model_file=card.model_file,
         benchmark_label=card.benchmark_label,
+        reasoning_mode=effective_reasoning,
+        reasoning_budget_tokens=card.reasoning_budget_tokens,
+        max_tokens=args.max_tokens,
         cache_dir=args.cache_dir,
         results_dir=args.output_dir,
     )
@@ -271,6 +324,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
 def _cmd_full(args: argparse.Namespace) -> int:
     card, base_url, api_model = _resolve_run_target(args)
+    effective_reasoning = args.reasoning if args.reasoning is not None else card.reasoning_mode
     outcome = run_benchmark(
         card.engine,
         card.model,
@@ -286,6 +340,9 @@ def _cmd_full(args: argparse.Namespace) -> int:
         model_context_tokens=card.model_context_tokens,
         model_file=card.model_file,
         benchmark_label=card.benchmark_label,
+        reasoning_mode=effective_reasoning,
+        reasoning_budget_tokens=card.reasoning_budget_tokens,
+        max_tokens=args.max_tokens,
         cache_dir=args.cache_dir,
         results_dir=args.output_dir,
     )

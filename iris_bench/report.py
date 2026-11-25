@@ -30,6 +30,14 @@ def _fmt_num(val: float | None, suffix: str = "") -> str:
     return f"{val:.1f}{suffix}"
 
 
+def _fmt_reasoning_mode(r: PublicBenchmarkResult) -> str:
+    mode = r.config.reasoning_mode
+    budget = r.config.reasoning_budget_tokens
+    if mode in {"low", "on"} and budget:
+        return f"{mode} ({budget}t)"
+    return mode
+
+
 def format_terminal_table(results: list[PublicBenchmarkResult]) -> str:
     """Format a compact leaderboard table for stdout."""
     if not results:
@@ -37,6 +45,7 @@ def format_terminal_table(results: list[PublicBenchmarkResult]) -> str:
     headers = [
         "Engine",
         "Model",
+        "Mode",
         "Overall",
         "Cap%",
         "Judge%",
@@ -63,6 +72,7 @@ def format_terminal_table(results: list[PublicBenchmarkResult]) -> str:
             [
                 r.engine,
                 r.model,
+                _fmt_reasoning_mode(r),
                 _fmt_num(r.scores.overall_iris_score),
                 _fmt_num(r.scores.capability_score),
                 _fmt_num(r.scores.judge_quality_score),
@@ -86,9 +96,9 @@ def format_markdown_table(results: list[PublicBenchmarkResult]) -> str:
     if not results:
         return "No benchmark results found."
     lines = [
-        "| Engine | Model | Overall | Capability | Judge | Voice Resp. "
+        "| Engine | Model | Mode | Overall | Capability | Judge | Voice Resp. "
         "| TTFT (ms) | TTFS (ms) | tok/s | Comments |",
-        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for r in results:
         tps = r.speed.median_tok_per_sec
@@ -108,6 +118,7 @@ def format_markdown_table(results: list[PublicBenchmarkResult]) -> str:
                 [
                     r.engine.replace("|", "\\|"),
                     r.model.replace("|", "\\|"),
+                    _fmt_reasoning_mode(r),
                     _fmt_num(r.scores.overall_iris_score),
                     _fmt_num(r.scores.capability_score, "%"),
                     _fmt_num(r.scores.judge_quality_score, "%"),
@@ -226,6 +237,7 @@ _HTML_TEMPLATE = """<!doctype html>
           <tr>
             <th data-key="engine">Engine</th>
             <th data-key="model">Model</th>
+            <th data-key="mode">Mode</th>
             <th class="num" data-key="overall">Overall</th>
             <th class="num" data-key="cap">Capability %</th>
             <th class="num" data-key="judge">Judge %</th>
@@ -294,7 +306,15 @@ function esc(s) {
   const map = {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"};
   return String(s ?? "").replace(/[&<>"]/g, c => map[c]);
 }
-function labelOf(r) { return `${r.engine}: ${r.model}`; }
+function modeOf(r) {
+  const m = (r.config && r.config.reasoning_mode) || "server";
+  const b = r.config && r.config.reasoning_budget_tokens;
+  return (m === "low" || m === "on") && b ? `${m} (${b}t)` : m;
+}
+function labelOf(r) {
+  const m = (r.config && r.config.reasoning_mode) || "server";
+  return m !== "server" ? `${r.engine}: ${r.model} [${modeOf(r)}]` : `${r.engine}: ${r.model}`;
+}
 function effTps(r) {
   return r.speed.median_tok_per_sec ?? r.speed.median_est_tok_per_sec ?? null;
 }
@@ -312,6 +332,7 @@ const rows = RESULTS.map((r, i) => ({
   raw: r,
   engine: r.engine,
   model: r.model,
+  mode: modeOf(r),
   overall: r.scores.overall_iris_score,
   cap: r.scores.capability_score,
   judge: r.scores.judge_quality_score,
@@ -337,7 +358,7 @@ function renderTable() {
   });
   const tbody = document.querySelector("#leaderboard tbody");
   if (!sorted.length) {
-    tbody.innerHTML = '<tr><td colspan="11" class="empty">No benchmark JSON files found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">No benchmark JSON files found.</td></tr>';
     return;
   }
   tbody.innerHTML = sorted.map(row => {
@@ -346,9 +367,20 @@ function renderTable() {
     const tpsText = rawTps != null
       ? rawTps.toFixed(1)
       : (estTps != null ? `~${estTps.toFixed(1)}` : "—");
+    const diag = [];
+    if (row.raw.speed.reasoning_turns) {
+      diag.push(`${row.raw.speed.reasoning_turns} reasoning turns`);
+    }
+    if (row.raw.speed.empty_reply_turns) {
+      diag.push(`${row.raw.speed.empty_reply_turns} empty replies`);
+    }
+    const noteText = [row.comments, diag.length ? `[${diag.join(", ")}]` : ""]
+      .filter(Boolean)
+      .join(" ");
     return `<tr>
       <td>${esc(row.engine)}</td>
       <td><strong>${esc(row.model)}</strong></td>
+      <td>${esc(row.mode)}</td>
       <td class="num">${pill(row.overall)}</td>
       <td class="num">${fmt(row.cap, "%")}</td>
       <td class="num">${fmt(row.judge, "%")}</td>
@@ -357,7 +389,7 @@ function renderTable() {
       <td class="num">${fmt(row.ttfs)}</td>
       <td class="num">${tpsText}</td>
       <td>${esc(row.hw)}</td>
-      <td class="comment-cell">${esc(row.comments || "—")}</td>
+      <td class="comment-cell">${esc(noteText || "—")}</td>
     </tr>`;
   }).join("");
 }

@@ -7,13 +7,16 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from iris_domain.expression import strip_thinking_tags
+
 Model = TypeVar("Model", bound=BaseModel)
 
 
 def parse_memory_json(model: type[Model], text: str) -> Model:
     """Accept one complete JSON fence, never prose, partial JSON or repaired facts."""
-    fenced = re.fullmatch(r"\s*```(?:json)?\s*\n(.*?)\n```\s*", text, re.DOTALL | re.IGNORECASE)
-    return model.model_validate_json(fenced.group(1) if fenced else text)
+    cleaned = strip_thinking_tags(text).strip()
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*\n(.*?)\n```\s*", cleaned, re.DOTALL | re.IGNORECASE)
+    return model.model_validate_json(fenced.group(1) if fenced else cleaned)
 
 
 def validation_reason(error: ValidationError) -> str:

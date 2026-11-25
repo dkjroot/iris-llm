@@ -24,7 +24,11 @@ def estimate(messages: list[Message], tools: list[dict[str, object]]) -> int:
 
 
 def input_budget(settings: Settings) -> int:
-    return settings.model_context_tokens - settings.max_tokens - settings.context_margin_tokens
+    return (
+        settings.model_context_tokens
+        - settings.effective_max_tokens()
+        - settings.context_margin_tokens
+    )
 
 
 def fit(

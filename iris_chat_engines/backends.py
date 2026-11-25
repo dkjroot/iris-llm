@@ -74,15 +74,16 @@ class ChatCompletionsBackend:
             "model": self.settings.model,
             "messages": [message.model_dump(exclude_none=True) for message in messages],
             "temperature": self.settings.temperature,
-            "max_tokens": self.settings.max_tokens,
+            "max_tokens": self.settings.effective_max_tokens(),
             "stream": stream,
         }
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
-        payload.update(self.settings.chat_request_options)
-        if self.settings.chat_template_kwargs and not self.settings.uses_openrouter:
-            payload["chat_template_kwargs"] = self.settings.chat_template_kwargs
+        payload.update(self.settings.effective_chat_request_options())
+        template_kwargs = self.settings.effective_chat_template_kwargs()
+        if template_kwargs and not self.settings.uses_openrouter:
+            payload["chat_template_kwargs"] = template_kwargs
         return payload
 
     @measured("model")

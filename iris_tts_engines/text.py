@@ -42,9 +42,8 @@ def _emoji_gap(match: regex.Match[str]) -> str:
 
 def plain_speech_text(text: str) -> str:
     # Keep code spans literal: operators such as ** can have a real meaning.
-    pieces = re.split(r"(`+.*?`+)", text, flags=re.DOTALL)
+    pieces = re.split(r"(`+.*?`+)", strip_expression_cues(text), flags=re.DOTALL)
     for index in range(0, len(pieces), 2):
-        pieces[index] = strip_expression_cues(pieces[index])
         previous = None
         while previous != pieces[index]:
             previous = pieces[index]

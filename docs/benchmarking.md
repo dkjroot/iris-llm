@@ -61,6 +61,24 @@ When you paste a model/engine card, Iris Bench automatically picks up `Engine`, 
 
 If you don't have your home service or internet weather available, add `--mock-tools`; if you want to test without a personal snapshot, add `--synthetic-memory`.
 
+To compare non-reasoning mode against bounded reasoning on the same model without editing `local-config.json` between runs, set `reasoning_mode`, `reasoning_max_tokens`, `reasoning_chat_template_kwargs`, and `reasoning_chat_request_options` in your config and pass `--reasoning`:
+
+Windows (PowerShell):
+
+```powershell
+.\.venv\Scripts\python.exe scripts\iris_bench.py full --reasoning off
+.\.venv\Scripts\python.exe scripts\iris_bench.py full --reasoning low
+```
+
+Linux (Bash):
+
+```bash
+.venv/bin/python scripts/iris_bench.py full --reasoning off
+.venv/bin/python scripts/iris_bench.py full --reasoning low
+```
+
+Iris automatically strips `<think>...</think>` and `<thinking>...</thinking>` blocks (alongside separate `reasoning_content` fields) before speaking replies aloud.
+
 ## 3. Batch-judge multiple runs and view the report
 
 If you benchmarked several models unattended with `run` (or `full --no-judge`), you can review and judge all pending runs under one confirmation prompt:

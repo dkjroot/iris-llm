@@ -181,7 +181,7 @@ def render() -> str:
         "`PLAYWRIGHT_BROWSERS_PATH` | Test-only opt-ins, described in the testing guide. |",
         "",
         "Server listening and web switches are launch options, not server JSON keys:",
-        "`--config`, `--host` (127.0.0.1), `--port` (8765), `--web-chat`, and",
+        "`--config`, `--host` (127.0.0.1), `--port` (8765), `--web-chat`, `--reasoning`, and",
         "`--web-personalities-file`. Use `python iris.py server --help` for their descriptions.",
         "The updater, memory, voice, notification and display commands have their own",
         "`--help`; [interface reference](interfaces.md) maps each to its guide and tests.",

@@ -682,6 +682,12 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="JSON file with the browser's personality prompts",
     )
+    parser.add_argument(
+        "--reasoning",
+        choices=["off", "low", "on", "server"],
+        default=None,
+        help="Override configured reasoning mode (off, low, on, server)",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
     configure_diagnostics()
@@ -689,6 +695,9 @@ def main(argv: list[str] | None = None) -> int:
         token = os.environ.get("IRIS_DROID_TOKEN", "")
         validate_token(token)
         settings = load_settings(server_config(args.config))
+        if args.reasoning is not None:
+            settings = settings.model_copy(update={"reasoning_mode": args.reasoning})
+            settings.validate_constraints()
         settings.require_home_service_token()
         web_personalities = (
             load_personalities(args.web_personalities_file)

@@ -724,16 +724,6 @@ def main() -> int:
             win_server = WindowsServer(repo.path, launcher, args.powershell)
             assert probe is not None
 
-            def verify_update() -> None:
-                try:
-                    probe.wait(
-                        lambda: _server_running(win_server),
-                        lambda: win_server.instance,
-                    )
-                except BaseException:
-                    win_server.stop()
-                    raise
-
             def verify_running_server() -> None:
                 probe.wait(
                     lambda: _server_running(win_server),
@@ -765,37 +755,40 @@ def main() -> int:
                 return True
 
             restart_backoff = 5.0
+            next_update = time.monotonic()
             try:
                 while True:
-                    try:
-                        repo.update(
-                            install,
-                            win_server.restart,
-                            prepare=lambda _: win_server.stop(),
-                            verify=verify_update,
-                            verify_rollback=verify_running_server,
-                            rollback_on_failure=True,
+                    if time.monotonic() >= next_update:
+                        try:
+                            repo.update(
+                                install,
+                                win_server.restart,
+                                prepare=lambda _: win_server.stop(),
+                                verify=verify_running_server,
+                                rollback_on_failure=True,
+                            )
+                        except (
+                            UpdateError,
+                            OSError,
+                            ValueError,
+                            subprocess.SubprocessError,
+                        ) as exc:
+                            log(f"Iris update skipped or incomplete: {exc}")
+                        next_update = time.monotonic() + 300
+
+                    if ensure_server_running():
+                        code = win_server.wait(timeout=max(0, next_update - time.monotonic()))
+                        if code is None:
+                            restart_backoff = 5.0
+                            continue
+                        win_server.process = None
+                        win_server.instance = None
+                        log(
+                            f"The Iris server exited (exit code {code}); "
+                            f"restarting in {restart_backoff:.0f}s."
                         )
-                    except (UpdateError, OSError, ValueError, subprocess.SubprocessError) as exc:
-                        log(f"Iris update skipped or incomplete: {exc}")
-                    if not ensure_server_running():
+                    else:
                         log(f"Retrying Iris server startup in {restart_backoff:.0f}s.")
-                        _sleep_interruptible(restart_backoff)
-                        restart_backoff = min(60.0, restart_backoff * 2)
-                        continue
-                    code = win_server.wait(timeout=300)
-                    if code is None:
-                        restart_backoff = 5.0
-                        continue
-                    win_server.process = None
-                    win_server.instance = None
-                    if code == 0 and not repo.pending_path.exists():
-                        log("The Iris server exited (exit code 0).")
-                        return 0
-                    log(
-                        f"The Iris server exited unexpectedly (exit code {code}); "
-                        f"restarting in {restart_backoff:.0f}s."
-                    )
                     _sleep_interruptible(restart_backoff)
                     restart_backoff = min(60.0, restart_backoff * 2)
             except KeyboardInterrupt:
